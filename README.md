@@ -157,9 +157,9 @@ per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
 every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
-`deploy-runtime` and `restore-release` take a Service release identity. There is
-no admission-mode or bound input: the only admission value is the exact tester
-allowlist. The
+`deploy-runtime`, `restore-release` and `migrate` take a Service release identity.
+There is no admission-mode or bound input: the only admission value is the exact
+tester allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no
 cross-repository release-verification task. The `verify` family remains for exactly
 one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
@@ -172,9 +172,10 @@ identity before any credential) → `verify` (**the only job that reads the Serv
 release**: read-only App token only when the operation takes a Service release,
 `contents: read`, no environment and no OIDC; it reads the release and tag ref
 over the REST API, downloads the operation's consumed set — three stage-base
-files, or only `service-schema.json` for `deploy-runtime` — publishes those bytes
-as `service-release-bytes-<run_id>-<run_attempt>` and publishes the digests as its
-`release_assets` output) → `deploy` (**the only job** that holds an AWS
+files, or only `service-schema.json` for `deploy-runtime` and `migrate` —
+publishes those bytes as `service-release-bytes-<run_id>-<run_attempt>` and
+publishes the digests as its `release_assets` output) → `deploy` (**the only job**
+that holds an AWS
 credential: `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN` and
 `INFRA_RUNTIME_ROLE_ARN`, scheduled after `verify`; its first step is
 `prove-release-bytes.mjs`, which re-derives the dispatch, requires the digest
@@ -191,13 +192,14 @@ runbook](docs/runbooks/beta-infrastructure.md#evidence-and-operation-recovery)
 carries the follow-up decision procedure. No step uses `continue-on-error`, so a
 failed or partial operation can never read as complete.
 
-Every Beta entry requires exact reviewed main and protected `beta`; the three
+Every Beta entry requires exact reviewed main and protected `beta`; the four
 operations that take a Service release identity also require the reviewed
 Service release tag and commit. The release-identity read and the operation's
 consumed download happen before AWS credentials, and each travelled file is
-re-hashed once in the deploy job before its restricted STS session; `deploy-runtime`
-additionally strictly validates the travelled `service-schema.json` there, so the
-schema-boundary gate later compares an asset this pre-credential check already
+re-hashed once in the deploy job before its restricted STS session;
+`deploy-runtime` and `migrate` additionally strictly validate the travelled
+`service-schema.json` there, so neither the schema-boundary gate nor the
+migration's launch reads an asset this pre-credential check has not already
 proved. The sessions are
 operation-specific and the read-only session carries no ECS or PassRole
 permissions. Only mutation requires
@@ -291,11 +293,13 @@ identity: `deploy-platform`/`restore-release` take `service_release_tag` and
 require the two Lambda bundles and the runtime policy to be present, uploaded and
 digest-valid (extras such as the retired legacy manifest are ignored), download
 only those three, and re-hash each travelled byte once in the deploy job before
-any credential. `deploy-runtime` takes the same identity but downloads only the
-release's `service-schema.json`, re-hashes it once and strictly validates it
-before credentials, then compares it with the live applied journal before any
-stack mutation. The deploy resolves the release tag, Service commit and the ECR
-digest of the immutable `service-artifacts-<service_commit>` tag, and they are
+any credential. `deploy-runtime` and `migrate` take the same identity but download
+only the release's `service-schema.json`: `deploy-runtime` re-hashes it once and
+strictly validates it before credentials, then compares it with the live applied
+journal before any stack mutation, while `migrate` runs that release as one
+`beta-anywear-migrate` one-shot instead of deploying. The deploy resolves the
+release tag, Service commit and the ECR digest of the immutable
+`service-artifacts-<service_commit>` tag, and they are
 readable from the run log and the stack's own parameters. There is no
 committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake

@@ -19,8 +19,8 @@ and must not be relabeled as an Infra-produced deployment.
   artifacts. Do not generate the shared API or read mutable peer `main` as a
   deployment input. Client publishes independently through deployed interfaces.
 - There is no committed selection and no cross-repository native-asset
-  verification path. `deploy-platform`, `deploy-runtime` and `restore-release`
-  take one reviewed Service release identity (`service_release_tag` +
+  verification path. `deploy-platform`, `deploy-runtime`, `restore-release` and
+  `migrate` take one reviewed Service release identity (`service_release_tag` +
   `service_commit`), read the sealed release and its tag ref over the REST API,
   require the release's schema declaration (`service-schema.json`) plus the two
   Lambda bundles and runtime policy to be present, uploaded and digest-valid
@@ -30,8 +30,16 @@ and must not be relabeled as an Infra-produced deployment.
   deploy job; `deploy-runtime` downloads only `service-schema.json`, re-hashes it
   once in the deploy job, strictly validates it as a consumer, and the
   schema-boundary gate compares it with the live applied journal before any
-  stack mutation. The deploy resolves the release tag, Service commit and the ECR
-  digest of the immutable `service-artifacts-<service_commit>` tag into its step
+  stack mutation. `migrate` consumes exactly the same `service-schema.json` and
+  runs the release it names — the tag, Service commit and ECR digest resolved in
+  this run, whether or not that release is deployed — as one
+  `beta-anywear-migrate` one-shot with `["node","dist/migrate.js"]` under the
+  existing migration task role, instead of deploying a stack; it reads Beta's
+  stacks only to refuse a stopped or racing environment by name, including
+  `migrate requires AnyWearEgressStack-beta; Beta is stopped, run its start
+  sequence`, and never chooses an image from a stack. The deploy resolves the
+  release tag, Service commit and the ECR digest of the immutable
+  `service-artifacts-<service_commit>` tag into its step
   log and the stack's parameters. No
   Service-built artifact is committed here. Every other operation rejects a
   release identity.

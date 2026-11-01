@@ -6,6 +6,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { assertProtectedExecutor, e2eExecutorPaths } from './operation-boundaries.mjs';
+import { RELEASE_IDENTITY_OPERATIONS } from './release-inputs.mjs';
 
 // Census guard for the post-#158 Infra surface. It describes the tree that exists
 // now: Infra owns Foundation, Billing, the Beta stage base, Egress and Runtime;
@@ -191,6 +192,7 @@ test('the only artifact a protected mutating run publishes is the release bytes,
   assert.match(upload.if, /deploy-platform/);
   assert.match(upload.if, /restore-release/);
   assert.match(upload.if, /deploy-runtime/);
+  assert.match(upload.if, /migrate/);
 
   // The upload has ONE search path, and `upload-artifact` uses the least common
   // ancestor of the search paths as the artifact root; with a single path that
@@ -217,6 +219,30 @@ test('the only artifact a protected mutating run publishes is the release bytes,
   assert.equal(/upload-artifact/.test(deployComposite), false, 'the mutating job publishes no artifact');
   assert.equal(/name:\s*infra-/.test(deployComposite), false);
   assert.equal(/name:\s*infra-/.test(await readFile(actionFile('verify-operation'), 'utf8')), false);
+});
+
+// #243: the release identity is one reviewed list. Every site that gates on it —
+// the verify job's read-only token, the artifact upload, the deploy job's byte
+// download — must name exactly `RELEASE_IDENTITY_OPERATIONS`, so a code site and a
+// workflow `if:` cannot disagree about which operations take a release.
+test('every workflow gate on the release identity names exactly RELEASE_IDENTITY_OPERATIONS', async () => {
+  const verify = await loadAction('verify-operation');
+  const mutate = await loadWorkflow('mutate.yml');
+  const gates = [
+    ['verify-operation read-only token step', verify.runs.steps.find(step => step.id === 'app')?.if],
+    ['verify-operation artifact upload step',
+      verify.runs.steps.find(step => String(step.uses ?? '').startsWith('actions/upload-artifact'))?.if],
+    ['mutate.yml release-bytes download step',
+      mutate.jobs.deploy.steps.find(step => String(step.uses ?? '').startsWith('actions/download-artifact'))?.if],
+  ];
+  for (const [label, expression] of gates) {
+    assert.ok(typeof expression === 'string' && expression.length, `${label} must gate on the operation`);
+    const named = [...expression.matchAll(/env\.INFRA_OPERATION == '([a-z-]+)'/g)].map(match => match[1]).sort();
+    assert.deepEqual(named, [...RELEASE_IDENTITY_OPERATIONS].sort(), label);
+  }
+  // The only input description that enumerates the operations names each of them.
+  const description = mutate.on.workflow_dispatch.inputs.service_release_tag.description;
+  for (const operation of RELEASE_IDENTITY_OPERATIONS) assert.ok(description.includes(operation), operation);
 });
 
 test('runtime.yml keeps state runnable with the switch closed and publishes no evidence', async () => {

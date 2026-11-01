@@ -8,7 +8,7 @@ on:
         options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers]
         required: true
       service_release_tag:
-        description: Sealed Service release tag; required by deploy-platform, deploy-runtime and restore-release only
+        description: Sealed Service release tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
         type: string
         default: ''
       service_commit:
@@ -136,7 +136,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Download the Service release bytes that travelled from verify
-        if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
+        if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime' || env.INFRA_OPERATION == 'migrate'
         uses: actions/download-artifact@v4
         with:
           name: service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}

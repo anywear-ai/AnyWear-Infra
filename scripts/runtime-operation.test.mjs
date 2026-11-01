@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRuntimeIo, validateOperationInputs, cdkDeploymentArguments, deleteOperationStack,
-  resolveServiceImageDigest, serviceImageTag } from './runtime-operation.mjs';
+  resolveServiceImageDigest, runOperation, serviceImageTag } from './runtime-operation.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
 const egressStack = 'AnyWearEgressStack-beta';
@@ -198,4 +198,184 @@ test('the one-shot probe refuses a wrong action, command, image or missing ident
   const noIdentity = probeIo({ stdout: 'no identity here' });
   await assert.rejects((await noIdentity.io()).oneShotProbe('verify', revision, 'schema-journal'),
     /One-shot probe identity missing/);
+});
+
+// #243: `migrate` takes the sealed Service release identity instead of reading an
+// image out of `AnyWearRuntimeStack-beta`, and reads Beta's stacks only to refuse a
+// stopped or racing environment. These cases drive the real `runOperation` over an
+// injected io, so what they observe is the real precondition order: every refusal
+// fires before `io.oneShot`, which is what registers the task.
+const baseStack = 'AnyWearPlatformStack-beta';
+const migrateEnv = (overrides = {}) => ({
+  ...env, INFRA_OPERATION: 'migrate',
+  SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit, ...overrides,
+});
+
+// The stack surface the operation reads: Platform, Egress and Runtime. A `null`
+// entry is the CloudFormation absence error `describeStack` translates to
+// `undefined`, which is what a stopped Beta answers. The fake has no `deploy`, so a
+// migration that tried to reach a stack mutation fails rather than passing.
+function migrateStacksIo({ platform = { StackStatus: 'UPDATE_COMPLETE' },
+  egress = { StackStatus: 'UPDATE_COMPLETE' }, runtime = null } = {}) {
+  const egressStack = 'AnyWearEgressStack-beta';
+  const stacks = new Map([[baseStack, platform], [egressStack, egress], [runtimeStack, runtime]]);
+  const calls = [];
+  const oneShots = [];
+  const io = {
+    async aws(args) {
+      calls.push([...args]);
+      if (args[0] === 'sts') return { Account: '650880818323' };
+      if (args[0] === 'ecr') return { imageDetails: [{ imageDigest, imageTags: [`service-artifacts-${serviceCommit}`] }] };
+      if (args[0] === 'cloudformation') {
+        const name = args[args.indexOf('--stack-name') + 1];
+        if (!stacks.has(name)) throw new Error(`Unexpected stack ${name}`);
+        const stack = stacks.get(name);
+        if (stack === null) throw stackAbsence(name);
+        return { Stacks: [{ StackName: name, ...stack }] };
+      }
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    },
+    async oneShot(role, selected) { oneShots.push([role, selected]); },
+  };
+  return { calls, oneShots, io };
+}
+
+// Both streams, so a step-log assertion can be made about either one.
+async function captureStreams(run) {
+  const stdout = [];
+  const stderr = [];
+  const originalOut = process.stdout.write;
+  const originalErr = process.stderr.write;
+  process.stdout.write = (chunk) => { stdout.push(String(chunk)); return true; };
+  process.stderr.write = (chunk) => { stderr.push(String(chunk)); return true; };
+  try {
+    return { value: await run(), stdout: stdout.join(''), stderr: stderr.join('') };
+  } finally {
+    process.stdout.write = originalOut;
+    process.stderr.write = originalErr;
+  }
+}
+
+test('migrate without a release identity is refused before any AWS call', async () => {
+  let created = false;
+  await assert.rejects(runOperation({ ...migrateEnv(), SERVICE_RELEASE_TAG: '', SERVICE_COMMIT: '' }, {
+    createIo: async () => { created = true; return migrateStacksIo().io; },
+  }), /^Error: migrate requires the explicit Service release tag$/);
+  assert.equal(created, false, 'the refusal precedes the restricted session');
+});
+
+test('migrate refuses a non-terminal Platform stack by name', async () => {
+  const surface = migrateStacksIo({ platform: { StackStatus: 'UPDATE_IN_PROGRESS' } });
+  await assert.rejects(runOperation(migrateEnv(), { createIo: async () => surface.io }),
+    /^Error: migrate requires a terminal AnyWearPlatformStack-beta; observed UPDATE_IN_PROGRESS$/);
+  assert.equal(surface.oneShots.length, 0, 'the refusal precedes the task registration');
+});
+
+test('migrate refuses an absent Egress stack and names Beta start sequence', async () => {
+  const surface = migrateStacksIo({ egress: null });
+  await assert.rejects(runOperation(migrateEnv(), { createIo: async () => surface.io }),
+    /^Error: migrate requires AnyWearEgressStack-beta; Beta is stopped, run its start sequence$/);
+  assert.equal(surface.oneShots.length, 0, 'the refusal precedes the task registration');
+});
+
+test('migrate refuses a present but non-terminal Egress stack by name', async () => {
+  const surface = migrateStacksIo({ egress: { StackStatus: 'ROLLBACK_IN_PROGRESS' } });
+  await assert.rejects(runOperation(migrateEnv(), { createIo: async () => surface.io }),
+    /^Error: migrate requires a terminal AnyWearEgressStack-beta; observed ROLLBACK_IN_PROGRESS$/);
+  assert.equal(surface.oneShots.length, 0, 'the refusal precedes the task registration');
+});
+
+test('migrate refuses a present but non-terminal Runtime stack by name', async () => {
+  const surface = migrateStacksIo({ runtime: { StackStatus: 'UPDATE_IN_PROGRESS' } });
+  await assert.rejects(runOperation(migrateEnv(), { createIo: async () => surface.io }),
+    /^Error: migrate requires a terminal AnyWearRuntimeStack-beta; observed UPDATE_IN_PROGRESS$/);
+  assert.equal(surface.oneShots.length, 0, 'the refusal precedes the task registration');
+});
+
+test('migrate proceeds to the one-shot when the Runtime stack is absent', async () => {
+  const surface = migrateStacksIo();
+  const captured = await captureStreams(() => runOperation(migrateEnv(), { createIo: async () => surface.io }));
+  assert.deepEqual(surface.oneShots, [['migrate', { digest: imageDigest, commit: serviceCommit }]]);
+  // The step log carries the tag, the Service commit and the resolved digest.
+  assert.match(captured.stdout,
+    new RegExp(`migrate runs Service release service-artifacts-${serviceCommit}@${serviceCommit} from image ${imageDigest}`));
+});
+
+test('migrate runs the release digest and never a value read from a stack', async () => {
+  const stackDigest = `sha256:${'7'.repeat(64)}`;
+  const stackCommit = 'c'.repeat(40);
+  const surface = migrateStacksIo({ runtime: { StackStatus: 'UPDATE_COMPLETE', Parameters: [
+    { ParameterKey: 'ServiceImageDigest', ParameterValue: stackDigest },
+    { ParameterKey: 'ServiceCommitSha', ParameterValue: stackCommit },
+    { ParameterKey: 'VlmConfigArn', ParameterValue: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:test' },
+    { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: 'pl-test' }] } });
+  await captureStreams(() => runOperation(migrateEnv(), { createIo: async () => surface.io }));
+  // The ECR-resolved digest and the dispatched commit, not the deployed pair.
+  assert.notEqual(imageDigest, stackDigest);
+  assert.deepEqual(surface.oneShots, [['migrate', { digest: imageDigest, commit: serviceCommit }]]);
+  // Exactly one ECR read under the release tag, and no stack write.
+  assert.deepEqual(surface.calls.filter(call => call[0] === 'ecr'),
+    [['ecr', 'describe-images', '--repository-name', 'beta-anywear-service',
+      '--image-ids', `imageTag=service-artifacts-${serviceCommit}`]]);
+});
+
+// The launch surface `oneShot` uses for `migrate`: the preflight simulator answers
+// allowed, the task script prints the two identities, and the ECS describes return
+// a stopped task. `failing` reproduces the script exiting non-zero after it printed
+// the identity, which is the case that used to lose the task.
+const migrateTaskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'c'.repeat(32)}`;
+const migrateDefinitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-migrate:4';
+function migrateOneShotSurface({ failing = false } = {}) {
+  const calls = [];
+  const run = async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'aws' && args[0] === 'iam') {
+      return { stdout: JSON.stringify({ EvaluationResults: [{ EvalActionName: 'x', EvalResourceName: '*',
+        EvalDecision: 'allowed' }] }) };
+    }
+    if (command === 'bash') {
+      const printed = `Task definition: ${migrateDefinitionArn}\nTask ARN: ${migrateTaskArn}\n`;
+      if (failing) {
+        throw Object.assign(new Error('script exited 1'), { stdout: printed,
+          stderr: 'One-shot task failed with exit code 3\n' });
+      }
+      return { stdout: printed, stderr: '' };
+    }
+    if (command === 'aws' && args[0] === 'ecs' && args[1] === 'describe-tasks') {
+      return { stdout: JSON.stringify({ tasks: [{ taskArn: migrateTaskArn, lastStatus: 'STOPPED',
+        taskDefinitionArn: migrateDefinitionArn, containers: [{ name: 'OneShot', exitCode: 0, imageDigest }] }] }) };
+    }
+    if (command === 'aws' && args[0] === 'ecs' && args[1] === 'describe-task-definition') {
+      return { stdout: JSON.stringify({ taskDefinition: { taskDefinitionArn: migrateDefinitionArn,
+        containerDefinitions: [{ name: 'OneShot', command: ['node', 'dist/migrate.js'] }] } }) };
+    }
+    throw new Error(`unexpected run ${command} ${args.join(' ')}`);
+  };
+  const assume = async () => ({ AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' });
+  return { calls, io: () => createRuntimeIo(migrateEnv(), { purpose: 'operation', run, assume }) };
+}
+
+test('migrate launches the one-shot with the release digest and commit', async () => {
+  const surface = migrateOneShotSurface();
+  const io = await surface.io();
+  const captured = await captureStreams(() => io.oneShot('migrate', revision));
+  // The exact launch surface: the script, the stage, the family, the resolved
+  // digest and the dispatched commit.
+  const script = surface.calls.find(([command]) => command === 'bash');
+  assert.deepEqual(script[1], ['.github/scripts/run-one-shot-task.sh', 'beta', 'migrate', imageDigest,
+    serviceCommit, '']);
+  // The captured output is written once, not duplicated by the later path.
+  assert.equal(captured.stdout.split('Task ARN:').length - 1, 1);
+});
+
+test('a failed migrate launch still names the task it started', async () => {
+  const surface = migrateOneShotSurface({ failing: true });
+  const io = await surface.io();
+  const captured = await captureStreams(() => assert.rejects(io.oneShot('migrate', revision),
+    /^Error: One-shot execution failed; preserve task resources and inspect redacted run evidence$/));
+  // The identity the script printed before it waited reaches the step log.
+  assert.equal(captured.stdout.split('Task ARN:').length - 1, 1);
+  assert.match(captured.stdout, new RegExp(`Task ARN: ${migrateTaskArn}`));
+  assert.match(captured.stdout, new RegExp(`Task definition: ${migrateDefinitionArn}`));
+  assert.match(captured.stderr, /One-shot task failed with exit code 3/);
 });

@@ -21,7 +21,7 @@ runs:
       run: node scripts/check-operation.mjs
     - name: Create the read-only Service release token when this operation takes a release
       id: app
-      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
+      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime' || env.INFRA_OPERATION == 'migrate'
       uses: actions/create-github-app-token@v3
       with:
         app-id: 3346940
@@ -40,7 +40,7 @@ runs:
     # reader, the deploy job's byte proof. The published digests cross separately as
     # this action's `release_assets` output, so they are a run fact, not a file.
     - name: Publish the release bytes that travel to deploy
-      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime'
+      if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime' || env.INFRA_OPERATION == 'migrate'
       uses: actions/upload-artifact@v4
       with:
         name: service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}

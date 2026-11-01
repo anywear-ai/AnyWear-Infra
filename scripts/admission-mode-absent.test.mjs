@@ -37,6 +37,9 @@ function modeAbsentIo() {
   const calls = [];
   const platform = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE',
     Outputs: entries(platformOutputs()) };
+  // #243: `migrate` refuses a stopped Beta by name, so the migration case needs the
+  // Egress stack Beta runs with by default. It reads it and changes nothing.
+  const egress = { StackName: 'AnyWearEgressStack-beta', StackStatus: 'UPDATE_COMPLETE' };
   const runtime = { StackName: runtimeStack, StackStatus: 'UPDATE_COMPLETE',
     Parameters: [{ ParameterKey: 'ServiceImageDigest', ParameterValue: imageDigest },
       { ParameterKey: 'ServiceCommitSha', ParameterValue: serviceCommit },
@@ -49,7 +52,7 @@ function modeAbsentIo() {
       if (args[0] === 'ecr') return { imageDetails: [{ imageDigest, imageTags: [`service-artifacts-${serviceCommit}`] }] };
       if (args[0] === 'cloudformation') {
         const name = args[args.indexOf('--stack-name') + 1];
-        return { Stacks: [name === runtimeStack ? runtime : platform] };
+        return { Stacks: [name === runtimeStack ? runtime : name === egress.StackName ? egress : platform] };
       }
       if (args[0] === 'ssm') {
         const name = args[args.indexOf('--name') + 1];
@@ -95,8 +98,11 @@ test('runtime.yml state reports the allowlist with the mode parameter absent', a
 
 test('migrate completes with the mode parameter absent and reads no admission state', async () => {
   const surface = modeAbsentIo();
-  await captureStdout(() => runOperation({ ...baseEnv, INFRA_OPERATION: 'migrate' },
-    { createIo: async () => surface.io }));
+  // #243: the migration takes the sealed release identity; Beta's Platform and
+  // Egress stacks are present and terminal, which is Beta's normal running state.
+  await captureStdout(() => runOperation({ ...baseEnv, INFRA_OPERATION: 'migrate',
+    SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit },
+  { createIo: async () => surface.io }));
   assert.ok(surface.calls.some(call => call[0] === 'oneShot' && call[1] === 'migrate'));
   assert.equal(surface.calls.some(call => call[0] === 'ssm'), false, 'migrate reads no admission state');
 });
