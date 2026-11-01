@@ -1,6 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -117,29 +116,27 @@ export async function resolveServiceImageDigest(io, serviceCommit) {
 // deletes it. Its `ApiLoadBalancerDnsName` output is the only origin source
 // before the Runtime stack exists; it is a read-only transition path.
 const legacyWorkloadStack = 'AnyWearWorkloadStack-beta';
-const API_DISTRIBUTION = Object.freeze(JSON.parse(
-  readFileSync(new URL('../lib/api-distribution.json', import.meta.url), 'utf8')));
 const API_ORIGIN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
 const isOrigin = value => typeof value === 'string' && API_ORIGIN.test(value);
 const stackRead = (io, name, region) => describeStack(io, name, region);
 const outputOf = (stack, key) => (stack?.Outputs ?? []).find(output => output.OutputKey === key)?.OutputValue;
-// During the migration's M4 Base update both the Workload ALB and the Runtime
-// stack are absent. The MOVE already adopted the distribution with its literal
-// origin, so read that value back from Base's Original template.
-async function baseDistributionOrigin(io) {
-  if (!(await stackRead(io, baseStack))) return undefined;
-  const body = (await io.aws(['cloudformation', 'get-template', '--stack-name', baseStack,
-    '--template-stage', 'Original'])).TemplateBody;
-  const template = typeof body === 'string' ? parseJson(body) : body;
-  const origin = template?.Resources?.[API_DISTRIBUTION.logicalId]
-    ?.Properties?.DistributionConfig?.Origins?.[0]?.DomainName;
-  return isOrigin(origin) ? origin : undefined;
+// The Base stack's recorded origin (#254). The distribution's origin is the
+// `ApiOriginDomainName` stack parameter, so a stopped environment reads the value
+// the last Runtime deploy wrote instead of a template literal. A value the
+// parameter's DNS guard would reject is treated as unavailable and falls through,
+// like an absent parameter, so a malformed record can never become an origin.
+async function baseParameterOrigin(io) {
+  const base = await stackRead(io, baseStack);
+  if (!base) return undefined;
+  const parameter = (base.Parameters ?? []).find(entry => entry?.ParameterKey === 'ApiOriginDomainName');
+  return isOrigin(parameter?.ParameterValue) ? parameter.ParameterValue : undefined;
 }
-// A Base deploy needs the live API ALB DNS name as a literal distribution origin.
-// Order: a running Runtime stack's output, then the literal already adopted by
-// the Base distribution (M4, when Runtime and Workload are both absent), then
-// the legacy Workload output before the MOVE. The Base read is before Workload so
-// that the stopped state never needs the transitional Workload read after M4.
+// A Base deploy needs the live API ALB DNS name as the distribution origin.
+// Order: a running Runtime stack's output, then the live `ApiOriginDomainName`
+// parameter already recorded on the Base stack (the stopped state, and the
+// one-time M4 update), then the legacy Workload output before the MOVE. The Base
+// read is before Workload so that the stopped state never needs the transitional
+// Workload read after M4.
 export async function readApiOrigin(io) {
   const runtime = await stackRead(io, runtimeStack);
   if (runtimeExists(runtime)) {
@@ -149,12 +146,12 @@ export async function readApiOrigin(io) {
     }
     return runtimeOrigin;
   }
-  const baseOrigin = await baseDistributionOrigin(io);
+  const baseOrigin = await baseParameterOrigin(io);
   if (baseOrigin) return baseOrigin;
   const workload = await stackRead(io, legacyWorkloadStack);
   const workloadOrigin = outputOf(workload, 'ApiLoadBalancerDnsName');
   if (isOrigin(workloadOrigin)) return workloadOrigin;
-  throw new Error('A Base deploy requires the live API load-balancer DNS name from the Runtime stack, the literal origin in the adopted Base distribution, or the legacy Workload stack before the MOVE');
+  throw new Error('A Base deploy requires the live API load-balancer DNS name from the Runtime stack, the live ApiOriginDomainName parameter on the Base stack, or the legacy Workload stack before the MOVE');
 }
 // Infra deploys both the persistent Base stack and the Runtime stack. A Base or
 // Egress mutation must read the Runtime stack terminal before CloudFormation is
@@ -190,7 +187,8 @@ export async function deleteOperationStack(io, operation) {
 }
 // `deployScope` restricts synthesis to the stack this operation deploys: only an
 // application-scope deploy (the Base stack) loads Service-built Lambda assets and
-// the literal API origin; the Egress stack is a separate scope with no artifacts.
+// passes the API origin as the `ApiOriginDomainName` stack parameter; the Egress
+// stack is a separate scope with no artifacts.
 function deployScopeFor(stack) {
   if (stack === baseStack) return 'application';
   if (stack === 'AnyWearBillingStack-beta') return 'billing';
@@ -204,7 +202,10 @@ export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainN
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
     '-c', `deployScope=${deployScope}`, '-c', 'stage=beta', '-c', 'legacyRoleSource=external', '-c', `identityPhase=${env.INFRA_IDENTITY_PHASE}`,
     '-c', `ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`,
-    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '-c', `apiOriginDomainName=${apiOriginDomainName}`] : []),
+    // #254: the origin is a CloudFormation stack parameter now, so the deploy
+    // passes it with the CDK CLI's `--parameters KEY=VALUE` form instead of the
+    // old `-c apiOriginDomainName` context the synthesis read.
+    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '--parameters', `ApiOriginDomainName=${apiOriginDomainName}`] : []),
     ...(deployScope === 'egress' && natEipAllocationId ? ['-c', `natEipAllocationId=${natEipAllocationId}`] : [])];
 }
 // The Egress destroy uses the same restricted deploy session and reviewed

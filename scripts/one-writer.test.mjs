@@ -1,14 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { deployOperationStack, deleteOperationStack, readApiOrigin } from './runtime-operation.mjs';
 import { describeStack, runtimeStack } from './one-writer.mjs';
 
 const baseName = 'AnyWearPlatformStack-beta';
 const egressName = 'AnyWearEgressStack-beta';
 const workloadName = 'AnyWearWorkloadStack-beta';
-const distributionLogicalId = JSON.parse(
-  readFileSync(new URL('../lib/api-distribution.json', import.meta.url), 'utf8')).logicalId;
 const liveOrigin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
 
 // CloudFormation answers an absent stack with this exact ValidationError and the
@@ -144,45 +141,48 @@ test('only delete-egress may destroy a stack', async () => {
   assert.deepEqual(io.destroys, []);
 });
 
-test('M4 resolves the API origin from the adopted Base distribution when Runtime and Workload are absent', async () => {
-  for (const stringBody of [false, true]) {
-    const calls = [];
-    const template = { Resources: {
-      [distributionLogicalId]: { Type: 'AWS::CloudFront::Distribution', Properties: {
-        DistributionConfig: { Origins: [{ DomainName: liveOrigin }] } } },
-    } };
-    const io = {
-      async aws(args, region) {
-        calls.push([...args, ...(region ? ['--region', region] : [])]);
-        const name = args[args.indexOf('--stack-name') + 1];
-        if (args[1] === 'describe-stacks') {
-          if (name === runtimeStack || name === workloadName) throw stackAbsenceError(name);
-          if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
-          throw new Error(`Unexpected stack ${name}`);
-        }
-        if (args[1] === 'get-template') {
-          return { TemplateBody: stringBody ? JSON.stringify(template) : template };
-        }
-        throw new Error(`Unexpected AWS call ${args.join(' ')}`);
-      },
-    };
-    assert.equal(await readApiOrigin(io), liveOrigin, String(stringBody));
-    assert.ok(calls.some(call => call[1] === 'get-template' && call.includes(baseName)));
-  }
+test('M4 resolves the API origin from the live Base ApiOriginDomainName parameter when Runtime is absent', async () => {
+  const calls = [];
+  const io = {
+    async aws(args, region) {
+      calls.push([...args, ...(region ? ['--region', region] : [])]);
+      const name = args[args.indexOf('--stack-name') + 1];
+      if (args[1] === 'describe-stacks') {
+        if (name === runtimeStack || name === workloadName) throw stackAbsenceError(name);
+        if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE',
+          Parameters: [{ ParameterKey: 'BootstrapVersion', ParameterValue: '7' },
+            { ParameterKey: 'ApiOriginDomainName', ParameterValue: liveOrigin }] }] };
+        throw new Error(`Unexpected stack ${name}`);
+      }
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    },
+  };
+  assert.equal(await readApiOrigin(io), liveOrigin);
+  // The stopped state reads the parameter the last Runtime deploy recorded; it no
+  // longer reads the deployed template's `Ref` shape (#254).
+  assert.ok(calls.some(call => call[1] === 'describe-stacks' && call.includes(baseName)));
+  assert.equal(calls.some(call => call[1] === 'get-template'), false);
+  assert.ok(!calls.some(call => call.includes(workloadName)));
 });
 
-test('M4 rejects a non-domain Base distribution origin and still prefers a running Runtime output', async () => {
-  const baseStack = { StackName: baseName, StackStatus: 'UPDATE_COMPLETE' };
-  const invalid = { async aws(args) {
-    const name = args[args.indexOf('--stack-name') + 1];
-    if (args[1] === 'describe-stacks') {
-      if (name === runtimeStack || name === workloadName) throw stackAbsenceError(name);
-      return { Stacks: [baseStack] };
-    }
-    return { TemplateBody: { Resources: { [distributionLogicalId]: { Type: 'AWS::CloudFront::Distribution',
-      Properties: { DistributionConfig: { Origins: [{ DomainName: 'not a domain' }] } } } } } };
-  } };
-  await assert.rejects(readApiOrigin(invalid), /requires the live API load-balancer DNS name/);
+test('a non-domain live Base parameter falls through, and a running Runtime output still wins', async () => {
+  const workloadOrigin = 'beta-anywear-api-old-0123456789.ap-east-1.elb.amazonaws.com';
+  const calls = [];
+  const io = {
+    async aws(args) {
+      calls.push([...args]);
+      const name = args[args.indexOf('--stack-name') + 1];
+      if (args[1] !== 'describe-stacks') throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+      if (name === runtimeStack) throw stackAbsenceError(name);
+      if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE',
+        Parameters: [{ ParameterKey: 'ApiOriginDomainName', ParameterValue: 'not a domain' }] }] };
+      if (name === workloadName) return { Stacks: [{ StackName: workloadName, StackStatus: 'UPDATE_COMPLETE',
+        Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: workloadOrigin }] }] };
+      throw new Error(`Unexpected stack ${name}`);
+    },
+  };
+  assert.equal(await readApiOrigin(io), workloadOrigin);
+  assert.equal(calls.some(call => call[1] === 'get-template'), false);
 
   const runtimeOrigin = 'beta-anywear-api-new-0123456789.ap-east-1.elb.amazonaws.com';
   const runtimeIo = { async aws(args) {
@@ -209,12 +209,12 @@ test('an existing Runtime stack without a domain output hard-errors instead of f
     } };
     await assert.rejects(readApiOrigin(io), /Runtime stack exists but its ApiLoadBalancerDnsName output is missing or not a DNS name/);
     // No Base/Workload fallback is attempted when the Runtime read itself is bad.
-    assert.ok(!calls.some(call => call[1] === 'get-template'), JSON.stringify(outputs));
+    assert.ok(!calls.some(call => call.includes(baseName)), JSON.stringify(outputs));
     assert.ok(!calls.some(call => call.includes(workloadName)), JSON.stringify(outputs));
   }
 });
 
-test('the Base literal origin is preferred over the legacy Workload output after the MOVE', async () => {
+test('the live Base parameter is preferred over the legacy Workload output after the MOVE', async () => {
   const workloadOriginPreMove = 'beta-anywear-api-old-0123456789.ap-east-1.elb.amazonaws.com';
   const calls = [];
   const io = { async aws(args) {
@@ -222,43 +222,45 @@ test('the Base literal origin is preferred over the legacy Workload output after
     const name = args[args.indexOf('--stack-name') + 1];
     if (args[1] === 'describe-stacks') {
       if (name === runtimeStack) throw stackAbsenceError(name);
-      if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+      if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE',
+        Parameters: [{ ParameterKey: 'ApiOriginDomainName', ParameterValue: liveOrigin }] }] };
       if (name === workloadName) {
         return { Stacks: [{ StackName: workloadName, StackStatus: 'UPDATE_COMPLETE',
           Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: workloadOriginPreMove }] }] };
       }
       throw new Error(`Unexpected stack ${name}`);
     }
-    if (args[1] === 'get-template') {
-      return { TemplateBody: { Resources: { [distributionLogicalId]: { Type: 'AWS::CloudFront::Distribution',
-        Properties: { DistributionConfig: { Origins: [{ DomainName: liveOrigin }] } } } } } };
-    }
     throw new Error(`Unexpected AWS call ${args.join(' ')}`);
   } };
   assert.equal(await readApiOrigin(io), liveOrigin);
-  // The Workload read is not needed once Base carries the adopted literal.
+  // The Workload read is not needed once Base records the adopted origin.
   assert.ok(!calls.some(call => call.includes(workloadName)));
 });
 
-test('before the MOVE the legacy Workload output is the fallback when Base has no distribution', async () => {
+test('before the MOVE the legacy Workload output is the fallback when Base has no origin parameter', async () => {
   const workloadOriginPreMove = 'beta-anywear-api-old-0123456789.ap-east-1.elb.amazonaws.com';
   const io = { async aws(args) {
     const name = args[args.indexOf('--stack-name') + 1];
-    if (args[1] === 'describe-stacks') {
-      if (name === runtimeStack || name === workloadName) {
-        if (name === workloadName) {
-          return { Stacks: [{ StackName: workloadName, StackStatus: 'UPDATE_COMPLETE',
-            Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: workloadOriginPreMove }] }] };
-        }
-        throw stackAbsenceError(name);
-      }
-      return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+    if (args[1] !== 'describe-stacks') throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    if (name === runtimeStack) throw stackAbsenceError(name);
+    if (name === baseName) return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE',
+      Parameters: [{ ParameterKey: 'BootstrapVersion', ParameterValue: '7' }] }] };
+    if (name === workloadName) {
+      return { Stacks: [{ StackName: workloadName, StackStatus: 'UPDATE_COMPLETE',
+        Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: workloadOriginPreMove }] }] };
     }
-    if (args[1] === 'get-template') {
-      // Live Base before the MOVE has no adopted distribution.
-      return { TemplateBody: { Resources: {} } };
-    }
-    throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    throw new Error(`Unexpected stack ${name}`);
   } };
   assert.equal(await readApiOrigin(io), workloadOriginPreMove);
+});
+
+test('no Runtime output, no live Base parameter and no Workload output refuses by naming the live parameter', async () => {
+  const io = { async aws(args) {
+    const name = args[args.indexOf('--stack-name') + 1];
+    if (args[1] !== 'describe-stacks') throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    if (name === runtimeStack) throw stackAbsenceError(name);
+    return { Stacks: [{ StackName: baseName, StackStatus: 'UPDATE_COMPLETE' }] };
+  } };
+  await assert.rejects(readApiOrigin(io),
+    /requires the live API load-balancer DNS name from the Runtime stack, the live ApiOriginDomainName parameter on the Base stack, or the legacy Workload stack before the MOVE/);
 });

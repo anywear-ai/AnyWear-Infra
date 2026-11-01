@@ -55,7 +55,6 @@ function synthesize(): Array<{ name: string; stack: cdk.Stack; template: any }> 
   const platformApp = new cdk.App();
   const platform = new PlatformStack(platformApp, 'AnyWearPlatformStack-beta', {
     stage: 'beta', artifactInputs, identityPhase: 'roles-added',
-    apiOriginDomainName: 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com',
     env: { account: ACCOUNT, region: REGION } });
   return [
     { name: 'AnyWearFoundationStack', stack: foundation, template: Template.fromStack(foundation).toJSON() },

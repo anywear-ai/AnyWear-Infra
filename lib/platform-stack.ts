@@ -29,11 +29,13 @@ export const DEFAULT_QWEATHER_API_HOST = 'jt4d94d58q.re.qweatherapi.com';
 
 // Issue #166: the API CloudFront distribution moved from the Service-owned
 // Runtime stack into the persistent Base stack. Its logical ID is pinned to the
-// live source logical ID and its origin is a literal ALB DNS name, so the
-// CloudFormation stack-refactor MOVE adopts the same physical distribution (and
-// therefore keeps its `*.cloudfront.net` domain). The constant is also read by
-// `scripts/migrate-beta-split.mjs`; `test/infra.test.ts` asserts the synthesized
-// resource carries it and the migration script emits the same destination.
+// live source logical ID and its CloudFormation stack-refactor MOVE adopts the
+// same physical distribution (and therefore keeps its `*.cloudfront.net` domain).
+// Since #254 its origin is the `ApiOriginDomainName` stack parameter instead of a
+// synthesis literal, so a Runtime deploy can repoint the edge without a Base
+// content change. The constant is also read by `scripts/migrate-beta-split.mjs`;
+// `test/infra.test.ts` asserts the synthesized resource carries it and the
+// migration script emits the same destination.
 export const API_DISTRIBUTION_IDENTITY = Object.freeze(apiDistributionIdentity);
 
 export interface PlatformStackProps extends cdk.StackProps {
@@ -42,13 +44,6 @@ export interface PlatformStackProps extends cdk.StackProps {
   identityPhase?: IdentityPhase;
   ecrImageRetention?: boolean;
   qWeatherApiHost?: string;
-  /**
-   * The public API load-balancer DNS name the Beta API distribution points at.
-   * Required for `beta`; the deployment reads it from the Runtime stack's
-   * `ApiLoadBalancerDnsName` output (or the recorded live value during the
-   * one-time split migration).
-   */
-  apiOriginDomainName?: string;
 }
 
 export class PlatformStack extends cdk.Stack {
@@ -272,7 +267,7 @@ export class PlatformStack extends cdk.Stack {
       // The client distribution is part of Beta's persistent state: its
       // `*.cloudfront.net` domain must survive deleting the disposable stacks.
       this.clientDistribution.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
-      this.createApiDistribution(props.apiOriginDomainName);
+      this.createApiDistribution();
     }
 
     new ssm.StringParameter(this, 'WardrobeBucketNameParam', {
@@ -746,18 +741,27 @@ export class PlatformStack extends cdk.Stack {
     }
   }
 
-  // The Beta API distribution. Issue #166 moved this resource out of the
-  // Runtime stack with a one-time CloudFormation stack refactor.
-  // The config is the live recorded shape: the pinned logical ID, the literal
-  // origin id the live resource uses and a literal origin DNS name (the live ALB
-  // `ApiLoadBalancerDnsName` the deployment passes as context). A same-stack
-  // `Fn::GetAtt` origin is what made the resource unmovable, so none of the
-  // origin may be resolved through another resource here.
-  private createApiDistribution(apiOriginDomainName: string | undefined): void {
-    if (typeof apiOriginDomainName !== 'string' || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(apiOriginDomainName)) {
-      throw new Error('The Beta Base stack requires the explicit live API origin domain name (apiOriginDomainName)');
-    }
+  // The Beta API distribution. Issue #166 moved this resource out of the Runtime
+  // stack with a one-time CloudFormation stack refactor. The config is the live
+  // recorded shape: the pinned logical ID, the literal origin id the live resource
+  // uses and the `ApiOriginDomainName` stack parameter as the origin DNS name
+  // (issue #254). The parameter carries the live ALB `ApiLoadBalancerDnsName` the
+  // deployment supplies, so a Runtime deploy can repoint the edge by writing that
+  // one parameter while the template, the distribution id and its domain stay
+  // unchanged. A same-stack `Fn::GetAtt` origin is what made the resource
+  // unmovable, so none of the origin may be resolved through another resource
+  // here.
+  private createApiDistribution(): void {
     const identity = API_DISTRIBUTION_IDENTITY;
+    // Issue #254: no default. A Base deploy must state the live load-balancer DNS
+    // name, so the requirement moved from synthesis to deploy time; the same guard
+    // the context value carried is now the parameter's `allowedPattern`.
+    const apiOriginDomainName = new cdk.CfnParameter(this, 'ApiOriginDomainName', {
+      type: 'String',
+      description: 'The live API load-balancer DNS name the Beta API CloudFront distribution points at (the ApiLoadBalancerDnsName output of AnyWearRuntimeStack-beta).',
+      constraintDescription: 'must be a DNS name such as beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com',
+      allowedPattern: '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$',
+    });
     this.apiDistribution = new cloudfront.CfnDistribution(this, 'ApiDistribution', {
       distributionConfig: {
         comment: identity.comment,
@@ -774,7 +778,7 @@ export class PlatformStack extends cdk.Stack {
         },
         origins: [{
           id: identity.originId,
-          domainName: apiOriginDomainName,
+          domainName: apiOriginDomainName.valueAsString,
           customOriginConfig: {
             httpPort: 80,
             originProtocolPolicy: 'http-only',

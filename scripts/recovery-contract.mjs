@@ -97,12 +97,10 @@ export function recoveryFailureMessage(violations, { stage, stackName }) {
 // The matrix, the package test and the pre-credential deployment check must
 // synthesize the same way: run the existing app directly with the locked local
 // ts-node. CDK auto-synthesizes because CDK_OUTDIR is set; no AWS context lookup
-// or CDK CLI invocation happens here. The Beta Base stack needs a literal API
-// distribution origin; a stage simulation uses this fixed fixture value and the
-// re-recorded baseline carries it.
-export const TEST_API_ORIGIN_DOMAIN_NAME = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
-
-export function synthStage({ repository = repositoryRoot, directory, stage, apiOriginDomainName, inputs, deployScope = 'application' } = {}) {
+// or CDK CLI invocation happens here. The Beta Base stack's API origin is the
+// `ApiOriginDomainName` stack parameter (issue #254), so no stage simulation
+// supplies it at synthesis.
+export function synthStage({ repository = repositoryRoot, directory, stage, inputs, deployScope = 'application' } = {}) {
   assert.ok(directory, 'Synthesis output directory is required');
   assert.ok(['dev', 'beta', 'prod'].includes(stage), `Unknown stage: ${stage}`);
   assert.ok(['application', 'foundation', 'billing', 'egress', 'runtime'].includes(deployScope),
@@ -110,7 +108,6 @@ export function synthStage({ repository = repositoryRoot, directory, stage, apiO
   mkdirSync(directory, { recursive: true });
   const config = JSON.parse(readFileSync(path.join(repository, 'cdk.json'), 'utf8'));
   const context = { ...config.context, stage, deployScope };
-  if (stage === 'beta') context.apiOriginDomainName = apiOriginDomainName ?? TEST_API_ORIGIN_DOMAIN_NAME;
   if (inputs) {
     assert.ok(['legacy', 'roles-added', 'retired'].includes(inputs.identityPhase), 'Explicit identity phase required');
     assert.equal(typeof inputs.ecrImageRetention, 'boolean', 'Explicit image retention required');

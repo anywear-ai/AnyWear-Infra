@@ -15,9 +15,6 @@ test('actual Foundation-only app needs no artifacts and matches full application
     for (const scope of ['application', 'foundation']) {
       const output = path.join(directory, phase, scope);
       const context = { ...config.context, stage: 'beta', identityPhase: phase, deployScope: scope, legacyRoleSource,
-        // Issue #166: the Beta Base stack requires the literal API distribution
-        // origin; the stage simulation uses the reviewed fixture value.
-        apiOriginDomainName: 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com',
         ...(scope === 'application' ? { artifactDirectory: artifacts } : {}) };
       execFileSync(process.execPath, ['bin/infra.js'], { stdio: 'pipe', env: { ...process.env, CDK_CONTEXT_JSON: JSON.stringify(context), CDK_OUTDIR: output,
         CDK_DEFAULT_ACCOUNT: '650880818323', CDK_DEFAULT_REGION: 'ap-east-1', BILLING_REGION: 'us-east-1' }, timeout: 45_000 });
