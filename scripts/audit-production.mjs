@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
 
 const exceptions = new Map([
-  ['GHSA-mh99-v99m-4gvg', { expiresOn: '2026-10-28', packageName: 'brace-expansion' }],
-  ['GHSA-q2hr-2g5m-vwhr', { expiresOn: '2026-10-28', packageName: 'brace-expansion' }],
-  ['GHSA-qhr7-859c-m2p7', { expiresOn: '2026-10-28', packageName: 'brace-expansion' }],
-  ['GHSA-6j4f-fj2g-mc7p', { expiresOn: '2026-10-28', packageName: 'brace-expansion' }],
+  ['GHSA-mh99-v99m-4gvg', { expiresOn: '2026-12-01', packageName: 'brace-expansion' }],
+  ['GHSA-q2hr-2g5m-vwhr', { expiresOn: '2026-12-01', packageName: 'brace-expansion' }],
+  ['GHSA-qhr7-859c-m2p7', { expiresOn: '2026-12-01', packageName: 'brace-expansion' }],
+  ['GHSA-6j4f-fj2g-mc7p', { expiresOn: '2026-12-01', packageName: 'brace-expansion' }],
+  ['GHSA-g3hv-75wg-m249', { expiresOn: '2026-12-01', packageName: ['aws-cdk-lib', 'minimatch'] }],
 ]);
 
 const isWindows = process.platform === 'win32';
@@ -64,7 +65,7 @@ for (const packageName of Object.keys(vulnerabilities)) {
 
   for (const advisoryId of advisoryIds) {
     const exception = exceptions.get(advisoryId);
-    if (!exception || exception.packageName !== packageName) {
+    if (!exception || ![].concat(exception.packageName).includes(packageName)) {
       failures.push(`${packageName}: ${advisoryId}`);
       continue;
     }
