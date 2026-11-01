@@ -205,9 +205,10 @@ test('the runtime read set is scoped to the operation that performs the read', (
 });
 
 // Issue #254: `deploy-runtime` may issue exactly one Base-stack parameter update
-// through the deploy session after its Runtime stack is terminal. Every other
-// operation, session, stack, parameter and call shape stays refused.
-test('the deploy session allows exactly the Base-stack origin update for deploy-runtime', () => {
+// through the deploy session after its Runtime stack is terminal. The whole
+// argument vector is compared with the builder that constructs it, so every other
+// operation, session, stack, parameter, reordering or added flag stays refused.
+test('the deploy session allows only the exact Base-stack origin update vector for deploy-runtime', () => {
   const update = (value = 'beta-anywear-api-1554590841.ap-east-1.elb.amazonaws.com') =>
     ['cloudformation', 'update-stack', '--stack-name', 'AnyWearPlatformStack-beta',
       '--use-previous-template', '--parameters', 'ParameterKey=BootstrapVersion,UsePreviousValue=true',
@@ -240,6 +241,25 @@ test('the deploy session allows exactly the Base-stack origin update for deploy-
     assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), ...widening],
       'operation', 'deploy'), /forbidden/, widening[0]);
   }
+  // Issue #254 review: every optional AWS CLI flag is outside the exact vector, so
+  // appending any of it — with its value where the CLI takes one — is refused.
+  for (const widening of [['--tags', 'Key=Name,Value=review'],
+    ['--notification-arns', 'arn:aws:sns:ap-east-1:650880818323:topic'],
+    ['--stack-policy-body', 'file://policy.json'], ['--stack-policy-url', 'https://example/policy.json'],
+    ['--disable-rollback'], ['--rollback-configuration', 'RollbackTriggers=[],MonitoringTimeInMinutes=1'],
+    ['--timeout-in-minutes', '30']]) {
+    assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), ...widening],
+      'operation', 'deploy'), /forbidden/, widening[0]);
+  }
+  // The vector is order- and count-exact: a reorder or a duplicate is refused.
+  const reordered = [...update()];
+  [reordered[4], reordered[5]] = [reordered[5], reordered[4]];
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), reordered, 'operation', 'deploy'),
+    /forbidden/, 'reordered');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), '--capabilities', 'CAPABILITY_NAMED_IAM'],
+    'operation', 'deploy'), /forbidden/, 'duplicated capability pair');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), 'AnyWearPlatformStack-beta'],
+    'operation', 'deploy'), /forbidden/, 'duplicated stack name');
   assert.throws(() => assertAwsAllowed(env('deploy-runtime'), update('not a domain'),
     'operation', 'deploy'), /forbidden/, 'a non-DNS origin value');
   assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [

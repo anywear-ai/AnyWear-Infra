@@ -2,6 +2,7 @@ import { parseJson, canonicalJson } from './json-contract.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
 import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
+import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry; every mutation shares `mutate.yml`, including since #195 the
@@ -191,28 +192,25 @@ export function families(env, purpose) {
 }
 // Issue #254: `deploy-runtime` repairs the Beta edge with exactly one Base-stack
 // parameter write, so the deploy session may call `cloudformation update-stack`
-// on `AnyWearPlatformStack-beta` and nothing else. The call shape is pinned: the
-// previous template is reused (no `--template-body`/`--template-url`), no
-// invocation role is named, the only capability is the named-IAM one the CDK
-// change-set path already needs, and the only parameters are the retained CDK
-// bootstrap version and the new DNS-name origin.
-const BASE_ORIGIN_PARAMETER = /^ParameterKey=ApiOriginDomainName,ParameterValue=[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
-const BASE_ORIGIN_BOOTSTRAP = 'ParameterKey=BootstrapVersion,UsePreviousValue=true';
+// on `AnyWearPlatformStack-beta` and nothing else. The whole argument vector is
+// compared with the one builder that constructs it, `apiOriginUpdateArguments`:
+// an extra flag (`--tags`, `--notification-arns`, `--stack-policy-body`,
+// `--disable-rollback`, `--rollback-configuration`, `--timeout-in-minutes`, a
+// template body or URL, an invocation role), a duplicate, a reordering or a
+// different parameter set is refused instead of passing a flag scan. The builder
+// also refuses a non-DNS origin.
+const BASE_ORIGIN_TOKEN = 'ParameterKey=ApiOriginDomainName,ParameterValue=';
 function baseOriginUpdate(env, args) {
   if (env.INFRA_OPERATION !== 'deploy-runtime') return false;
-  const values = flag => args.reduce((found, value, index) => (value === flag ? [...found, args[index + 1]] : found), []);
-  if (values('--stack-name').join() !== 'AnyWearPlatformStack-beta') return false;
-  if (values('--capabilities').join() !== 'CAPABILITY_NAMED_IAM') return false;
-  if (!args.includes('--use-previous-template')) return false;
-  if (args.some(value => /^--(?:template-body|template-url|role-arn|cli-input-json|no-use-previous-template)/.test(value))) return false;
-  // `--parameters` is followed by one value per parameter, not by a repeated flag.
-  if (args.filter(value => value === '--parameters').length !== 1) return false;
-  const parameters = [];
-  for (let index = args.indexOf('--parameters') + 1; index < args.length && !args[index].startsWith('--'); index += 1) {
-    parameters.push(args[index]);
+  const originTokens = args.filter(value => typeof value === 'string' && value.startsWith(BASE_ORIGIN_TOKEN));
+  if (originTokens.length !== 1) return false;
+  let expected;
+  try {
+    expected = apiOriginUpdateArguments(originTokens[0].slice(BASE_ORIGIN_TOKEN.length));
+  } catch {
+    return false;
   }
-  return parameters.length === 2 && parameters.filter(value => value === BASE_ORIGIN_BOOTSTRAP).length === 1
-    && parameters.filter(value => BASE_ORIGIN_PARAMETER.test(value)).length === 1;
+  return args.length === expected.length && expected.every((token, index) => args[index] === token);
 }
 export function assertAwsAllowed(env, args, purpose = 'operation', session = 'runtime') {
   const boundary = operationBoundary(env);

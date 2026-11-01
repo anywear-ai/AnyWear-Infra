@@ -137,9 +137,17 @@ const baseStackFixture = ({ parameters } = {}) => ({
     { ParameterKey: 'ApiOriginDomainName', ParameterValue: API_ORIGIN_OLD }],
 });
 
+// CloudFormation answers a missing stack with this exact ValidationError, which
+// `describeStack` turns into `undefined`; the poll must treat that as a failure.
+function baseAbsenceError(stackName) {
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  return Object.assign(new Error(stderr), { stderr });
+}
+
 function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = undefined,
   executeError = undefined, postExecuteRuntime = undefined, updateError = undefined,
-  updateDelays = 0, updateStaleReads = 0, updateRollback = false } = {}) {
+  updateDelays = 0, updateStaleReads = 0, updateRollback = false,
+  pollReadError = undefined, pollAbsent = false } = {}) {
   const calls = [];
   // The changed-stack set the failed-run summary publishes. It starts as the
   // fake's own array and `runOperation` re-binds it to the array it owns.
@@ -151,9 +159,14 @@ function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = 
   let changeSetDeleted = false;
   // Issue #254's repair poll: after `update-stack` the fake can still answer with
   // the pre-update terminal state for a few reads (`updateStaleReads`), then with
-  // `UPDATE_IN_PROGRESS` reads (`updateDelays`), then with the updated stack.
+  // `UPDATE_IN_PROGRESS` reads (`updateDelays`), then with the updated stack. A
+  // post-update read can also fault once (`pollReadError`) or report absence
+  // (`pollAbsent`) to prove the repair names the edge instead of polling on.
   let staleReads = 0;
   let inProgressReads = 0;
+  let updateAccepted = false;
+  let pollReadFailures = 0;
+  let pollAbsences = 0;
   let preUpdateBase;
   const io = {
     calls, changedStacks, now: () => 0, sleep: async () => {},
@@ -172,6 +185,14 @@ function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = 
         const name = args[args.indexOf('--stack-name') + 1];
         if (name === BASE_STACK) {
           if (!base) throw new Error(`Stack ${BASE_STACK} does not exist`);
+          if (updateAccepted && pollReadError && pollReadFailures < 1) {
+            pollReadFailures += 1;
+            throw pollReadError;
+          }
+          if (updateAccepted && pollAbsent && pollAbsences < 1) {
+            pollAbsences += 1;
+            throw baseAbsenceError(BASE_STACK);
+          }
           if (staleReads > 0) { staleReads -= 1; return { Stacks: [structuredClone(preUpdateBase)] }; }
           if (inProgressReads > 0) {
             inProgressReads -= 1;
@@ -232,6 +253,7 @@ function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = 
           ? { ...entry, ParameterValue: value.slice('ParameterKey=ApiOriginDomainName,ParameterValue='.length) }
           : entry));
         base.LastUpdatedTime = '2026-11-01T12:00:00.000Z';
+        updateAccepted = true;
         staleReads = updateStaleReads;
         inProgressReads = updateDelays;
         if (updateRollback) base.StackStatus = 'UPDATE_ROLLBACK_COMPLETE';
@@ -968,20 +990,51 @@ test('a failed Base origin update ends the run red naming the edge and reads no 
   const cases = [
     ['CLI refusal', { updateError: Object.assign(
       new Error('An error occurred (AccessDenied) when calling the UpdateStack operation'),
-      { stderr: 'An error occurred (AccessDenied)' }) },
+      { stderr: 'An error occurred (AccessDenied)' }) }, false,
     /Beta edge origin was not written: cloudformation update-stack failed on AnyWearPlatformStack-beta \(ApiOriginDomainName\); \/health was not read/],
-    ['rollback', { updateRollback: true },
-      /Beta edge origin was not written: AnyWearPlatformStack-beta's ApiOriginDomainName update ended in UPDATE_ROLLBACK_COMPLETE; \/health was not read/],
+    // Deliberate divergence from the finding's wording: an accepted update that
+    // rolls back is still a landed Base-stack update (CloudFormation started it),
+    // so the change is recorded — exactly as the Runtime stack is recorded at
+    // execute-change-set acceptance before `waitForTerminalStack`.
+    ['rollback', { updateRollback: true }, true,
+      /Beta edge origin was not written: AnyWearPlatformStack-beta's ApiOriginDomainName update to beta-anywear-api-1554590841\.ap-east-1\.elb\.amazonaws\.com ended in UPDATE_ROLLBACK_COMPLETE; \/health was not read/],
   ];
-  for (const [label, options, pattern] of cases) {
+  for (const [label, options, recordsBaseChange, pattern] of cases) {
     const { io } = staleOriginSurface(options);
     let healthReads = 0;
     await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
       health: async () => { healthReads += 1; return 0; }, bake: BAKE }), pattern, label);
     assert.equal(healthReads, 0, `${label}: /health is not read`);
-    assert.equal(io.changedStacks.includes(BASE_STACK), false,
-      `${label}: a failed write records no Base change`);
+    assert.equal(io.changedStacks.includes(BASE_STACK), recordsBaseChange, recordsBaseChange
+      ? `${label}: the accepted write is recorded`
+      : `${label}: a refused call records no Base change`);
   }
+});
+
+// Issue #254 review: an accepted write whose poll cannot verify the stack is a
+// landed Base change, and the failure must name the edge instead of polling to
+// the deadline. A thrown read and a CloudFormation-absent read both take that path.
+test('an accepted Base origin write whose poll read fails records the change and names the edge', async () => {
+  const throttled = Object.assign(
+    new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  const { io } = staleOriginSurface({ pollReadError: throttled });
+  let healthReads = 0;
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }),
+  /The Beta edge origin was not verified: ApiOriginDomainName was set to beta-anywear-api-1554590841\.ap-east-1\.elb\.amazonaws\.com but reading AnyWearPlatformStack-beta failed \(An error occurred \(Throttling\)/);
+  assert.equal(healthReads, 0, '/health is not read');
+  assert.ok(io.changedStacks.includes(BASE_STACK), 'the accepted write is recorded');
+});
+
+test('a post-update read that reports the Base stack absent records the change and names the edge', { timeout: 10_000 }, async () => {
+  const { io } = staleOriginSurface({ pollAbsent: true });
+  let healthReads = 0;
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }),
+  /The Beta edge origin was not verified: ApiOriginDomainName was set to beta-anywear-api-1554590841\.ap-east-1\.elb\.amazonaws\.com but AnyWearPlatformStack-beta is absent after the origin write; \/health was not read/);
+  assert.equal(healthReads, 0, '/health is not read');
+  assert.ok(io.changedStacks.includes(BASE_STACK), 'the accepted write is recorded');
 });
 
 test('a Base stack that does not declare ApiOriginDomainName is refused by name before mutating', async () => {

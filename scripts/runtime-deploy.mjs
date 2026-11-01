@@ -470,9 +470,11 @@ export function apiOriginUpdateArguments(origin) {
  *
  * The poll cannot accept the pre-update terminal read: both the old and the new
  * state are `UPDATE_COMPLETE`, so it requires the `LastUpdatedTime` read before
- * the update to have moved. Any `ROLLBACK`/`FAILED` status, the deadline, or a
- * failed `update-stack` call ends the run before `/health` is read, naming the
- * edge.
+ * the update to have moved. Any `ROLLBACK`/`FAILED` status, an absent or
+ * unreadable post-update stack, the deadline, or a failed `update-stack` call
+ * ends the run before `/health` is read, naming the edge. The accepted write is
+ * recorded as a landed change before the poll, so a poll failure still leaves the
+ * Base stack in the failed-run summary.
  */
 export async function repairApiOrigin(io, runtime, { timeoutMs = 900_000, intervalMs = 15_000 } = {}) {
   const origin = (runtime?.Outputs ?? []).find((output) => output.OutputKey === 'ApiLoadBalancerDnsName')
@@ -496,22 +498,34 @@ export async function repairApiOrigin(io, runtime, { timeoutMs = 900_000, interv
   } catch (error) {
     throw new Error(`The Beta edge origin was not written: cloudformation update-stack failed on ${BASE_STACK} (${API_ORIGIN_PARAMETER}); /health was not read and the public endpoint still points at ${recorded || 'no recorded origin'}`, { cause: error });
   }
+  // The update call was accepted, so CloudFormation has started a Base-stack
+  // update: record the landed change before the poll, the way the Runtime change
+  // set is recorded at execute-change-set acceptance. A poll failure below then
+  // still leaves the failed-run summary naming the Base stack.
+  io.markChanged(BASE_STACK);
   const deadline = io.now() + timeoutMs;
   for (;;) {
-    const observed = await describeStack(io, BASE_STACK);
-    const status = observed?.StackStatus ?? 'unavailable';
+    let observed;
+    try {
+      observed = await describeStack(io, BASE_STACK);
+    } catch (error) {
+      throw new Error(`The Beta edge origin was not verified: ${API_ORIGIN_PARAMETER} was set to ${origin} but reading ${BASE_STACK} failed (${error?.message ?? 'unknown error'}); /health was not read`, { cause: error });
+    }
+    if (!observed) {
+      throw new Error(`The Beta edge origin was not verified: ${API_ORIGIN_PARAMETER} was set to ${origin} but ${BASE_STACK} is absent after the origin write; /health was not read`);
+    }
+    const status = observed.StackStatus ?? 'unavailable';
     if (/ROLLBACK|FAILED/i.test(status)) {
-      throw new Error(`The Beta edge origin was not written: ${BASE_STACK}'s ${API_ORIGIN_PARAMETER} update ended in ${status}; /health was not read`);
+      throw new Error(`The Beta edge origin was not written: ${BASE_STACK}'s ${API_ORIGIN_PARAMETER} update to ${origin} ended in ${status}; /health was not read`);
     }
     // Only the update this run issued is accepted: the pre-update read is
     // terminal with the same status, so its timestamp must have moved.
-    if (terminalStackStatuses.has(status) && observed?.LastUpdatedTime !== before) break;
+    if (terminalStackStatuses.has(status) && observed.LastUpdatedTime !== before) break;
     if (io.now() + intervalMs > deadline) {
-      throw new Error(`The Beta edge origin was not written: ${BASE_STACK} did not reach UPDATE_COMPLETE after setting ${API_ORIGIN_PARAMETER}; observed ${status}; /health was not read`);
+      throw new Error(`The Beta edge origin was not written: ${BASE_STACK} did not reach UPDATE_COMPLETE after setting ${API_ORIGIN_PARAMETER} to ${origin}; observed ${status}; /health was not read`);
     }
     await io.sleep(intervalMs);
   }
-  io.markChanged(BASE_STACK);
   process.stdout.write(`api_origin_repointed ${recorded} -> ${origin}\n`);
   return { changed: true, origin };
 }
