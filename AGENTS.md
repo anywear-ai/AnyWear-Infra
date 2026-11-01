@@ -98,8 +98,10 @@ and must not be relabeled as an Infra-produced deployment.
   (`DeletionPolicy`/`UpdateReplacePolicy: Retain`). The API CloudFront
   distribution moved from the Service stack into Base with a one-time reviewed
   CloudFormation stack-refactor MOVE; its logical ID is pinned in
-  `lib/api-distribution.json` and its origin is the live literal ALB DNS name
-  (`-c apiOriginDomainName=...`), never a same-stack `Fn::GetAtt`. The one-time
+  `lib/api-distribution.json` and its origin is the live API load-balancer DNS
+  name, passed as the `ApiOriginDomainName` stack parameter a Runtime deploy
+  writes, never a same-stack `Fn::GetAtt` — a same-stack reference is what made
+  the resource unmovable. The one-time
   migration (`scripts/migrate-beta-split.mjs` + its runbook) is never automatic,
   defaults to validation-only, and is a Deployment-stage action.
 - Issue #166 keeps the three bounded Beta entries in the
