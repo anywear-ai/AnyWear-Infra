@@ -172,9 +172,10 @@ identity before any credential) → `verify` (**the only job that reads the Serv
 release**: read-only App token only when the operation takes a Service release,
 `contents: read`, no environment and no OIDC; it reads the release and tag ref
 over the REST API, downloads the operation's consumed set — three stage-base
-files, or only `service-schema.json` for `deploy-runtime` — publishes those bytes
-as `service-release-bytes-<run_id>-<run_attempt>` and publishes the digests as its
-`release_assets` output) → `deploy` (**the only job** that holds an AWS
+files, or only `service-schema.json` for `deploy-runtime` and `migrate` —
+publishes those bytes as `service-release-bytes-<run_id>-<run_attempt>` and
+publishes the digests as its `release_assets` output) → `deploy` (**the only job**
+that holds an AWS
 credential: `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN` and
 `INFRA_RUNTIME_ROLE_ARN`, scheduled after `verify`; its first step is
 `prove-release-bytes.mjs`, which re-derives the dispatch, requires the digest
@@ -191,13 +192,14 @@ runbook](docs/runbooks/beta-infrastructure.md#evidence-and-operation-recovery)
 carries the follow-up decision procedure. No step uses `continue-on-error`, so a
 failed or partial operation can never read as complete.
 
-Every Beta entry requires exact reviewed main and protected `beta`; the three
+Every Beta entry requires exact reviewed main and protected `beta`; the four
 operations that take a Service release identity also require the reviewed
 Service release tag and commit. The release-identity read and the operation's
 consumed download happen before AWS credentials, and each travelled file is
-re-hashed once in the deploy job before its restricted STS session; `deploy-runtime`
-additionally strictly validates the travelled `service-schema.json` there, so the
-schema-boundary gate later compares an asset this pre-credential check already
+re-hashed once in the deploy job before its restricted STS session;
+`deploy-runtime` and `migrate` additionally strictly validate the travelled
+`service-schema.json` there, so neither the schema-boundary gate nor the
+migration's launch reads an asset this pre-credential check has not already
 proved. The sessions are
 operation-specific and the read-only session carries no ECS or PassRole
 permissions. Only mutation requires
