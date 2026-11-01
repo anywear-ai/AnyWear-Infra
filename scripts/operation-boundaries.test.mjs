@@ -4,6 +4,7 @@ import { workflowOperations, operationFamilies, operationBoundary, operationRole
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
   verifyActions } from './operation-boundaries.mjs';
 import { SIMULATE_ACTIONS } from './authorization-preflight.mjs';
+import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
 
 const infraSha = '5'.repeat(40);
 const env = (operation, overrides = {}) => {
@@ -201,6 +202,91 @@ test('the runtime read set is scoped to the operation that performs the read', (
   // The read-only state session keeps its own narrower set and never gains a bake read.
   const state = sessionPolicy('runtime', env('state'));
   assert.doesNotMatch(state, /cloudwatch|logs:FilterLogEvents/);
+});
+
+// Issue #254: `deploy-runtime` may issue exactly one Base-stack parameter update
+// through the deploy session after its Runtime stack is terminal. The whole
+// argument vector is compared with the builder that constructs it, so every other
+// operation, session, stack, parameter, reordering or added flag stays refused.
+test('the deploy session allows only the exact Base-stack origin update vector for deploy-runtime', () => {
+  const update = (value = 'beta-anywear-api-1554590841.ap-east-1.elb.amazonaws.com') =>
+    ['cloudformation', 'update-stack', '--stack-name', 'AnyWearPlatformStack-beta',
+      '--use-previous-template', '--parameters', 'ParameterKey=BootstrapVersion,UsePreviousValue=true',
+      `ParameterKey=ApiOriginDomainName,ParameterValue=${value}`, '--capabilities', 'CAPABILITY_NAMED_IAM'];
+  assert.doesNotThrow(() => assertAwsAllowed(env('deploy-runtime'), update(), 'operation', 'deploy'));
+  // The read-only runtime session never performs the write.
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), update()), /forbidden/);
+  // Every other operation is refused, including the other Base deployers.
+  for (const operation of ['deploy-platform', 'restore-release', 'deploy-egress', 'delete-egress',
+    'stop-runtime', 'deploy-foundation', 'deploy-billing', 'migrate', 'state']) {
+    assert.throws(() => assertAwsAllowed(env(operation), update(), 'operation', 'deploy'),
+      /forbidden for the deploy session/, operation);
+  }
+  const replace = (from, to) => update().map((arg) => (arg === from ? to : arg));
+  // Another stack, a widened parameter set, and every other call shape fail closed.
+  for (const stack of ['AnyWearRuntimeStack-beta', 'AnyWearEgressStack-beta']) {
+    assert.throws(() => assertAwsAllowed(env('deploy-runtime'), replace('AnyWearPlatformStack-beta', stack),
+      'operation', 'deploy'), /forbidden/, stack);
+  }
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'),
+    update().filter((arg) => arg !== '--use-previous-template'), 'operation', 'deploy'),
+  /forbidden/, 'the previous template is mandatory');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'),
+    replace('CAPABILITY_NAMED_IAM', 'CAPABILITY_IAM'), 'operation', 'deploy'), /forbidden/, 'wrong capability');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'),
+    [...update(), '--capabilities', 'CAPABILITY_IAM'], 'operation', 'deploy'), /forbidden/, 'extra capability');
+  for (const widening of [['--template-body', 'file://template.json'], ['--template-url', 'https://example/t.json'],
+    ['--role-arn', 'arn:aws:iam::650880818323:role/cdk-hnb659fds-cfn-exec-role-650880818323-ap-east-1'],
+    ['--cli-input-json', 'file://update.json']]) {
+    assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), ...widening],
+      'operation', 'deploy'), /forbidden/, widening[0]);
+  }
+  // Issue #254 review: every optional AWS CLI flag is outside the exact vector, so
+  // appending any of it — with its value where the CLI takes one — is refused.
+  for (const widening of [['--tags', 'Key=Name,Value=review'],
+    ['--notification-arns', 'arn:aws:sns:ap-east-1:650880818323:topic'],
+    ['--stack-policy-body', 'file://policy.json'], ['--stack-policy-url', 'https://example/policy.json'],
+    ['--disable-rollback'], ['--rollback-configuration', 'RollbackTriggers=[],MonitoringTimeInMinutes=1'],
+    ['--timeout-in-minutes', '30']]) {
+    assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), ...widening],
+      'operation', 'deploy'), /forbidden/, widening[0]);
+  }
+  // The vector is order- and count-exact: a reorder or a duplicate is refused.
+  const reordered = [...update()];
+  [reordered[4], reordered[5]] = [reordered[5], reordered[4]];
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), reordered, 'operation', 'deploy'),
+    /forbidden/, 'reordered');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), '--capabilities', 'CAPABILITY_NAMED_IAM'],
+    'operation', 'deploy'), /forbidden/, 'duplicated capability pair');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [...update(), 'AnyWearPlatformStack-beta'],
+    'operation', 'deploy'), /forbidden/, 'duplicated stack name');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), update('not a domain'),
+    'operation', 'deploy'), /forbidden/, 'a non-DNS origin value');
+  assert.throws(() => assertAwsAllowed(env('deploy-runtime'), [
+    'cloudformation', 'update-stack', '--stack-name', 'AnyWearPlatformStack-beta', '--use-previous-template',
+    '--parameters', 'ParameterKey=ApiOriginDomainName,ParameterValue=beta-anywear-api-1554590841.ap-east-1.elb.amazonaws.com',
+    '--capabilities', 'CAPABILITY_NAMED_IAM'], 'operation', 'deploy'), /forbidden/, 'the bootstrap parameter is required');
+  // The production argument builder is exactly the shape the allow-list admits.
+  const args = apiOriginUpdateArguments('beta-anywear-api-1554590841.ap-east-1.elb.amazonaws.com');
+  assert.deepEqual(args, update());
+  assert.doesNotThrow(() => assertAwsAllowed(env('deploy-runtime'), args, 'operation', 'deploy'));
+});
+
+// Issue #254: the generated deploy-session policy carries the one write action on
+// the Base stack for `deploy-runtime` only, and stays inside the 2048-character
+// inline limit.
+test('the deploy-session policy carries UpdateStack only for deploy-runtime', () => {
+  const actionsOf = (policy) => JSON.parse(policy).Statement.flatMap((statement) => [statement.Action].flat());
+  const runtime = sessionPolicy('deploy', env('deploy-runtime'));
+  assert.ok(actionsOf(runtime).includes('cloudformation:UpdateStack'));
+  assert.match(runtime, /stack\/AnyWearPlatformStack-beta\/\*/);
+  assert.ok(runtime.length < 2048, `deploy-runtime deploy session policy is ${runtime.length} bytes`);
+  for (const operation of ['deploy-platform', 'restore-release', 'stop-runtime', 'deploy-egress']) {
+    const policy = sessionPolicy('deploy', env(operation));
+    assert.equal(actionsOf(policy).includes('cloudformation:UpdateStack'), false, operation);
+    assert.doesNotMatch(policy, /AnyWearPlatformStack-beta/, operation);
+    assert.ok(policy.length < 2048, `${operation} deploy session policy is ${policy.length} bytes`);
+  }
 });
 
 test('the protected executor gate binds repository, workflow, source, account and region', () => {

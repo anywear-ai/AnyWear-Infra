@@ -40,6 +40,53 @@ test('the Egress deploy passes the retained allocation as CDK context', () => {
   assert.equal(cdkDeploymentArguments(egressStack, '/tmp/artifacts', env).some(arg => arg.startsWith('natEipAllocationId=')), false);
 });
 
+// Issue #254: both Base-deploying operations resolve the origin through
+// `readApiOrigin` (the live `ApiOriginDomainName` parameter while the Runtime
+// stack is absent) and pass it as the `ApiOriginDomainName` stack parameter, never
+// as the old `-c apiOriginDomainName` synthesis context.
+test('a Base deploy passes the live Base parameter as the ApiOriginDomainName parameter', async () => {
+  const liveOrigin = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
+  for (const operation of ['deploy-platform', 'restore-release']) {
+    const changedStacks = [];
+    const calls = [];
+    const run = async (command, args) => {
+      if (command === 'npx') { calls.push({ command, args }); return { stdout: '', stderr: '' }; }
+      if (command !== 'aws') throw new Error(`Unexpected command ${command}`);
+      if (args[0] === 'sts' && args[1] === 'get-caller-identity') {
+        return { stdout: JSON.stringify({ Account: '111111111111' }) };
+      }
+      if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') {
+        const name = args[args.indexOf('--stack-name') + 1];
+        if (name === runtimeStack) throw stackAbsence(name);
+        if (name === 'AnyWearPlatformStack-beta') {
+          return { stdout: JSON.stringify({ Stacks: [{ StackName: 'AnyWearPlatformStack-beta',
+            StackStatus: 'UPDATE_COMPLETE',
+            Parameters: [{ ParameterKey: 'BootstrapVersion', ParameterValue: '7' },
+              { ParameterKey: 'ApiOriginDomainName', ParameterValue: liveOrigin }] }] }) };
+        }
+      }
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    };
+    const io = await createRuntimeIo({ ...env, INFRA_OPERATION: operation, TESTER_EMAILS: '[]',
+      SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit }, {
+      purpose: 'operation', run, changedStacks,
+      assume: async () => ({ AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' }),
+      directory: '/verified',
+    });
+    // The fake's foreign account refuses the post-deploy retention read, so the
+    // assertion is on the deploy arguments the run already issued.
+    await assert.rejects(io.deploy('AnyWearPlatformStack-beta'), /Unexpected Beta log retention account/);
+    const deploy = calls.find(call => call.command === 'npx');
+    assert.ok(deploy, operation);
+    const parameter = deploy.args.indexOf('--parameters');
+    assert.ok(parameter > 0, `${operation}: the origin travels as a stack parameter`);
+    assert.equal(deploy.args[parameter + 1], `ApiOriginDomainName=${liveOrigin}`, operation);
+    assert.equal(deploy.args.some(arg => arg.startsWith('apiOriginDomainName=')), false,
+      `${operation}: the deleted synthesis context is not passed`);
+    assert.deepEqual(changedStacks, ['AnyWearPlatformStack-beta'], operation);
+  }
+});
+
 // The retained EIP is the allocation the next start must reuse, so delete-egress
 // still refuses when the stack cannot report it before the destroy.
 test('delete-egress proves the retained EIP allocation before destroying the stack', async () => {

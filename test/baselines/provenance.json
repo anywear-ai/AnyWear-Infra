@@ -32,7 +32,7 @@
     "dev-active/AnyWearPlatformStack-dev.template.json": "19f31ad8bb6903f50855481d043454a473019629edcd8c7f04d4a3dea254a176",
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
-    "beta-active/AnyWearPlatformStack-beta.template.json": "61d87d763282b848fc9cd5e84349a77b0b568a502e9681a55cc28e75f195f51d",
+    "beta-active/AnyWearPlatformStack-beta.template.json": "83556dccf5aa0c22428f88aaae74f41a910a165a29b61d864e9c27f82754cd84",
     "prod-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
     "prod-active/AnyWearPlatformStack-prod.template.json": "5e6e4f327158f15eeff48bcd71b4db757685b4281095a13b18e6f69f97b4d409"
   },
@@ -62,6 +62,14 @@
       "recorded_at": "2026-10-23",
       "issue": 213,
       "reason": "The tester allowlist is the only admission parameter: the mode parameter and its grants are gone, the PreSignUp trigger keeps the one read, PostConfirmation has no admission grant, PreSignUpLambda has a 10 s timeout, and the app client no longer reads custom:e2e_bootstrap. All three Platform baselines were re-recorded from this source synthesis for exactly those changes; Foundation, Billing and Runtime are unchanged."
+    },
+    "api_origin_parameter": {
+      "recorded_at": "2026-11-01",
+      "issue": 254,
+      "files": [
+        "beta-active/AnyWearPlatformStack-beta.template.json"
+      ],
+      "reason": "The Beta Base stack declares the `ApiOriginDomainName` stack parameter and the pinned API distribution's origin `DomainName` reads `{\"Ref\": \"ApiOriginDomainName\"}` instead of a synthesis literal, so `deploy-runtime` can repoint the edge at the load balancer its own run created. The template was re-recorded from this source synthesis and differs from the previous bytes only by that parameter block and the origin `DomainName`; the recorded pre-#201 stage-contract descriptions stay unchanged and remain the comparator's declared allowance."
     }
   },
   "scope": "Source synth comparison only. Foundation and Billing templates remain the Service source move anchor; the Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes. The #166 three-stack split re-recorded only the Base (Beta Platform) baseline; Foundation and Billing still match the Service move anchor.",

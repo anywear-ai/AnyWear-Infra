@@ -4,7 +4,7 @@
   "source": "AwsSolutions-IAM5 findings from the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta, plus the count of wildcard-bearing policy statements in each stack's template. Regenerate with the same inputs test/authorization-lint.test.ts synthesizes. A wildcard-bearing statement is one whose Action or Resource carries a `*` in any AWS::IAM::Policy, AWS::IAM::ManagedPolicy or role-inline policy document, and `id` is the cdk-nag rule argument verbatim with `arn:<AWS::Partition>` normalized to `arn:aws`. Every entry carries a reviewed reason.",
   "templates": [
     { "stack": "AnyWearFoundationStack", "wildcard_statement_count": 12 },
-    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 87 }
+    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 88 }
   ],
   "findings": [
     {

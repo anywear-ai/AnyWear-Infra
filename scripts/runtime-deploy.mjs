@@ -33,6 +33,11 @@ export const RUNTIME_DEPLOY_PARAMETER_KEYS = Object.freeze([
 const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
 const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
+// Issue #254: the Base stack's API-origin parameter and the DNS-name guard the
+// parameter itself carries. A value outside this pattern never reaches a write.
+const API_ORIGIN_PARAMETER = 'ApiOriginDomainName';
+const API_ORIGIN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+const BOOTSTRAP_PARAMETER = 'ParameterKey=BootstrapVersion,UsePreviousValue=true';
 // Issue #195: the declared template normalisation (`normaliseDeployedTemplate` in
 // `lib/contracts.mjs`) drops the `CDKMetadata` resource and its condition before
 // the deployed template is hashed, because they are CDK diagnostic metadata, not
@@ -446,6 +451,85 @@ export function runtimePinnedRevision(stack) {
   return { serviceCommit, imageDigest };
 }
 
+/** The exact `cloudformation update-stack` the deploy session may issue (#254). */
+export function apiOriginUpdateArguments(origin) {
+  if (typeof origin !== 'string' || !API_ORIGIN.test(origin)) throw new Error('Invalid API origin DNS name');
+  return ['cloudformation', 'update-stack', '--stack-name', BASE_STACK, '--use-previous-template',
+    '--parameters', BOOTSTRAP_PARAMETER, `ParameterKey=${API_ORIGIN_PARAMETER},ParameterValue=${origin}`,
+    '--capabilities', 'CAPABILITY_NAMED_IAM'];
+}
+
+/**
+ * The Beta edge repair (#254). The Runtime stack publishes the load balancer the
+ * Base distribution must point at as `ApiLoadBalancerDnsName`. When the Base
+ * stack's recorded `ApiOriginDomainName` already equals it, this writes nothing
+ * and logs nothing, so a release deploy on a running Beta keeps the Base stack's
+ * `LastUpdatedTime`. Otherwise it issues exactly one `update-stack` that reuses
+ * the deployed template and changes only that parameter, then polls
+ * `describe-stacks` until `UPDATE_COMPLETE`.
+ *
+ * The poll cannot accept the pre-update terminal read: both the old and the new
+ * state are `UPDATE_COMPLETE`, so it requires the `LastUpdatedTime` read before
+ * the update to have moved. Any `ROLLBACK`/`FAILED` status, an absent or
+ * unreadable post-update stack, the deadline, or a failed `update-stack` call
+ * ends the run before `/health` is read, naming the edge. The accepted write is
+ * recorded as a landed change before the poll, so a poll failure still leaves the
+ * Base stack in the failed-run summary.
+ */
+export async function repairApiOrigin(io, runtime, { timeoutMs = 900_000, intervalMs = 15_000 } = {}) {
+  const origin = (runtime?.Outputs ?? []).find((output) => output.OutputKey === 'ApiLoadBalancerDnsName')
+    ?.OutputValue;
+  if (typeof origin !== 'string' || !API_ORIGIN.test(origin)) {
+    throw new Error(`deploy-runtime requires the ${RUNTIME_STACK} ApiLoadBalancerDnsName output before it can repair the Beta edge origin`);
+  }
+  const base = await describeStack(io, BASE_STACK);
+  if (!base) {
+    throw new Error(`deploy-runtime cannot repair the Beta edge origin: ${BASE_STACK} is absent`);
+  }
+  const parameter = (base.Parameters ?? []).find((entry) => entry?.ParameterKey === API_ORIGIN_PARAMETER);
+  if (!parameter) {
+    throw new Error(`${BASE_STACK} does not declare the ${API_ORIGIN_PARAMETER} parameter, so the Beta edge origin cannot be written; one deploy-platform installs it`);
+  }
+  const recorded = parameter.ParameterValue;
+  if (recorded === origin) return { changed: false, origin };
+  const before = base.LastUpdatedTime;
+  try {
+    await io.awsAs('deploy', apiOriginUpdateArguments(origin));
+  } catch (error) {
+    throw new Error(`The Beta edge origin was not written: cloudformation update-stack failed on ${BASE_STACK} (${API_ORIGIN_PARAMETER}); /health was not read and the public endpoint still points at ${recorded || 'no recorded origin'}`, { cause: error });
+  }
+  // The update call was accepted, so CloudFormation has started a Base-stack
+  // update: record the landed change before the poll, the way the Runtime change
+  // set is recorded at execute-change-set acceptance. A poll failure below then
+  // still leaves the failed-run summary naming the Base stack.
+  io.markChanged(BASE_STACK);
+  const deadline = io.now() + timeoutMs;
+  for (;;) {
+    let observed;
+    try {
+      observed = await describeStack(io, BASE_STACK);
+    } catch (error) {
+      throw new Error(`The Beta edge origin was not verified: ${API_ORIGIN_PARAMETER} was set to ${origin} but reading ${BASE_STACK} failed (${error?.message ?? 'unknown error'}); /health was not read`, { cause: error });
+    }
+    if (!observed) {
+      throw new Error(`The Beta edge origin was not verified: ${API_ORIGIN_PARAMETER} was set to ${origin} but ${BASE_STACK} is absent after the origin write; /health was not read`);
+    }
+    const status = observed.StackStatus ?? 'unavailable';
+    if (/ROLLBACK|FAILED/i.test(status)) {
+      throw new Error(`The Beta edge origin was not written: ${BASE_STACK}'s ${API_ORIGIN_PARAMETER} update to ${origin} ended in ${status}; /health was not read`);
+    }
+    // Only the update this run issued is accepted: the pre-update read is
+    // terminal with the same status, so its timestamp must have moved.
+    if (terminalStackStatuses.has(status) && observed.LastUpdatedTime !== before) break;
+    if (io.now() + intervalMs > deadline) {
+      throw new Error(`The Beta edge origin was not written: ${BASE_STACK} did not reach UPDATE_COMPLETE after setting ${API_ORIGIN_PARAMETER} to ${origin}; observed ${status}; /health was not read`);
+    }
+    await io.sleep(intervalMs);
+  }
+  process.stdout.write(`api_origin_repointed ${recorded} -> ${origin}\n`);
+  return { changed: true, origin };
+}
+
 /** `deploy-runtime`: one converged-or-additive mutation, judged and baked in place. */
 export async function deployRuntime({ io, env, release,
   synthesize = synthesizeRuntimeTemplate, health = readRuntimeHealth, bake = runBakeGate,
@@ -571,6 +655,11 @@ export async function deployRuntime({ io, env, release,
   // task definition carrying the deployed image digest. The result is logged, not
   // recorded (#207).
   await observeEcsIdentities(io, release, cluster);
+  // Issue #254: the Runtime stack is terminal and its identities are proven, so
+  // the edge repair runs here — before the `/health` read and the bake use the
+  // public endpoint. A matching parameter writes nothing; a stale one writes the
+  // Base stack's single parameter and is recorded as a landed change.
+  await repairApiOrigin(io, stack);
   const apiBaseUrl = new Map(inputs.map((row) => [row.parameter, row])).has('/anywear/beta/api_base_url')
     ? (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/api_base_url'])).Parameter?.Value : undefined;
   if (typeof apiBaseUrl !== 'string' || !/^https:\/\//.test(apiBaseUrl)) throw new Error('The stage contract api_base_url is unavailable');

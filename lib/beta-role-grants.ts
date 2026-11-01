@@ -227,6 +227,16 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
     resources: [arn('cloudformation', 'stack', 'AnyWearRuntimeStack-beta/*'),
       arn('cloudformation', 'changeSet', '*')],
   }));
+  // Issue #254: `deploy-runtime` repairs the Beta edge after its Runtime stack is
+  // terminal by writing one Base-stack parameter, so the deploy role may update
+  // that one stack. The resource is the Base stack's ARN form the read grants
+  // above already use; the operation's call allow-list pins the
+  // previous-template shape, so the template itself cannot change, and no
+  // CloudFront or PassRole grant is added.
+  deploy.addToPrincipalPolicy(new iam.PolicyStatement({
+    actions: ['cloudformation:UpdateStack'],
+    resources: [arn('cloudformation', 'stack', 'AnyWearPlatformStack-beta/*')],
+  }));
   // Issue #195: the 300-second six-signal bake runs inside `deploy-runtime` under
   // the read-only runtime session, and its verdict is the step log and the job
   // conclusion (#207). Two read-only statements on the existing read role: the

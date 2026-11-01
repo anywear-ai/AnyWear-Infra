@@ -33,18 +33,26 @@ test('deploy-runtime and stop-runtime own the Runtime slice; Egress stays operat
   assert.deepEqual(changedStackNames('stop-runtime'), ['AnyWearRuntimeStack-beta']);
 });
 
-test('cdk arguments load Service artifacts and the API origin only for the Base stack', () => {
+test('cdk arguments load Service artifacts and pass the API origin parameter only for the Base stack', () => {
   const platform = cdkDeploymentArguments('AnyWearPlatformStack-beta', '/verified', env, { apiOriginDomainName: origin });
   assert.ok(platform.includes('deployScope=application'));
   assert.ok(platform.includes('artifactDirectory=/verified'));
-  assert.ok(platform.includes(`apiOriginDomainName=${origin}`));
+  // #254: the origin is a CloudFormation stack parameter, so it travels as the
+  // CDK CLI's `--parameters KEY=VALUE` value and never as the old
+  // `-c apiOriginDomainName=<name>` context the synthesis read.
+  const parameter = platform.indexOf('--parameters');
+  assert.ok(parameter > 0);
+  assert.equal(platform[parameter + 1], `ApiOriginDomainName=${origin}`);
+  assert.equal(platform.filter((arg) => arg === '--parameters').length, 1);
+  assert.equal(platform.some((arg) => arg.startsWith('apiOriginDomainName=')), false);
   assert.throws(() => cdkDeploymentArguments('AnyWearPlatformStack-beta', '/verified', env), /requires the API origin domain name/);
   for (const [stack, scope] of [['AnyWearFoundationStack', 'foundation'], ['AnyWearBillingStack-beta', 'billing'],
     ['AnyWearEgressStack-beta', 'egress']]) {
     const args = cdkDeploymentArguments(stack, '/verified', env);
     assert.ok(args.includes(`deployScope=${scope}`), stack);
     assert.ok(!args.some(arg => arg.startsWith('artifactDirectory=')), `${stack} must not load Service artifacts`);
-    assert.ok(!args.some(arg => arg.startsWith('apiOriginDomainName=')), `${stack} must not take the API origin`);
+    assert.ok(!args.includes('--parameters'), `${stack} must not take the API origin parameter`);
+    assert.ok(!args.some(arg => arg.startsWith('ApiOriginDomainName=')), `${stack} must not take the API origin`);
   }
   assert.ok(platform.includes(`identityPhase=${env.INFRA_IDENTITY_PHASE}`));
   assert.ok(platform.includes(`ecrImageRetention=${env.INFRA_RETENTION_PROTECTION}`));

@@ -15,6 +15,7 @@ import {
   assertReleaseStableChangeSet,
   assertRuntimePhase,
   assertSynthesizedRuntimeIdentity,
+  apiOriginUpdateArguments,
   classifyChangeSet,
   deployRuntime,
   readRuntimeHealth,
@@ -105,7 +106,7 @@ function changeRow(action, { logicalId, resourceType, replacement = 'False' }) {
 }
 
 
-function liveStack({ identityUnchanged = true, terminal = true } = {}) {
+function liveStack({ identityUnchanged = true, terminal = true, origin = API_ORIGIN_OLD } = {}) {
   return {
     StackName: RUNTIME_STACK, StackStatus: terminal ? 'UPDATE_COMPLETE' : 'UPDATE_IN_PROGRESS',
     LastUpdatedTime: '2026-10-22T12:15:43.000Z',
@@ -117,11 +118,36 @@ function liveStack({ identityUnchanged = true, terminal = true } = {}) {
       { ParameterKey: 'VlmConfigArn', ParameterValue: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/vlm_config-AbCdEf' },
       { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: 'pl-0123456789abcdef' },
     ],
+    // Issue #254: the load balancer the Base distribution's origin must follow.
+    Outputs: [{ OutputKey: 'ApiLoadBalancerDnsName', OutputValue: origin }],
   };
 }
 
-function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 'UPDATE_COMPLETE' },
-  runtime = liveStack(), changeSet = undefined, executeError = undefined, postExecuteRuntime = undefined } = {}) {
+// Issue #254: the Beta edge repair. The Base stack records the origin as its
+// `ApiOriginDomainName` parameter, and the Runtime stack publishes the load
+// balancer the same run created as `ApiLoadBalancerDnsName`. The default fixture
+// is self-consistent (equal values), so every pre-existing success test keeps
+// proving "equal writes nothing".
+const API_ORIGIN_OLD = 'beta-anywear-api-2018499908.ap-east-1.elb.amazonaws.com';
+const API_ORIGIN_NEW = 'beta-anywear-api-1554590841.ap-east-1.elb.amazonaws.com';
+const BASE_STACK = 'AnyWearPlatformStack-beta';
+const baseStackFixture = ({ parameters } = {}) => ({
+  StackName: BASE_STACK, StackStatus: 'UPDATE_COMPLETE', LastUpdatedTime: '2026-10-28T02:47:06.000Z',
+  Parameters: parameters ?? [{ ParameterKey: 'BootstrapVersion', ParameterValue: '7' },
+    { ParameterKey: 'ApiOriginDomainName', ParameterValue: API_ORIGIN_OLD }],
+});
+
+// CloudFormation answers a missing stack with this exact ValidationError, which
+// `describeStack` turns into `undefined`; the poll must treat that as a failure.
+function baseAbsenceError(stackName) {
+  const stderr = `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`;
+  return Object.assign(new Error(stderr), { stderr });
+}
+
+function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = undefined,
+  executeError = undefined, postExecuteRuntime = undefined, updateError = undefined,
+  updateDelays = 0, updateStaleReads = 0, updateRollback = false,
+  pollReadError = undefined, pollAbsent = false } = {}) {
   const calls = [];
   // The changed-stack set the failed-run summary publishes. It starts as the
   // fake's own array and `runOperation` re-binds it to the array it owns.
@@ -131,6 +157,17 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
   // the set, so a post-delete describe is a test failure: the operation must not
   // depend on re-reading a deleted set.
   let changeSetDeleted = false;
+  // Issue #254's repair poll: after `update-stack` the fake can still answer with
+  // the pre-update terminal state for a few reads (`updateStaleReads`), then with
+  // `UPDATE_IN_PROGRESS` reads (`updateDelays`), then with the updated stack. A
+  // post-update read can also fault once (`pollReadError`) or report absence
+  // (`pollAbsent`) to prove the repair names the edge instead of polling on.
+  let staleReads = 0;
+  let inProgressReads = 0;
+  let updateAccepted = false;
+  let pollReadFailures = 0;
+  let pollAbsences = 0;
+  let preUpdateBase;
   const io = {
     calls, changedStacks, now: () => 0, sleep: async () => {},
     // The one changed-stack mechanism: the fake proves the operation records a
@@ -146,9 +183,22 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
       }
       if (key === 'cloudformation/describe-stacks') {
         const name = args[args.indexOf('--stack-name') + 1];
-        if (name === 'AnyWearPlatformStack-beta') {
-          if (base) return { Stacks: [base] };
-          const error = new Error('Stack AnyWearPlatformStack-beta does not exist'); throw error;
+        if (name === BASE_STACK) {
+          if (!base) throw new Error(`Stack ${BASE_STACK} does not exist`);
+          if (updateAccepted && pollReadError && pollReadFailures < 1) {
+            pollReadFailures += 1;
+            throw pollReadError;
+          }
+          if (updateAccepted && pollAbsent && pollAbsences < 1) {
+            pollAbsences += 1;
+            throw baseAbsenceError(BASE_STACK);
+          }
+          if (staleReads > 0) { staleReads -= 1; return { Stacks: [structuredClone(preUpdateBase)] }; }
+          if (inProgressReads > 0) {
+            inProgressReads -= 1;
+            return { Stacks: [{ ...structuredClone(base), StackStatus: 'UPDATE_IN_PROGRESS' }] };
+          }
+          return { Stacks: [structuredClone(base)] };
         }
         if (name === RUNTIME_STACK) {
           if (runtimeObserved) return { Stacks: [runtimeObserved] };
@@ -193,6 +243,20 @@ function fakeIo({ base = { StackName: 'AnyWearPlatformStack-beta', StackStatus: 
       if (args[1] === 'execute-change-set') {
         if (executeError) throw executeError;
         runtimeObserved = postExecuteRuntime ?? liveStack();
+      }
+      if (args[1] === 'update-stack') {
+        if (updateError) throw updateError;
+        const value = args.find((arg) => typeof arg === 'string'
+          && arg.startsWith('ParameterKey=ApiOriginDomainName,ParameterValue='));
+        preUpdateBase = structuredClone(base);
+        base.Parameters = base.Parameters.map((entry) => (entry.ParameterKey === 'ApiOriginDomainName'
+          ? { ...entry, ParameterValue: value.slice('ParameterKey=ApiOriginDomainName,ParameterValue='.length) }
+          : entry));
+        base.LastUpdatedTime = '2026-11-01T12:00:00.000Z';
+        updateAccepted = true;
+        staleReads = updateStaleReads;
+        inProgressReads = updateDelays;
+        if (updateRollback) base.StackStatus = 'UPDATE_ROLLBACK_COMPLETE';
       }
       return {};
     },
@@ -828,4 +892,180 @@ test('the executed change set is recorded as changed before the stack read-back 
   await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
     /ended in ROLLBACK_IN_PROGRESS/);
   assert.deepEqual(io.changedStacks, [RUNTIME_STACK]);
+});
+
+// Issue #254 acceptance: the edge repair runs after the Runtime stack is terminal
+// and its ECS identities are proven, and before the run's `/health` read. A stale
+// recorded origin is one pinned previous-template write; an equal origin writes
+// nothing and logs nothing; a failed write ends the run red naming the edge and
+// reads no `/health`; a Base template without the parameter is refused by name
+// before any Base mutation.
+async function captureStdout(run) {
+  const chunks = [];
+  const original = process.stdout.write;
+  process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+  try { return { value: await run(), stdout: chunks.join('') }; }
+  finally { process.stdout.write = original; }
+}
+
+const baseStackReads = (calls) => calls.filter((call) => call.key === 'cloudformation/describe-stacks'
+  && call.args?.[call.args.indexOf('--stack-name') + 1] === BASE_STACK).length;
+
+test('the pinned Base origin update reuses the previous template and only the one parameter', () => {
+  assert.deepEqual(apiOriginUpdateArguments(API_ORIGIN_NEW), ['cloudformation', 'update-stack',
+    '--stack-name', BASE_STACK, '--use-previous-template',
+    '--parameters', 'ParameterKey=BootstrapVersion,UsePreviousValue=true',
+    `ParameterKey=ApiOriginDomainName,ParameterValue=${API_ORIGIN_NEW}`,
+    '--capabilities', 'CAPABILITY_NAMED_IAM']);
+  for (const value of ['', 'not a domain', ` ${API_ORIGIN_NEW}`, undefined]) {
+    assert.throws(() => apiOriginUpdateArguments(value), /Invalid API origin DNS name/, String(value));
+  }
+});
+
+// A Runtime change that leaves the Base origin stale: the start's own run repairs
+// it. The `postExecuteRuntime` fixture carries the new load balancer, so the write
+// is the one a cold start needs.
+function staleOriginSurface(options = {}) {
+  return fakeIo({ runtime: liveStack({ identityUnchanged: false, origin: API_ORIGIN_NEW }),
+    postExecuteRuntime: liveStack({ origin: API_ORIGIN_NEW }), changeSet: DELTA_CHANGE_SET, ...options });
+}
+
+test('a stale Base origin parameter is written exactly once before /health', async () => {
+  const { io, calls } = staleOriginSurface({ updateDelays: 1 });
+  let healthReads = 0;
+  let updateLandedBeforeHealth;
+  const captured = await captureStdout(() => deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED,
+    health: async () => {
+      healthReads += 1;
+      updateLandedBeforeHealth = calls.some((call) => call.args?.[1] === 'update-stack');
+      return 0;
+    },
+    bake: BAKE }));
+  const updates = calls.filter((call) => call.args?.[1] === 'update-stack');
+  assert.equal(updates.length, 1, 'exactly one Base-stack call');
+  assert.equal(updates[0].session, 'deploy', 'the write runs through the deploy session');
+  assert.deepEqual(updates[0].args, ['cloudformation', 'update-stack', '--stack-name', BASE_STACK,
+    '--use-previous-template', '--parameters', 'ParameterKey=BootstrapVersion,UsePreviousValue=true',
+    `ParameterKey=ApiOriginDomainName,ParameterValue=${API_ORIGIN_NEW}`,
+    '--capabilities', 'CAPABILITY_NAMED_IAM']);
+  assert.equal(healthReads, 1);
+  assert.equal(updateLandedBeforeHealth, true, 'the origin write lands before /health is read');
+  assert.match(captured.stdout, new RegExp(`api_origin_repointed ${API_ORIGIN_OLD} -> ${API_ORIGIN_NEW}`));
+  // The Runtime change set and the Base parameter write are both landed changes.
+  assert.deepEqual(io.changedStacks, [RUNTIME_STACK, BASE_STACK]);
+  assert.ok(baseStackReads(calls) >= 3, 'the repair re-reads and polls the Base stack');
+});
+
+test('the repair poll does not accept the pre-update terminal read', async () => {
+  // The first post-update read still describes the old `UPDATE_COMPLETE` state
+  // with the pre-update `LastUpdatedTime`; only the read whose timestamp moved
+  // ends the poll.
+  const { io, calls } = staleOriginSurface({ updateStaleReads: 1, updateDelays: 1 });
+  let healthReads = 0;
+  const captured = await captureStdout(() => deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }));
+  assert.equal(calls.filter((call) => call.args?.[1] === 'update-stack').length, 1);
+  assert.equal(healthReads, 1);
+  assert.match(captured.stdout, new RegExp(`api_origin_repointed ${API_ORIGIN_OLD} -> ${API_ORIGIN_NEW}`));
+  // start read + repair read + stale read + in-progress read + updated read.
+  assert.ok(baseStackReads(calls) >= 5, `the poll kept reading past the stale read (${baseStackReads(calls)})`);
+});
+
+test('an equal Base origin parameter writes nothing and proceeds to /health', async () => {
+  const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+    StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+  let healthReads = 0;
+  const captured = await captureStdout(() => deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }));
+  assert.equal(calls.some((call) => call.args?.[1] === 'update-stack'), false, 'no AWS write');
+  assert.equal(healthReads, 1);
+  assert.equal(captured.stdout.includes('api_origin_repointed'), false, 'no origin line');
+  assert.deepEqual(io.changedStacks, [], 'the Base stack LastUpdatedTime is untouched');
+});
+
+test('a failed Base origin update ends the run red naming the edge and reads no /health', async () => {
+  const cases = [
+    ['CLI refusal', { updateError: Object.assign(
+      new Error('An error occurred (AccessDenied) when calling the UpdateStack operation'),
+      { stderr: 'An error occurred (AccessDenied)' }) }, false,
+    /Beta edge origin was not written: cloudformation update-stack failed on AnyWearPlatformStack-beta \(ApiOriginDomainName\); \/health was not read/],
+    // Deliberate divergence from the finding's wording: an accepted update that
+    // rolls back is still a landed Base-stack update (CloudFormation started it),
+    // so the change is recorded — exactly as the Runtime stack is recorded at
+    // execute-change-set acceptance before `waitForTerminalStack`.
+    ['rollback', { updateRollback: true }, true,
+      /Beta edge origin was not written: AnyWearPlatformStack-beta's ApiOriginDomainName update to beta-anywear-api-1554590841\.ap-east-1\.elb\.amazonaws\.com ended in UPDATE_ROLLBACK_COMPLETE; \/health was not read/],
+  ];
+  for (const [label, options, recordsBaseChange, pattern] of cases) {
+    const { io } = staleOriginSurface(options);
+    let healthReads = 0;
+    await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+      health: async () => { healthReads += 1; return 0; }, bake: BAKE }), pattern, label);
+    assert.equal(healthReads, 0, `${label}: /health is not read`);
+    assert.equal(io.changedStacks.includes(BASE_STACK), recordsBaseChange, recordsBaseChange
+      ? `${label}: the accepted write is recorded`
+      : `${label}: a refused call records no Base change`);
+  }
+});
+
+// Issue #254 review: an accepted write whose poll cannot verify the stack is a
+// landed Base change, and the failure must name the edge instead of polling to
+// the deadline. A thrown read and a CloudFormation-absent read both take that path.
+test('an accepted Base origin write whose poll read fails records the change and names the edge', async () => {
+  const throttled = Object.assign(
+    new Error('An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded'),
+    { stderr: 'aws: [ERROR]: An error occurred (Throttling) when calling the DescribeStacks operation: Rate exceeded' });
+  const { io } = staleOriginSurface({ pollReadError: throttled });
+  let healthReads = 0;
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }),
+  /The Beta edge origin was not verified: ApiOriginDomainName was set to beta-anywear-api-1554590841\.ap-east-1\.elb\.amazonaws\.com but reading AnyWearPlatformStack-beta failed \(An error occurred \(Throttling\)/);
+  assert.equal(healthReads, 0, '/health is not read');
+  assert.ok(io.changedStacks.includes(BASE_STACK), 'the accepted write is recorded');
+});
+
+test('a post-update read that reports the Base stack absent records the change and names the edge', { timeout: 10_000 }, async () => {
+  const { io } = staleOriginSurface({ pollAbsent: true });
+  let healthReads = 0;
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }),
+  /The Beta edge origin was not verified: ApiOriginDomainName was set to beta-anywear-api-1554590841\.ap-east-1\.elb\.amazonaws\.com but AnyWearPlatformStack-beta is absent after the origin write; \/health was not read/);
+  assert.equal(healthReads, 0, '/health is not read');
+  assert.ok(io.changedStacks.includes(BASE_STACK), 'the accepted write is recorded');
+});
+
+test('a Base stack that does not declare ApiOriginDomainName is refused by name before mutating', async () => {
+  const { io, calls } = fakeIo({
+    base: baseStackFixture({ parameters: [{ ParameterKey: 'BootstrapVersion', ParameterValue: '7' }] }),
+    changeSet: { Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." },
+  });
+  let healthReads = 0;
+  await assert.rejects(deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; }, bake: BAKE }),
+  /AnyWearPlatformStack-beta does not declare the ApiOriginDomainName parameter, so the Beta edge origin cannot be written; one deploy-platform installs it/);
+  assert.equal(calls.some((call) => call.args?.[1] === 'update-stack'), false);
+  assert.equal(healthReads, 0);
+  assert.deepEqual(io.changedStacks, []);
+});
+
+// Issue #254: the parameter write is a landed change, so a run that fails after
+// it must name the Base stack in its one "changed but unqualified" summary line.
+test('a /health refusal after the Base origin write names both changed stacks', async () => {
+  await withSummary(async (summary) => {
+    const { io } = staleOriginSurface({ updateDelays: 1 });
+    const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+    await assert.rejects(runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
+      createIo,
+      deployRuntimeDependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED,
+        health: async () => { throw new Error('The deployed /health did not identify the release'); },
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, bake: BAKE },
+    }), /did not identify the release/);
+    const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta, AnyWearPlatformStack-beta and did not complete/);
+  });
 });

@@ -9,6 +9,10 @@ const stackChanges = Object.freeze({
   'delete-egress': ['AnyWearEgressStack-beta'],
   // Issue #195: the release slice is deployed and stopped by Infra with the same
   // restricted mutations entry. Both operations change only the Runtime stack.
+  // Since #254 a `deploy-runtime` run may also write the Base stack's one
+  // `ApiOriginDomainName` parameter once its Runtime stack is terminal: that is
+  // an in-place parameter write of the same start, not a second changed stack, so
+  // the changed set and the one-asset release contract stay as they are.
   'deploy-runtime': ['AnyWearRuntimeStack-beta'],
   'stop-runtime': ['AnyWearRuntimeStack-beta'],
   // Release recovery restores the persistent Base stack only.

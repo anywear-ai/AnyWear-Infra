@@ -2,6 +2,7 @@ import { parseJson, canonicalJson } from './json-contract.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
 import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
+import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry; every mutation shares `mutate.yml`, including since #195 the
@@ -189,21 +190,44 @@ export function families(env, purpose) {
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');
   return boundary.readOnly ? [] : [...operationRoles[env.INFRA_OPERATION]];
 }
+// Issue #254: `deploy-runtime` repairs the Beta edge with exactly one Base-stack
+// parameter write, so the deploy session may call `cloudformation update-stack`
+// on `AnyWearPlatformStack-beta` and nothing else. The whole argument vector is
+// compared with the one builder that constructs it, `apiOriginUpdateArguments`:
+// an extra flag (`--tags`, `--notification-arns`, `--stack-policy-body`,
+// `--disable-rollback`, `--rollback-configuration`, `--timeout-in-minutes`, a
+// template body or URL, an invocation role), a duplicate, a reordering or a
+// different parameter set is refused instead of passing a flag scan. The builder
+// also refuses a non-DNS origin.
+const BASE_ORIGIN_TOKEN = 'ParameterKey=ApiOriginDomainName,ParameterValue=';
+function baseOriginUpdate(env, args) {
+  if (env.INFRA_OPERATION !== 'deploy-runtime') return false;
+  const originTokens = args.filter(value => typeof value === 'string' && value.startsWith(BASE_ORIGIN_TOKEN));
+  if (originTokens.length !== 1) return false;
+  let expected;
+  try {
+    expected = apiOriginUpdateArguments(originTokens[0].slice(BASE_ORIGIN_TOKEN.length));
+  } catch {
+    return false;
+  }
+  return args.length === expected.length && expected.every((token, index) => args[index] === token);
+}
 export function assertAwsAllowed(env, args, purpose = 'operation', session = 'runtime') {
   const boundary = operationBoundary(env);
   const key = `${args[0]}/${args[1]}`;
   const argument = flag => args[args.indexOf(flag) + 1];
   if (args.includes('--with-decryption')) throw new Error('Runtime parameter decryption is forbidden');
-  // The deploy session is a change-set driver only: it describes, executes or
-  // deletes this run's Runtime change set and nothing else. CDK creates the
-  // change set through the bootstrap deploy role, so no create action is needed
-  // or granted here.
+  // The deploy session is a change-set driver plus, since #254, one pinned
+  // Base-stack parameter update. CDK creates the change set through the bootstrap
+  // deploy role, so no create action is needed or granted here.
   if (session === 'deploy') {
     if (purpose === 'operation' && args[0] === 'cloudformation'
       && ['describe-change-set', 'execute-change-set', 'delete-change-set'].includes(args[1])
       && ['deploy-runtime', 'stop-runtime'].includes(env.INFRA_OPERATION)
       && argument('--stack-name') === 'AnyWearRuntimeStack-beta'
       && /^anywear-runtime-[0-9]+$/.test(argument('--change-set-name') ?? '')) return;
+    if (purpose === 'operation' && args[0] === 'cloudformation' && args[1] === 'update-stack'
+      && baseOriginUpdate(env, args)) return;
     throw new Error(`AWS action ${key} is forbidden for the deploy session`);
   }
   if (reads[key] && operationReads(env).includes(key) && (!boundary.readOnly || stateReads.includes(key))) return;
@@ -268,6 +292,11 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
       statements.push(statement(['cloudformation:DescribeChangeSet', 'cloudformation:ExecuteChangeSet',
         'cloudformation:DeleteChangeSet'],
       [arn('cloudformation', 'stack/AnyWearRuntimeStack-beta/*'), arn('cloudformation', 'changeSet/*')]));
+      // Issue #254: the same session writes exactly one Base-stack parameter after
+      // the Runtime stack is terminal, so the edge points at the load balancer the
+      // run created. Scoped to the Base stack; the call allow-list refuses a
+      // template body or URL, so the template itself cannot change.
+      statements.push(statement('cloudformation:UpdateStack', arn('cloudformation', 'stack/AnyWearPlatformStack-beta/*')));
     }
   } else if (kind === 'runtime') {
     const allowedFamilies = families(env, purpose);

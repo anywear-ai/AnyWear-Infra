@@ -30,13 +30,12 @@ import cdkConfig from '../cdk.json';
 
 const root = path.resolve(__dirname, '..');
 
-// Issue #166 removed the stopped topology: one Base template per stage. Beta
-// needs the literal API distribution origin the live distribution uses.
-const TEST_API_ORIGIN_DOMAIN_NAME = 'beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com';
+// Issue #166 removed the stopped topology: one Base template per stage. Issue
+// #254 moved the Beta API distribution origin from a synthesis argument to the
+// `ApiOriginDomainName` stack parameter, so a Beta synthesis needs no origin input.
 function synthesizePlatform(stage: string, identityPhase?: IdentityPhase): Record<string, any> {
   const app = new cdk.App();
-  const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, artifactInputs, identityPhase,
-    ...(stage === 'beta' ? { apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME } : {}) });
+  const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, { stage, artifactInputs, identityPhase });
   return Template.fromStack(stack).toJSON();
 }
 
@@ -134,7 +133,7 @@ describe('Platform safety controls', () => {
     const app = new cdk.App({ context: cdkConfig.context });
     const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
       artifactInputs,
-      stage, apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
+      stage, env: { account: '650880818323', region: 'ap-east-1' },
     });
     const template = Template.fromStack(stack).toJSON();
     // Frozen from main 2e03278 before moving the three statements, with deployment CDK flags.
@@ -185,7 +184,7 @@ describe('Platform safety controls', () => {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', env: { account: '650880818323', region: 'ap-east-1' },
       });
       const policies = Object.values(Template.fromStack(stack).toJSON().Resources)
         .filter((resource: any) => resource.Type === 'AWS::IAM::Policy') as any[];
@@ -207,7 +206,7 @@ describe('Platform safety controls', () => {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', env: { account: '650880818323', region: 'ap-east-1' },
       });
       const policies = Object.values(Template.fromStack(stack).toJSON().Resources)
         .filter((resource: any) => resource.Type === 'AWS::IAM::Policy'
@@ -309,7 +308,7 @@ describe('Platform safety controls', () => {
       const app = new cdk.App();
       const stack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
         artifactInputs,
-        stage: 'beta', apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME, env: { account: '650880818323', region: 'ap-east-1' },
+        stage: 'beta', env: { account: '650880818323', region: 'ap-east-1' },
       });
       const statements = pipelinePolicies(Template.fromStack(stack).toJSON(), 'beta')
         .flatMap((resource: any) => resource.Properties.PolicyDocument.Statement);
@@ -545,10 +544,21 @@ describe('Platform safety controls', () => {
     expect(distributions.map(([id]) => id)).toContain(API_DISTRIBUTION_IDENTITY.logicalId);
     expect(distributions.map(([id]) => id)).toContainEqual(expect.stringMatching(/^AnyWearClientDistribution[A-F0-9]{8}$/));
     const [, apiDistribution] = distributions.find(([id]) => id === API_DISTRIBUTION_IDENTITY.logicalId)! as [string, any];
+    // Issue #254: the origin is the `ApiOriginDomainName` stack parameter, so the
+    // template carries no load-balancer literal and a Runtime deploy can repoint
+    // the edge by writing that one parameter. The parameter keeps the DNS-name
+    // guard the deleted synthesis context used and has no default, so a Base
+    // deploy must supply the value.
     expect(apiDistribution.Properties.DistributionConfig.Origins[0]).toMatchObject({
       Id: API_DISTRIBUTION_IDENTITY.originId,
-      DomainName: TEST_API_ORIGIN_DOMAIN_NAME,
+      DomainName: { Ref: 'ApiOriginDomainName' },
     });
+    expect(template.Parameters.ApiOriginDomainName).toMatchObject({
+      Type: 'String',
+      AllowedPattern: '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$',
+    });
+    expect(template.Parameters.ApiOriginDomainName.Default).toBeUndefined();
+    expect(template.Parameters.ApiOriginDomainName.Description).toMatch(/API load-balancer DNS name/);
     expect(apiDistribution.Properties.DistributionConfig.DefaultCacheBehavior.TargetOriginId)
       .toBe(API_DISTRIBUTION_IDENTITY.originId);
     expect(apiDistribution.DeletionPolicy).toBe('Retain');
@@ -864,7 +874,7 @@ describe('Platform safety controls', () => {
     for (const stage of ['beta', 'prod'] as const) {
       const app = new cdk.App();
       const stack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
-        artifactInputs, stage, apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
+        artifactInputs, stage,
         env: { account: '650880818323', region: 'ap-east-1' },
       });
       const template = Template.fromStack(stack).toJSON();
@@ -1218,7 +1228,6 @@ describe('Explicit infrastructure identity cutover', () => {
     const app = new cdk.App({ context: cdkConfig.context });
     const template = Template.fromStack(new PlatformStack(app, 'AnyWearPlatformStack-beta', {
       stage: 'beta', env, identityPhase: 'roles-added', artifactInputs,
-      apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
     })).toJSON();
     const resolvePolicyArn = (value: any): any => {
       if (Array.isArray(value)) return value.map(resolvePolicyArn);
@@ -1411,7 +1420,6 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     const platformStack = new PlatformStack(app, 'AnyWearPlatformStack-beta', {
       stage: 'beta', env, identityPhase: 'roles-added', artifactInputs,
-      apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
     });
     const foundation = Template.fromStack(foundationStack).toJSON();
     const platform = Template.fromStack(platformStack).toJSON();
@@ -1433,7 +1441,6 @@ describe('Explicit infrastructure identity cutover', () => {
       const app = new cdk.App();
       const protectedStack = new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
         stage, artifactInputs, ecrImageRetention: true,
-        ...(stage === 'beta' ? { apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME } : {}),
       });
       const template = Template.fromStack(protectedStack).toJSON();
       const repository = (Object.values(template.Resources) as any[]).find((resource) => resource.Type === 'AWS::ECR::Repository');
@@ -1599,7 +1606,6 @@ describe('Issue #166 runtime-role CloudFormation read surface', () => {
     const baseApp = new cdk.App();
     const base = Template.fromStack(new PlatformStack(baseApp, 'AnyWearPlatformStack-beta', {
       stage: 'beta', env, identityPhase: 'retired', artifactInputs,
-      apiOriginDomainName: TEST_API_ORIGIN_DOMAIN_NAME,
     })).toJSON();
     return { foundation, base };
   }

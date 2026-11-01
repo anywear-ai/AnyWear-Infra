@@ -65,18 +65,10 @@ const stage = app.node.tryGetContext('stage') || app.node.tryGetContext('env') |
 const qWeatherApiHost = app.node.tryGetContext('qweatherApiHost')
   || process.env.QWEATHER_API_HOST
   || DEFAULT_QWEATHER_API_HOST;
-// The Base API CloudFront distribution owns a literal origin (the CloudFront
-// stack-refactor MOVE requires it), so a Beta synthesis must state the live ALB
-// DNS name. The deployment reads `ApiLoadBalancerDnsName` from the Infra-owned
-// Runtime stack (or the recorded live value during the one-time split migration)
-// and passes it as this context value. Other stages have no such distribution.
-const apiOriginDomainNameContext = app.node.tryGetContext('apiOriginDomainName');
-if (apiOriginDomainNameContext !== undefined && typeof apiOriginDomainNameContext !== 'string') {
-  throw new Error('apiOriginDomainName must be a DNS name');
-}
-if (stage === 'beta' && !apiOriginDomainNameContext) {
-  throw new Error('The Beta Base stack requires -c apiOriginDomainName=<live API load-balancer DNS name>');
-}
+// The Base API CloudFront distribution's origin is the `ApiOriginDomainName`
+// stack parameter (issue #254), not a synthesis input: its requirement moved from
+// synthesis to deploy time, because the origin changes when the Runtime stack's
+// load balancer is recreated. Only the Beta stage has such a distribution.
 // Infra owns every stack of the account from this one application: the
 // account-wide Foundation/Billing stacks, the stage base and, since #195, the
 // release slice. This `application` branch synthesizes only the Base stack, so a
@@ -90,7 +82,6 @@ new PlatformStack(app, `AnyWearPlatformStack-${stage}`, {
   identityPhase,
   ecrImageRetention,
   qWeatherApiHost,
-  apiOriginDomainName: apiOriginDomainNameContext,
   env,
 });
 

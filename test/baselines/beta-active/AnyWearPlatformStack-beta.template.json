@@ -1438,7 +1438,9 @@
          "TLSv1.2"
         ]
        },
-       "DomainName": "beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com",
+       "DomainName": {
+        "Ref": "ApiOriginDomainName"
+       },
        "Id": "AnyWearWorkloadStackbetaComputeRuntimeApiDistributionOrigin11E892748",
        "OriginCustomHeaders": [
         {
@@ -3556,6 +3558,12 @@
   }
  },
  "Parameters": {
+  "ApiOriginDomainName": {
+   "Type": "String",
+   "AllowedPattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$",
+   "ConstraintDescription": "must be a DNS name such as beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com",
+   "Description": "The live API load-balancer DNS name the Beta API CloudFront distribution points at (the ApiLoadBalancerDnsName output of AnyWearRuntimeStack-beta)."
+  },
   "BootstrapVersion": {
    "Type": "AWS::SSM::Parameter::Value<String>",
    "Default": "/cdk-bootstrap/hnb659fds/version",
