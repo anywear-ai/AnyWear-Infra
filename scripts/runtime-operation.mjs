@@ -5,14 +5,13 @@ import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { parseJson, canonicalJson, matches, DIGEST, SHA } from './json-contract.mjs';
-import { workloadRevision } from './workload-revision.mjs';
 import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platform-log-retention.mjs';
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
-import { assertTerminalRuntime, assertRuntimeAbsent, assertRuntimeReady, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
+import { assertTerminalRuntime, assertRuntimeAbsent, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './operation-boundaries.mjs';
 import { runAuthorizationPreflight } from './authorization-preflight.mjs';
 import { observeBetaState } from './observe-beta-state.mjs';
@@ -332,10 +331,24 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       try { result = await run('bash', ['.github/scripts/run-one-shot-task.sh', 'beta', role, revision.digest, revision.commit, argument, ...(payload === undefined ? [] : [payload])],
         { cwd: root, env: { ...awsEnv, BASH_ENV: path.join(root, '.github/scripts/operation-hook.sh'), INFRA_REPOSITORY_DIRECTORY: root }, timeout: 4_200_000, maxBuffer: 10 * 1024 * 1024 });
       } catch (error) {
+        // The script prints `Task definition:` and `Task ARN:` before it waits and
+        // exits non-zero after the task fails, so its captured output is the only
+        // record of the task this run left behind. Write it to the step log before
+        // the refusal, the way `oneShotProbe` preserves a failed read.
+        const stdout = String(error.stdout ?? '');
+        const stderr = String(error.stderr ?? '');
+        if (stdout) process.stdout.write(stdout);
+        if (stderr) process.stderr.write(stderr);
         throw new Error('One-shot execution failed; preserve task resources and inspect redacted run evidence');
       }
-      const tasks = [...new Set([...result.stdout.matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
-      const definitions = [...new Set([...result.stdout.matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
+      // Preserve the launch's own output first: the identity, exit-code and digest
+      // checks below can still throw, and a failed launch must name its task.
+      const stdout = String(result.stdout ?? '');
+      const stderr = String(result.stderr ?? '');
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      const tasks = [...new Set([...stdout.matchAll(/^Task ARN: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
+      const definitions = [...new Set([...stdout.matchAll(/^Task definition: (arn:aws:ecs:[^\s]+)$/gm)].map(match => match[1]))];
       if (tasks.length !== 1 || definitions.length !== 1) throw new Error('Unique one-shot identity missing');
       const task = (await io.aws(['ecs', 'describe-tasks', '--cluster', 'beta-anywear', '--tasks', tasks[0]])).tasks?.[0];
       const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', definitions[0]])).taskDefinition;
@@ -345,7 +358,6 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
         || actualContainer.imageDigest !== revision.digest) throw new Error('Actual one-shot image/result differs from the deployed revision');
       if (role === 'lifecycle' && canonicalJson(container.command) !== canonicalJson(['node', 'dist/ops/beta-lifecycle.js', argument,
         ...(payload === undefined ? [] : [payload])])) throw new Error('Actual lifecycle command differs from the requested action');
-      process.stdout.write(result.stdout); process.stderr.write(result.stderr);
       if (role === 'lifecycle' && argument === 'status') {
         const status = await readLifecycleStatus(io, task, definition);
         return status;
@@ -486,14 +498,38 @@ export async function runOperation(env = process.env, {
   if (operation === 'restore-release') await runRestoreRelease({ io, infraSha: env.GITHUB_SHA, env });
   else if (Object.hasOwn(testerOperationActions, operation)) await runTesterAllowlist(testerOperationActions[operation], env.TESTER_EMAILS, io);
   else if (operation === 'migrate') {
-    // A forward migration runs against the deployed slice only. #213 removed the
-    // admission-mode fence: the allowlist constrains registration, so neither
-    // `migrate` nor `restore-release` nor `state` reads admission state. The
-    // migration runs on the revision the release slice reports, never on a locally
-    // selected image: Infra does not choose a Service release.
+    // #243: the migration runs the release the operator names, whether or not it
+    // is deployed. There is no Runtime stack to read an image from — the stack
+    // cannot be created before the migration it needs — so the sealed release
+    // identity resolved above is the only source of the image. The stack reads
+    // below are refusals, not image selection: they stop a stopped or racing
+    // environment by name before the task is registered, instead of letting the
+    // container fail at the image pull minutes later.
+    if (!serviceRelease) throw new Error('migrate requires the explicit Service release tag');
+    const platform = await stackRead(io, baseStack);
+    if (!terminalStackStatuses.has(platform?.StackStatus)) {
+      throw new Error(`migrate requires a terminal ${baseStack}; observed ${platform?.StackStatus ?? 'unavailable'}`);
+    }
+    // Beta's Egress stack is on by default. An absent read is the stopped
+    // environment: the migration neither creates nor deletes it, and names Beta's
+    // start sequence as the remedy.
+    const egress = await stackRead(io, egressStack);
+    if (egress?.StackName !== egressStack) {
+      throw new Error(`migrate requires ${egressStack}; Beta is stopped, run its start sequence`);
+    }
+    if (!terminalStackStatuses.has(egress.StackStatus)) {
+      throw new Error(`migrate requires a terminal ${egressStack}; observed ${egress.StackStatus ?? 'unavailable'}`);
+    }
+    // The migration does not need the Runtime stack, so an absent one proceeds; a
+    // present one mid-update is refused rather than raced, because a schema
+    // changing under the run is not a schema it can migrate.
     const runtime = await stackRead(io, runtimeStack);
-    assertRuntimeReady(runtime, 'migrate');
-    await io.oneShot('migrate', workloadRevision(runtime));
+    if (runtimeExists(runtime)) assertTerminalRuntime(runtime, 'migrate');
+    // The step log states the identity the run proves: tag, Service commit and the
+    // digest the release tag resolved to in this run.
+    process.stdout.write(`migrate runs Service release ${serviceRelease.releaseTag}@${serviceRelease.serviceCommit} `
+      + `from image ${serviceRelease.imageDigest}\n`);
+    await io.oneShot('migrate', { digest: serviceRelease.imageDigest, commit: serviceRelease.serviceCommit });
   } else if (operation === 'deploy-runtime') {
     // Issue #195: one operation deploys a Service release, resolves the image
     // digest, judges the change set and bakes the six signals in this same

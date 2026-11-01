@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   RELEASE_ASSET_NAMES,
+  RELEASE_IDENTITY_OPERATIONS,
   RUNTIME_RELEASE_ASSETS,
   STAGE_BASE_ASSETS,
   SERVICE_REPOSITORY,
@@ -22,14 +23,19 @@ import { parseJson, sha256 } from './json-contract.mjs';
 // downloads what the dispatched operation consumes — the three stage-base names
 // for `deploy-platform`/`restore-release`, only `service-schema.json` for
 // `deploy-runtime` — and the deploy job hashes those travelled files exactly once
-// before it requests a credential.
+// before it requests a credential. #243 gives `migrate` the same identity and the
+// same consumed set, so a migration runs the reviewed release instead of reading
+// an image out of a deployed stack.
 const root = path.resolve(import.meta.dirname, '..');
 const serviceCommit = '1'.repeat(40);
 const releaseTag = `service-artifacts-${serviceCommit}`;
-const releaseOperations = ['deploy-platform', 'deploy-runtime', 'restore-release'];
+const releaseOperations = ['deploy-platform', 'deploy-runtime', 'restore-release', 'migrate'];
 const selectedDirectory = path.join(root, '.service-artifacts', 'selected');
-const otherOperations = ['deploy-foundation', 'deploy-billing', 'migrate', 'admission-status', 'add-testers',
+const otherOperations = ['deploy-foundation', 'deploy-billing', 'admission-status', 'add-testers',
   'set-testers', 'observe', 'state', 'verify', 'deploy-workload'];
+// The one refusal text, derived from the frozen list rather than retyped, so a
+// future release-taking operation cannot leave this assertion stale.
+const releaseIdentityMessage = `Only ${[...RELEASE_IDENTITY_OPERATIONS].join(', ')} take a Service release identity`;
 
 const releaseEnv = (operation) => ({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag,
   SERVICE_COMMIT: serviceCommit });
@@ -100,7 +106,9 @@ async function releaseMock(fixture, { mutateRelease = release => release, mutate
   return { calls, run, digests, release };
 }
 
-test('restore-release and deploy-platform take the reviewed Service release identity', () => {
+// #243: the four release-taking operations, `migrate` included, take the same
+// explicit identity, and a missing half fails closed before any credential.
+test('every release operation takes the reviewed Service release identity', () => {
   for (const operation of releaseOperations) {
     // The restore branch is the regression: this call threw on the pre-fix source.
     assert.deepEqual(validateReleaseInput(releaseEnv(operation)), { releaseTag, serviceCommit });
@@ -119,6 +127,12 @@ test('restore-release and deploy-platform take the reviewed Service release iden
     // A restore dispatch with no release identity is a failure, not a null gate.
     assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation }), /requires the explicit Service release tag/);
   }
+  // #243: the migrate dispatch in particular has no fallback image, so a missing
+  // identity is the named refusal the operator acts on.
+  assert.throws(() => validateReleaseInput({ INFRA_OPERATION: 'migrate' }),
+    /^Error: migrate requires the explicit Service release tag$/);
+  assert.throws(() => validateReleaseInput({ INFRA_OPERATION: 'migrate', SERVICE_RELEASE_TAG: releaseTag }),
+    /^Error: Invalid Service release source commit$/);
 });
 
 test('the frozen asset constants are the four published names and the per-operation consumed sets', async () => {
@@ -131,24 +145,38 @@ test('the frozen asset constants are the four published names and the per-operat
   assert.equal(Object.isFrozen(RELEASE_ASSET_NAMES), true);
   assert.equal(Object.isFrozen(STAGE_BASE_ASSETS), true);
   assert.equal(Object.isFrozen(RUNTIME_RELEASE_ASSETS), true);
-  // #194: the consumed set follows the operation. A stage-base deploy never asks
-  // for the schema asset and the Runtime deploy asks only for it.
+  // #194/#243: the consumed set follows the operation. A stage-base deploy never
+  // asks for the schema asset; the Runtime deploy and the migration ask only for
+  // it.
   assert.deepEqual(releaseAssetsFor('deploy-runtime'), RUNTIME_RELEASE_ASSETS);
+  assert.deepEqual(releaseAssetsFor('migrate'), RUNTIME_RELEASE_ASSETS);
+  assert.deepEqual([...releaseAssetsFor('migrate')], ['service-schema.json']);
   assert.deepEqual(releaseAssetsFor('deploy-platform'), STAGE_BASE_ASSETS);
   assert.deepEqual(releaseAssetsFor('restore-release'), STAGE_BASE_ASSETS);
   for (const operation of otherOperations) {
     assert.throws(() => releaseAssetsFor(operation), /consumes no Service release assets/, operation);
   }
+  // One frozen four-operation list is the single source the refusal text, the
+  // consumed-set lookup and the workflow `if:` gates agree with.
   assert.deepEqual([...module.RELEASE_IDENTITY_OPERATIONS], releaseOperations);
+  assert.deepEqual([...RELEASE_IDENTITY_OPERATIONS], releaseOperations);
+  assert.equal(Object.isFrozen(RELEASE_IDENTITY_OPERATIONS), true);
   assert.equal(module.SELECTED_RELEASE_DIRECTORY, selectedDirectory);
 });
 
 test('every other operation still rejects a supplied release identity and takes none', () => {
+  // The refusal is derived from the frozen list, so it names all four operations.
+  assert.equal(releaseIdentityMessage,
+    'Only deploy-platform, deploy-runtime, restore-release, migrate take a Service release identity');
+  for (const operation of releaseOperations) assert.ok(releaseIdentityMessage.includes(operation), operation);
   for (const operation of otherOperations) {
-    assert.throws(() => validateReleaseInput(releaseEnv(operation)),
-      /Only deploy-platform and restore-release take a Service release identity/, operation);
-    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag }),
-      /Only deploy-platform and restore-release take a Service release identity/, operation);
+    const rejects = fn => assert.throws(fn, (error) => {
+      assert.equal(error.message, releaseIdentityMessage);
+      return true;
+    });
+    rejects(() => validateReleaseInput(releaseEnv(operation)));
+    rejects(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag }));
+    rejects(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_COMMIT: serviceCommit }));
     assert.equal(validateReleaseInput({ INFRA_OPERATION: operation }), null, operation);
   }
 });

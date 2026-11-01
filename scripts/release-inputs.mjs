@@ -21,21 +21,25 @@ export const RELEASE_ASSET_NAMES = Object.freeze(['pre-sign-up.zip', 'post-confi
 // The three this repository's stage base consumes. `service-schema.json` belongs
 // to the Service runtime: `deploy-platform`/`restore-release` never download it.
 export const STAGE_BASE_ASSETS = Object.freeze(['pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json']);
-// The one asset `deploy-runtime` consumes: the sealed release's schema boundary,
-// which the deploy job re-hashes and strictly validates before any credential and
-// the gate compares against the live applied journal before any stack mutation.
+// The one asset `deploy-runtime` and `migrate` consume: the sealed release's schema
+// boundary, which the deploy job re-hashes and strictly validates before any
+// credential; `deploy-runtime`'s gate then compares it against the live applied
+// journal before any stack mutation, and `migrate` runs the release it names.
 export const RUNTIME_RELEASE_ASSETS = Object.freeze([SCHEMA_ASSET_NAME]);
 // The one directory the CDK stage-base deploy consumes and the Runtime deploy
 // reads the travelled schema asset from. The verify job downloads the operation's
 // consumed set into it and the deploy job re-hashes those bytes before any
 // credential, so both sides name the same bytes.
 export const SELECTED_RELEASE_DIRECTORY = path.join(root, '.service-artifacts', 'selected');
-// Both operations deploy the stage base, which consumes the Service-built Lambda
-// bundles and runtime policy; `deploy-runtime` consumes the sealed release's
-// schema asset (its tag, commit and ECR image are resolved separately from the
-// same identity). A release identity supplied to any other operation is rejected
-// instead of silently ignored.
-export const RELEASE_IDENTITY_OPERATIONS = Object.freeze(['deploy-platform', 'deploy-runtime', 'restore-release']);
+// Four operations take one reviewed release identity. `deploy-platform` and
+// `restore-release` deploy the stage base, which consumes the Service-built Lambda
+// bundles and runtime policy; `deploy-runtime` and `migrate` consume the sealed
+// release's schema asset (its tag, commit and ECR image are resolved separately
+// from the same identity), and `migrate` runs that release as a one-shot instead
+// of deploying a stack. A release identity supplied to any other operation is
+// rejected instead of silently ignored.
+export const RELEASE_IDENTITY_OPERATIONS = Object.freeze(['deploy-platform', 'deploy-runtime', 'restore-release',
+  'migrate']);
 const GH_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // An annotated tag names a tag object that names the commit. The bound keeps a
 // malformed or cyclic chain from issuing unbounded REST reads.
@@ -46,19 +50,24 @@ const MAX_TAG_DEPTH = 4;
  * release at all, so an unknown operation is a caller error, never an empty set.
  */
 export function releaseAssetsFor(operation) {
-  if (operation === 'deploy-runtime') return RUNTIME_RELEASE_ASSETS;
+  if (operation === 'deploy-runtime' || operation === 'migrate') return RUNTIME_RELEASE_ASSETS;
   if (operation === 'deploy-platform' || operation === 'restore-release') return STAGE_BASE_ASSETS;
   throw new Error(`Operation ${operation} consumes no Service release assets`);
 }
 
-// One reviewed input per stage-base deploy path. `deploy-platform` and
-// `restore-release` both take Service-built Lambda assets; every other operation
-// takes none and rejects a supplied release identity.
+// One reviewed input per release-taking operation: the stage-base deploy path
+// takes Service-built Lambda assets, `deploy-runtime` and `migrate` take the
+// schema asset, and every other operation takes none and rejects a supplied
+// release identity.
 export function validateReleaseInput(env = process.env, operation = env.INFRA_OPERATION) {
   const releaseTag = env.SERVICE_RELEASE_TAG ?? '';
   const serviceCommit = env.SERVICE_COMMIT ?? '';
   if (!RELEASE_IDENTITY_OPERATIONS.includes(operation)) {
-    if (releaseTag || serviceCommit) throw new Error('Only deploy-platform and restore-release take a Service release identity');
+    // The refusal is derived from the one frozen list, so a new release-taking
+    // operation can never leave this message claiming an older set.
+    if (releaseTag || serviceCommit) {
+      throw new Error(`Only ${RELEASE_IDENTITY_OPERATIONS.join(', ')} take a Service release identity`);
+    }
     return null;
   }
   if (!GH_TAG.test(releaseTag)) throw new Error(`${operation} requires the explicit Service release tag`);

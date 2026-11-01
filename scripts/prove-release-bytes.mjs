@@ -22,9 +22,9 @@ import { loadSchemaAsset } from './schema-asset.mjs';
 //      closed;
 //   3. require the travelled directory to hold exactly those files and hash each
 //      one once against the published digest;
-//   4. strictly load the schema asset (`deploy-runtime`) or the runtime policy
-//      (stage-base), so the CDK deploy cannot be the first reader of unreadable
-//      bytes.
+//   4. strictly load the schema asset (`deploy-runtime`, `migrate`) or the
+//      runtime policy (stage-base), so the CDK deploy cannot be the first reader
+//      of unreadable bytes.
 //
 // There is no record, no `.sha256` companion and no cross-run handoff: the bytes
 // and the digest set travel inside this run, and GitHub's `needs` edge binds them
@@ -63,10 +63,11 @@ if (!expectedRelease) {
   if (JSON.stringify(travelled) !== JSON.stringify(expected)) {
     throw new Error(`The travelled release directory holds [${travelled.join(', ')}], not exactly [${expected.join(', ')}]`);
   }
-  if (env.INFRA_OPERATION === 'deploy-runtime') {
-    // The schema asset is the Runtime deploy's only Service input. Strict content
-    // validation happens here, before the restricted session, so the schema-boundary
-    // gate cannot be the first consumer of an unreadable asset.
+  if (env.INFRA_OPERATION === 'deploy-runtime' || env.INFRA_OPERATION === 'migrate') {
+    // The schema asset is the Runtime deploy's and the migration's only Service
+    // input. Strict content validation happens here, before the restricted
+    // session, so the schema-boundary gate or the task launch cannot be the first
+    // consumer of an unreadable asset.
     await loadSchemaAsset(SELECTED_RELEASE_DIRECTORY);
   } else {
     // The same strict loader CDK uses, so the downloaded policy bytes are proven
@@ -76,6 +77,8 @@ if (!expectedRelease) {
   for (const name of assetNames) {
     process.stdout.write(`${name} ${assets[name]} matches the published digest\n`);
   }
-  process.stdout.write(`${boundary.workflow} ${env.INFRA_OPERATION} deploys ${SERVICE_REPOSITORY} `
+  // "consumes", not "deploys": `migrate` takes the same identity and runs a
+  // one-shot without deploying anything.
+  process.stdout.write(`${boundary.workflow} ${env.INFRA_OPERATION} consumes ${SERVICE_REPOSITORY} `
     + `${expectedRelease.releaseTag}@${expectedRelease.serviceCommit} with ${assetNames.length} proven asset(s).\n`);
 }

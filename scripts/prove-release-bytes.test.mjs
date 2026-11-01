@@ -53,6 +53,16 @@ async function travelled() {
   return assets;
 }
 
+// #243: the migration consumes exactly `service-schema.json`, so that is all the
+// verify job downloads and all the deploy job may find in the travelled directory.
+async function travelledSchema() {
+  await rm(selected, { recursive: true, force: true });
+  await mkdir(selected, { recursive: true });
+  const name = 'service-schema.json';
+  await copyFile(path.join(root, 'test', 'fixtures', 'schema-boundary', 'schema-asset.json'), path.join(selected, name));
+  return { [name]: `sha256:${sha256(await readFile(path.join(selected, name)))}` };
+}
+
 async function run(extraEnv) {
   try {
     const { stdout, stderr } = await execute(process.execPath, [script], {
@@ -75,7 +85,7 @@ test('the proof accepts the exact travelled set and prints each published digest
   for (const name of STAGE_BASE_ASSETS) {
     assert.match(result.stdout, new RegExp(`${name} ${assets[name]} matches the published digest`));
   }
-  assert.match(result.stdout, /deploy-platform deploys git-malu\/AnyWear-Service/);
+  assert.match(result.stdout, /deploy-platform consumes git-malu\/AnyWear-Service/);
 });
 
 test('a corrupted travelled byte fails closed before any credential', async () => {
@@ -116,4 +126,49 @@ test('an operation that consumes no release requires an empty asset set', async 
   const carried = await run({ ...nonRelease, VERIFIED_RELEASE_ASSETS: JSON.stringify({ 'service-schema.json': `sha256:${'d'.repeat(64)}` }) });
   assert.notEqual(carried.code, 0);
   assert.match(carried.stderr, /Invalid travelled release assets fields/);
+});
+
+// #243: `migrate` takes the release identity and runs the sealed release's
+// migration, so it travels exactly `service-schema.json` and strictly loads it.
+// The summary line must not claim a deploy the operation does not perform.
+test('migrate proves only the schema asset and claims no deploy', async () => {
+  const assets = await travelledSchema();
+  const result = await run({ INFRA_OPERATION: 'migrate', VERIFIED_RELEASE_ASSETS: JSON.stringify(assets) });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout,
+    new RegExp(`service-schema\\.json ${assets['service-schema.json']} matches the published digest`));
+  assert.match(result.stdout, /mutate\.yml migrate consumes git-malu\/AnyWear-Service/);
+  assert.equal(/deploys/.test(result.stdout), false, 'migrate runs a one-shot and deploys nothing');
+});
+
+test('migrate refuses a digest mismatch, a widened travelled set and a missing file', async () => {
+  const assets = await travelledSchema();
+
+  // A changed byte after the digest set was computed.
+  const bytes = await readFile(path.join(selected, 'service-schema.json'));
+  await writeFile(path.join(selected, 'service-schema.json'), Buffer.concat([bytes, Buffer.from(' ')]));
+  const tampered = await run({ INFRA_OPERATION: 'migrate', VERIFIED_RELEASE_ASSETS: JSON.stringify(assets) });
+  assert.notEqual(tampered.code, 0);
+  assert.match(tampered.stderr, /Travelled release asset service-schema\.json differs from its published digest/);
+
+  // A published set widened with a stage-base asset the migration never consumes.
+  await travelledSchema();
+  const widened = await run({ INFRA_OPERATION: 'migrate',
+    VERIFIED_RELEASE_ASSETS: JSON.stringify({ ...assets, 'pre-sign-up.zip': `sha256:${'d'.repeat(64)}` }) });
+  assert.notEqual(widened.code, 0);
+  assert.match(widened.stderr, /Invalid travelled release assets fields/);
+
+  // A travelled directory carrying a second file as well.
+  await travelledSchema();
+  await copyFile(path.join(root, 'test', 'fixtures', 'placeholder.zip'), path.join(selected, 'pre-sign-up.zip'));
+  const widenedDirectory = await run({ INFRA_OPERATION: 'migrate', VERIFIED_RELEASE_ASSETS: JSON.stringify(assets) });
+  assert.notEqual(widenedDirectory.code, 0);
+  assert.match(widenedDirectory.stderr, /The travelled release directory holds \[pre-sign-up\.zip, service-schema\.json\], not exactly \[service-schema\.json\]/);
+
+  // The published asset that did not travel.
+  await rm(selected, { recursive: true, force: true });
+  await mkdir(selected, { recursive: true });
+  const missing = await run({ INFRA_OPERATION: 'migrate', VERIFIED_RELEASE_ASSETS: JSON.stringify(assets) });
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.stderr, /Travelled release asset service-schema\.json is missing from/);
 });

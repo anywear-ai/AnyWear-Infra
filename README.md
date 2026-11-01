@@ -157,9 +157,9 @@ per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
 every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
-`deploy-runtime` and `restore-release` take a Service release identity. There is
-no admission-mode or bound input: the only admission value is the exact tester
-allowlist. The
+`deploy-runtime`, `restore-release` and `migrate` take a Service release identity.
+There is no admission-mode or bound input: the only admission value is the exact
+tester allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no
 cross-repository release-verification task. The `verify` family remains for exactly
 one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
@@ -291,11 +291,13 @@ identity: `deploy-platform`/`restore-release` take `service_release_tag` and
 require the two Lambda bundles and the runtime policy to be present, uploaded and
 digest-valid (extras such as the retired legacy manifest are ignored), download
 only those three, and re-hash each travelled byte once in the deploy job before
-any credential. `deploy-runtime` takes the same identity but downloads only the
-release's `service-schema.json`, re-hashes it once and strictly validates it
-before credentials, then compares it with the live applied journal before any
-stack mutation. The deploy resolves the release tag, Service commit and the ECR
-digest of the immutable `service-artifacts-<service_commit>` tag, and they are
+any credential. `deploy-runtime` and `migrate` take the same identity but download
+only the release's `service-schema.json`: `deploy-runtime` re-hashes it once and
+strictly validates it before credentials, then compares it with the live applied
+journal before any stack mutation, while `migrate` runs that release as one
+`beta-anywear-migrate` one-shot instead of deploying. The deploy resolves the
+release tag, Service commit and the ECR digest of the immutable
+`service-artifacts-<service_commit>` tag, and they are
 readable from the run log and the stack's own parameters. There is no
 committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake

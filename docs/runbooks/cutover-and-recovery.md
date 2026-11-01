@@ -72,14 +72,17 @@ permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 ## Direct release identity
 
 After #158 step C there is no committed selection and no cross-repository native
-asset verification. `deploy-platform` and `restore-release` take one reviewed
-Service release identity (`service_release_tag` + `service_commit`). A source PR
+asset verification. `deploy-platform`, `deploy-runtime`, `restore-release` and
+`migrate` take one reviewed Service release identity (`service_release_tag` +
+`service_commit`). A source PR
 reviews the tag and the Service commit; the release and its tag ref are then read
 over the REST API with a read-only token (the tag must resolve to that commit,
-`draft=false`, `immutable=true`, and the two Lambda bundles and the runtime policy
-must be present, uploaded and digest-valid; extras such as the retired legacy
-manifest are ignored), and only those three files (`pre-sign-up.zip`,
-`post-confirmation.zip`, `runtime-policy.json`) are downloaded. The deploy job
+`draft=false`, `immutable=true`, and the operation's consumed files must be
+present, uploaded and digest-valid; extras such as the retired legacy
+manifest are ignored), and only those files are downloaded: the two Lambda bundles
+and the runtime policy (`pre-sign-up.zip`, `post-confirmation.zip`,
+`runtime-policy.json`) for the stage-base operations, and only
+`service-schema.json` for `deploy-runtime` and `migrate`. The deploy job
 re-hashes each travelled byte once against those published digests before any
 credential, then resolves the release tag, Service commit and the ECR digest of the
 immutable `service-artifacts-<service_commit>` tag into the deploy's log and the
@@ -88,10 +91,11 @@ writes a deployment record (#207): the run, the Environment deployment, the
 stack's own events and the release/ECR identities are the audit facts.
 
 The protected Beta job first checks exact main/workflow/account/region and
-operation, plus the release identity only for the two operations that take one,
+operation, plus the release identity only for `deploy-platform`, `deploy-runtime`,
+`restore-release` and `migrate`,
 with explicit identity/retention only for CDK families and fixed protected source
 context for other entries. It then reads the release identity and downloads the
-three files it consumes, and the deploy job immediately re-hashes each downloaded
+files it consumes, and the deploy job immediately re-hashes each downloaded
 byte once before any credential, and only then obtains
 operation-specific restricted AWS OIDC sessions. Final qualification also uses a restricted session, not a role-wide
 credential action. The CLI
