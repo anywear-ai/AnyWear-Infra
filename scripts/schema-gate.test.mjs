@@ -19,6 +19,7 @@ import {
   SCHEMA_LOG_RETRY_MS,
   SCHEMA_READER_SOURCES,
   SCHEMA_VERIFY_COMMAND,
+  SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT,
   SCHEMA_VERIFY_FAMILY,
   SchemaBoundaryError,
   compareSchemaBoundary,
@@ -387,6 +388,66 @@ test('the reader rule reads the selected image first, falls back exactly once an
     (error) => error instanceof SchemaBoundaryError && error.reason === 'reader-unavailable');
 });
 
+// Issue #252: the verify one-shot's exit 4 is a `schema-journal` connect timeout
+// (`CONNECT_TIMEOUT`), not a schema-boundary disagreement. The selected image is
+// judged first, so the refusal happens before any journal read or fallback.
+test('the selected image exiting 4 refuses as reader-connect-timeout before any journal read', async () => {
+  assert.equal(SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT, 4);
+  const launches = [];
+  let logReads = 0;
+  await assert.rejects(readSchemaBoundaryEvidence({ io: {}, release, deployedRevision,
+    probe: async (io, revision) => { launches.push(revision); return taskOf(SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT); },
+    readLog: async () => { logReads += 1; return live; } }),
+  (error) => error instanceof SchemaBoundaryError
+    && error.reason === 'reader-connect-timeout'
+    && error.evidence.reader.source === 'selected-image'
+    && error.evidence.reader.service_sha === SERVICE_SHA
+    && error.evidence.reader.image_digest === IMAGE_DIGEST
+    && error.evidence.reader.exit_code === SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT
+    && error.evidence.applied_rows.length === 0
+    && error.violations.length === 1
+    && error.violations[0].reason === 'reader-connect-timeout'
+    && error.violations[0].observed === `exit code ${SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT} / CONNECT_TIMEOUT`
+    && /connect timeout/i.test(error.message)
+    && /did not answer in time/i.test(error.message)
+    && /dispatch the run again/i.test(error.message)
+    && /not a schema-boundary disagreement/i.test(error.message));
+  assert.equal(launches.length, 1);
+  assert.deepEqual(launches.map((revision) => revision.digest), [IMAGE_DIGEST]);
+  assert.equal(logReads, 0);
+});
+
+// Issue #252: the one deployed-image fallback can time out too. Its refusal names
+// the deployed reader, keeps the existing reader shape and still reads no log.
+test('the deployed-image fallback exiting 4 refuses as reader-connect-timeout with the fallback identity', async () => {
+  const launches = [];
+  const logReads = [];
+  await assert.rejects(readSchemaBoundaryEvidence({ io: {}, release, deployedRevision,
+    probe: async (io, revision) => {
+      launches.push(revision);
+      return launches.length === 1 ? taskOf(0)
+        : taskOf(SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT, deployedRevision.imageDigest);
+    },
+    readLog: async (io, taskArg) => { logReads.push(taskArg); return null; } }),
+  (error) => error instanceof SchemaBoundaryError
+    && error.reason === 'reader-connect-timeout'
+    && error.evidence.reader.source === 'deployed-image'
+    && error.evidence.reader.service_sha === deployedRevision.serviceCommit
+    && error.evidence.reader.image_digest === deployedRevision.imageDigest
+    && error.evidence.reader.exit_code === SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT
+    && error.evidence.applied_rows.length === 0
+    && error.evidence.readers.length === 2
+    && /connect timeout/i.test(error.message)
+    && /did not answer in time/i.test(error.message)
+    && /dispatch the run again/i.test(error.message)
+    && /not a schema-boundary disagreement/i.test(error.message));
+  assert.equal(launches.length, 2);
+  assert.deepEqual(launches.map((revision) => revision.digest),
+    [IMAGE_DIGEST, deployedRevision.imageDigest]);
+  assert.equal(logReads.length, 1, 'the fallback task log is never read');
+  assert.equal(logReads[0].taskArn, task.taskArn, 'the one read is the selected task');
+});
+
 // ---------------------------------------------------------------------------
 // Comparison predicate
 // ---------------------------------------------------------------------------
@@ -498,7 +559,8 @@ test('the predicate collects every violation in one refusal and records an ahead
     assert.equal(typeof entry.observed, 'string');
     assert.ok(entry.expected.length > 0 && entry.observed.length > 0, entry.reason);
   }
-  assert.equal(new Set(SCHEMA_BOUNDARY_REASONS).size, 9);
+  assert.equal(new Set(SCHEMA_BOUNDARY_REASONS).size, 10);
+  assert.ok(SCHEMA_BOUNDARY_REASONS.includes('reader-connect-timeout'));
 
   // A version ahead of the release with a contained journal is an observation:
   // compatible, recorded as `version_ahead`, never a separate refusal.
