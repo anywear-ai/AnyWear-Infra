@@ -537,6 +537,39 @@ test('a schema-boundary refusal fails the run before synthesis, the change set a
   assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
 });
 
+// Issue #252 acceptance: the schema-journal connect timeout (exit 4) is a named
+// refusal, and it still stops the run at the gate before synthesis, the change
+// set and any stack mutation. The real gate runs; only its transport is injected.
+test('a schema-journal connect timeout fails the run before synthesis, the change set and the record', async () => {
+  const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+    StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+  const assetBytes = readFileSync('test/fixtures/schema-boundary/schema-asset.json');
+  const definitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:207';
+  const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
+    clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear', lastStatus: 'STOPPED',
+    taskDefinitionArn: definitionArn,
+    containers: [{ name: 'OneShot', exitCode: 4, imageDigest: IMAGE_DIGEST }] };
+  const definition = { family: 'beta-anywear-verify', taskDefinitionArn: definitionArn };
+  let synthesized = 0;
+  let logReads = 0;
+  await assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => { synthesized += 1; return SYNTHESIZED; }, health: HEALTH, bake: BAKE,
+    schemaGate: (options) => runSchemaBoundaryGate({ ...options,
+      loadAsset: async () => ({ asset: JSON.parse(assetBytes.toString('utf8')), bytes: assetBytes,
+        sha256: sha256(assetBytes) }),
+      probe: async () => ({ task, definition }),
+      readLog: async () => { logReads += 1; return null; } }) }),
+  (error) => error instanceof SchemaBoundaryError && error.reason === 'reader-connect-timeout'
+    && /connect timeout/i.test(error.message)
+    && /did not answer in time/i.test(error.message)
+    && /dispatch the run again/i.test(error.message)
+    && /not a schema-boundary disagreement/i.test(error.message));
+  assert.equal(synthesized, 0, 'synthesis never runs after a refusal');
+  assert.equal(logReads, 0, 'the exit code is judged before any journal read');
+  assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no CDK change-set call');
+  assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
+});
+
 test('a converged stack records an empty change set, executes nothing and returns the deployed identity', async () => {
   const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
     StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });

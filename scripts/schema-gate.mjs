@@ -149,9 +149,12 @@ export function validateSchemaBoundary(boundary) {
 
 // The existing verification one-shot family and the exact command the verify
 // action registers. The stopped task identity, its log destination and its
-// command are all proven before a log read.
+// command are all proven before a log read. Exit 4 is the `schema-journal`
+// action's connect timeout (`CONNECT_TIMEOUT`, #252): the one non-zero exit the
+// gate maps to its own refusal instead of `reader-failed`.
 export const SCHEMA_VERIFY_FAMILY = 'beta-anywear-verify';
 export const SCHEMA_VERIFY_COMMAND = Object.freeze(['node', 'dist/verify.js', SCHEMA_JOURNAL_ACTION]);
+export const SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT = 4;
 export const ONE_SHOT_CLUSTER = 'beta-anywear';
 export const ONE_SHOT_LOG_GROUP = '/anywear/beta/one-shot';
 export const ONE_SHOT_REGION = 'ap-east-1';
@@ -169,6 +172,7 @@ export const SCHEMA_BOUNDARY_REASONS = Object.freeze([
   'asset-invalid',
   'reader-unavailable',
   'reader-failed',
+  'reader-connect-timeout',
   'reader-evidence-unavailable',
   'live-version-unproven',
   'below-minimum-version',
@@ -386,6 +390,30 @@ async function launchProbe({ io, probe, identity, readers }) {
   return { reader, result };
 }
 
+// The reader rule's one non-zero-exit refusal (#252). Exit 4 is the
+// `schema-journal` action's connect timeout: the database did not answer in
+// time, dispatching the run again is the answer, and it is not a schema-boundary
+// disagreement. Every other non-zero exit stays `reader-failed` exactly as
+// before: a hard refusal, never a fallback.
+function refuseProbeExit(source, launched, readers) {
+  const { reader } = launched;
+  if (reader.exit_code === SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT) {
+    throw new SchemaBoundaryError('reader-connect-timeout',
+      `the ${source} verify task exited ${SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT} on the schema-journal connect timeout: `
+      + 'the database did not answer in time. Dispatch the run again; this is not a schema-boundary disagreement, '
+      + 'and nothing was synthesised or changed',
+      [violation('reader-connect-timeout', 'exit code 0 with one anywear_applied_schema record',
+        `exit code ${SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT} / CONNECT_TIMEOUT`)],
+      { reader, readers, applied_rows: [] });
+  }
+  const detail = `the ${source} verify task exited ${reader.exit_code}`
+    + (source === 'selected-image' ? '; a non-zero exit is a hard refusal, never a fallback' : '');
+  throw new SchemaBoundaryError('reader-failed', detail,
+    [violation('reader-failed', 'exit code 0 with one anywear_applied_schema record',
+      `exit code ${reader.exit_code}`)],
+    { reader, readers, applied_rows: [] });
+}
+
 async function readProbeJournal({ io, readLog, launched, readers, source }) {
   try {
     const applied = await readLog(io, launched.result.task, launched.result.definition);
@@ -422,13 +450,7 @@ export async function readSchemaBoundaryEvidence({ io, release, deployedRevision
   const selectedIdentity = { ...readerIdentity('selected-image', {
     commit: releaseRevision.serviceCommit, digest: releaseRevision.imageDigest }) };
   const selected = await launchProbe({ io, probe, identity: selectedIdentity, readers });
-  if (selected.reader.exit_code !== 0) {
-    throw new SchemaBoundaryError('reader-failed',
-      `the selected-image verify task exited ${selected.reader.exit_code}; a non-zero exit is a hard refusal, never a fallback`,
-      [violation('reader-failed', 'exit code 0 with one anywear_applied_schema record',
-        `exit code ${selected.reader.exit_code}`)],
-      { reader: selected.reader, readers, applied_rows: [] });
-  }
+  if (selected.reader.exit_code !== 0) refuseProbeExit('selected-image', selected, readers);
   const selectedApplied = await readProbeJournal({ io, readLog, launched: selected, readers, source: 'selected-image' });
   if (selectedApplied !== null) {
     return { reader: readerIdentity('selected-image', {
@@ -445,13 +467,7 @@ export async function readSchemaBoundaryEvidence({ io, release, deployedRevision
   const deployedIdentity = readerIdentity('deployed-image', {
     commit: deployed.serviceCommit, digest: deployed.imageDigest });
   const fallback = await launchProbe({ io, probe, identity: deployedIdentity, readers });
-  if (fallback.reader.exit_code !== 0) {
-    throw new SchemaBoundaryError('reader-failed',
-      `the deployed-image verify task exited ${fallback.reader.exit_code}`,
-      [violation('reader-failed', 'exit code 0 with one anywear_applied_schema record',
-        `exit code ${fallback.reader.exit_code}`)],
-      { reader: fallback.reader, readers, applied_rows: [] });
-  }
+  if (fallback.reader.exit_code !== 0) refuseProbeExit('deployed-image', fallback, readers);
   const fallbackApplied = await readProbeJournal({ io, readLog, launched: fallback, readers, source: 'deployed-image' });
   if (fallbackApplied === null) {
     throw new SchemaBoundaryError('reader-unavailable',
