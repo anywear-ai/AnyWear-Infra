@@ -198,7 +198,9 @@ synthesized template against the recorded `roles-added` identity, reads the
 hash, the bake result and the minimum Client version floor in its step log; there
 is no deployment record to write or read.
 `APP_PRIVATE_KEY` stays in protected secrets and is used only by the four
-operations that take a release. Publication ZIP/receipt/handshake ceremony stays
+operations that take a release and by the `deploy-runtime` qualification hook,
+which mints a write-scoped `AnyWear-E2E` token from the same App after the
+deployment succeeds. Publication ZIP/receipt/handshake ceremony stays
 retired.
 
 The former `stack-sources/<reviewed-name>.json` map (four rows: `stack_name`,
@@ -230,11 +232,12 @@ identities. This source map alone is not runtime proof or authorization to deplo
 ## Entry points
 
 Infra exposes three entries and two manual dispatch surfaces. `check.yml` is
-automatic; `runtime.yml` (`state`) and `mutate.yml` (the fourteen mutation
+automatic; `runtime.yml` (`state`) and `mutate.yml` (the twelve mutation
 operations) are the only manual dispatch surfaces; `production.yml` is
 `workflow_call`-only and not an entry. Both manual entries use exact reviewed
 main, the `beta` environment and shared non-cancelling queue
-`anywear-infra-runtime`. Their local composites split verification from
+`anywear-infra-runtime` with `queue: max` (up to 100 pending runs, wait order,
+nothing in flight cancelled). Their local composites split verification from
 execution: [verify-operation](../../.github/actions/verify-operation/action.yml)
 rejects cross-family operations, validates the reviewed Service artifact identity
 for the four operations that take one, and reads that release and its tag ref over
@@ -254,11 +257,13 @@ gates.
 | --- | --- | --- |
 | [check.yml](../../.github/workflows/check.yml) | none (PR / push main) | Source checks only; no dispatch surface |
 | [runtime.yml](../../.github/workflows/runtime.yml) | `state` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed, publishes no artifact |
-| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers` | Chain: `preflight` (no credentials) → `verify` (read-only release token only; publishes the bytes as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as its `release_assets` output) → `deploy` (the only job holding an AWS credential; `prove-release-bytes` runs first). No observation or record job. Explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
+| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers` | Chain: `preflight` (no credentials) → `verify` (read-only release token only; publishes the bytes as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as its `release_assets` output) → `deploy` (the only job holding an AWS credential; `prove-release-bytes` runs first) → `qualify-hook` (`deploy-runtime` only, after `deploy` succeeded: no environment, no `id-token`, no AWS permission, one write-scoped `AnyWear-E2E` App token, dispatches the E2E qualification and does not wait). No observation or record job. `delivery_trigger`/`dispatched_by` are accepted only by `deploy-runtime`; explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
 | [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
 `deploy-platform`, `deploy-runtime`, `restore-release` and `migrate` require the
 reviewed Service release tag and source commit; every other operation rejects them.
+`deploy-runtime` additionally accepts `delivery_trigger` and `dispatched_by`, and
+every other operation refuses a trigger that names an entry event (#226).
 Because one dispatch surface now hosts several operations, the per-operation
 input scope is enforced in `scripts/runtime-operation.mjs` preflight rather than
 by file presence: the tester payload belongs only to `add-testers`/`set-testers`,
@@ -275,6 +280,42 @@ Runtime deploy sets the API origin parameter on the Base stack before its
 `/health` read, so no Base dispatch sits between them. No operation selects a
 stopped Base template. Source delivery alone does not grant an environment
 writer or establish runtime acceptance.
+
+### The deploy chain receiver and its qualification hook (#226)
+
+A `deploy-runtime` run accepts two context inputs that no other operation takes:
+`delivery_trigger` (choice `deploy | release | manual`, default `manual`, required)
+and `dispatched_by` (string, default `''`). The Service deploy chain sends
+`deploy` with its own HTTPS run URL; a human sends the `manual` default with no
+URL. `release` is refused in the credential-free preflight with
+`delivery_trigger=release is refused: the release chain never deploys`, so a
+tag-shaped dispatch fails before any job holds a token, an `environment` or an
+OIDC identity. The other eleven operations refuse a trigger that names an entry
+event. `release_version` does not exist: no tag reaches Infra, so the input has no
+producer and no tag-to-commit proof runs here.
+
+After a successful `deploy-runtime`, `qualify-hook` dispatches the E2E
+qualification. It declares no `environment`, holds no `id-token` and no AWS
+permission, keeps `contents: read`, and mints exactly one App installation token
+narrowed to `AnyWear-E2E` with `actions: write` only. It does not wait for the
+qualification: a red E2E run leaves the deployment's success standing and the
+commit unqualified, and the dispatch is the job's last step.
+
+| `delivery_trigger` | E2E `operation` | `trigger` | `expected_service_commit` | `worker_slot_offset` | `dispatched_by` |
+| --- | --- | --- | --- | --- | --- |
+| `deploy` | `full` | `deploy-qualify` | the deployed Service commit | `0` | this Infra run URL |
+| `manual` | `smoke` | `deploy-smoke` | — | `0` | this Infra run URL |
+
+Before dispatching, the hook lists the target's `queued` and `in_progress` runs
+and skips when this run's URL already appears in one of their names, printing that
+run's URL. A failed listing dispatches anyway and says so: a duplicate
+qualification wastes a run, while a skipped legitimate one would hide a release.
+The dispatch calls the workflow-dispatch REST endpoint with
+`return_run_details: true` through `gh api` (`gh workflow run` does not expose the
+flag), prints the created run's URL and fails when that run's name does not carry
+this run's URL, which also catches a run dropped at birth by a full queue. The
+Infra `run-name` is `Beta <operation>: <delivery_trigger> · <service_artifact_tag>
+· by <dispatched_by or @actor>`, so the entry event is readable from the run list.
 
 Every STS assumption includes an inline session restriction of at most 2048
 characters. Task register/run/PassRole are limited to the operation's exact
@@ -399,7 +440,10 @@ with the stage switch closed. For mutation select `mutate.yml` and its operation
 adding identity/retention only for `deploy-*`/`restore-release`, tester payload
 only for `add-testers`/`set-testers`, and the artifact identity only for
 `deploy-platform`, `deploy-runtime`, `restore-release` and `migrate`. There is no
-admission-mode input.
+admission-mode input. A hand-dispatched `deploy-runtime` leaves both context
+inputs at their defaults (`delivery_trigger=manual`, empty `dispatched_by`): the
+`deploy` value and its run URL belong to the Service deploy chain, and
+`delivery_trigger=release` is refused.
 A deployment that changes a configured stack needs no separate observation
 dispatch: the run's own conclusions, the `beta` Environment deployment and the
 stack's CloudFormation events are the deployment's evidence. Read-only `state`

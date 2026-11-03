@@ -140,7 +140,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks, no mutation and no artifact |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`. Every run is one `preflight` → `verify` → `deploy` chain; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. The run's job and step conclusions are the verdict |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` run adds `qualify-hook` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime`, and the hook dispatches the E2E qualification without waiting for it. The run's job and step conclusions are the verdict |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -151,14 +151,19 @@ chain per deployable unit. `production.yml` stays in the tree but is
 
 The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
 surface is per workflow, so `identity_phase`, `retention_protection`,
-`tester_emails`, `service_artifact_tag` and `service_commit` are
-workflow-level inputs; `scripts/runtime-operation.mjs` enforces their
-per-operation scope in preflight, before any credential. Only a `deploy-*`
-operation or `restore-release` may vary identity phase and retention protection;
-every other operation must run the `retired` / `true` context. Only
+`tester_emails`, `service_artifact_tag`, `service_commit`, `delivery_trigger` and
+`dispatched_by` are workflow-level inputs; `scripts/runtime-operation.mjs`
+enforces their per-operation scope in preflight, before any credential. Only a
+`deploy-*` operation or `restore-release` may vary identity phase and retention
+protection; every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
-`deploy-runtime`, `restore-release` and `migrate` take a Service artifact identity.
-There is no admission-mode or bound input: the only admission value is the exact
+`deploy-runtime`, `restore-release` and `migrate` take a Service artifact
+identity. Only `deploy-runtime` takes the deploy chain's context: a merge sends
+`delivery_trigger=deploy` with the dispatching run's HTTPS URL as `dispatched_by`,
+a human sends the `manual` default with no run URL, and `release` is refused in
+the credential-free preflight so a tag-shaped dispatch fails loudly. The other
+eleven operations refuse a trigger that names an entry event. There is no
+admission-mode or bound input: the only admission value is the exact
 tester allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no
 cross-repository release-verification task. The `verify` family remains for exactly
@@ -181,7 +186,18 @@ credential: `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN` and
 `prove-release-bytes.mjs`, which re-derives the dispatch, requires the digest
 output to be exactly the operation's asset set, hashes each travelled file and
 strictly loads the schema asset or runtime policy **before** the step that
-requests the OIDC token). `runtime.yml` is `preflight` → `state`, where `state` is
+requests the OIDC token) → `qualify-hook` (**a `deploy-runtime` run only, after
+`deploy` succeeded**: it declares no environment, holds no `id-token` and no AWS
+permission, keeps `contents: read` and mints exactly one App installation token
+narrowed to `AnyWear-E2E` with `actions: write` only; it lists the target's
+`queued` and `in_progress` runs and dispatches nothing when this run's URL already
+appears in one of their names, otherwise it calls the REST dispatch endpoint with
+`return_run_details: true`, prints the created run's URL and fails when that run's
+name does not carry this run's URL. `delivery_trigger=deploy` sends E2E `full`
+with `trigger=deploy-qualify`, `expected_service_commit=<service_commit>` and
+`worker_slot_offset=0`; `manual` sends `smoke` with `trigger=deploy-smoke`, no
+expected commits and `worker_slot_offset=0`; both carry `dispatched_by=<this run
+URL>`, and neither waits). `runtime.yml` is `preflight` → `state`, where `state` is
 the one credential job and runs with the stage switch closed.
 
 Neither entry has an observation or record job. A mutation that landed and then
@@ -194,7 +210,9 @@ failed or partial operation can never read as complete.
 
 Every Beta entry requires exact reviewed main and protected `beta`; the four
 operations that take a Service artifact identity also require the reviewed
-Service release tag and commit. The release-identity read and the operation's
+Service release tag and commit, and a `deploy-runtime` dispatch also carries the
+deploy chain's `delivery_trigger`/`dispatched_by` pair, which the same
+credential-free preflight proves. The release-identity read and the operation's
 consumed download happen before AWS credentials, and each travelled file is
 re-hashed once in the deploy job before its restricted STS session;
 `deploy-runtime` and `migrate` additionally strictly validate the travelled
@@ -204,10 +222,12 @@ proved. The sessions are
 operation-specific and the read-only session carries no ECS or PassRole
 permissions. Only mutation requires
 `ENABLE_BETA_MUTATION=true`; read-only `state` remains available when it is
-closed. Repository-local Actions concurrency (`anywear-infra-runtime`, no
-cancellation) serializes Infra jobs; separate Client and E2E writers still require
-scheduling coordination and verified cessation. Existing OIDC trust identifies
-Infra/environment, not workflow; these source/session boundaries do not create an
+closed. Repository-local Actions concurrency (`anywear-infra-runtime`,
+`cancel-in-progress: false`, `queue: max`) serializes Infra jobs and queues up to
+100 pending runs instead of replacing them; separate Client and E2E writers still
+require scheduling coordination and verified cessation. Existing OIDC trust
+identifies Infra/environment, not workflow; these source/session boundaries do
+not create an
 IAM-enforced workflow trust boundary or restrict the capabilities of existing task
 roles. The current CDK CloudFormation execution role uses `AdministratorAccess`
 without a permissions boundary, so the deployment chain has account-wide
@@ -246,7 +266,10 @@ no reader, no writer and not part of the app client's read attributes. The [Beta
 runbook](docs/runbooks/beta-infrastructure.md#tester-allowlist-and-status) carries
 the write/read-back contract and the registration failure modes.
 
-Both manual entries share `anywear-infra-runtime` without cancellation. Each run
+Both manual entries share `anywear-infra-runtime` without cancellation, and
+`mutate.yml` adds `queue: max` so a newer run waits behind an in-flight cloud
+mutation instead of replacing the pending one (up to 100 pending, wait order, no
+cancellation). Each run
 leaves no artifact beyond the transport one: `service-release-bytes-<run_id>-
 <run_attempt>`, whose only content is `.service-artifacts/selected/`, retained one
 day, read by the deploy job's byte proof. It is a deploy input, not evidence: it

@@ -21,6 +21,7 @@ const workflowFile = name => new URL(`../.github/workflows/${name}`, import.meta
 const actionFile = name => new URL(`../.github/actions/${name}/action.yml`, import.meta.url);
 const loadWorkflow = async name => yaml.load(await readFile(workflowFile(name), 'utf8'));
 const loadAction = async name => yaml.load(await readFile(actionFile(name), 'utf8'));
+const actionlintConfig = async () => yaml.load(await readFile(new URL('../.github/actionlint.yaml', import.meta.url), 'utf8'));
 
 const declaresEnvironment = job => Object.hasOwn(job ?? {}, 'environment');
 const holdsIdToken = job => job?.permissions?.['id-token'] === 'write';
@@ -66,14 +67,15 @@ test('the workflow directory is exactly the three Beta entries plus the callable
   }
 });
 
-test('mutate.yml keeps one preflight → verify → deploy chain and no workload deploy', async () => {
+test('mutate.yml keeps one preflight → verify → deploy → qualify-hook chain and no workload deploy', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy']);
+  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'qualify-hook']);
   const { preflight, verify, deploy } = mutate.jobs;
 
   assert.equal(preflight.needs, undefined);
   assert.equal(verify.needs, 'preflight');
   assert.equal(deploy.needs, 'verify', 'credentials are acquired only after verification');
+  assert.equal(mutate.jobs['qualify-hook'].needs, 'deploy', 'the qualification follows a successful deployment');
 
   // One credential job, and it is the only one: `preflight` and `verify` have no
   // environment and no OIDC identity.
@@ -84,7 +86,7 @@ test('mutate.yml keeps one preflight → verify → deploy chain and no workload
   assert.deepEqual(roleHolders('INFRA_RUNTIME_ROLE_ARN'), ['deploy']);
   assert.equal(deploy.environment, 'beta');
   assert.equal(holdsIdToken(deploy), true);
-  for (const job of [preflight, verify]) {
+  for (const job of [preflight, verify, mutate.jobs['qualify-hook']]) {
     assert.equal(declaresEnvironment(job), false);
     assert.equal(holdsIdToken(job), false);
   }
@@ -107,6 +109,27 @@ test('mutate.yml keeps one preflight → verify → deploy chain and no workload
 
   assert.deepEqual(mutate.on.workflow_dispatch.inputs.operation.options, mutateOperations);
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.required, true);
+  // #226: the deploy chain's two context inputs. `release` is representable and
+  // refused in the credential-free preflight; `release_version` never shipped and
+  // has no producer because no tag reaches Infra.
+  const deliveryTrigger = mutate.on.workflow_dispatch.inputs.delivery_trigger;
+  assert.equal(deliveryTrigger.type, 'choice');
+  assert.deepEqual(deliveryTrigger.options, ['deploy', 'release', 'manual']);
+  assert.equal(deliveryTrigger.default, 'manual');
+  assert.equal(deliveryTrigger.required, true);
+  assert.equal(mutate.on.workflow_dispatch.inputs.dispatched_by.type, 'string');
+  assert.equal(mutate.on.workflow_dispatch.inputs.dispatched_by.default, '');
+  assert.equal(Object.hasOwn(mutate.on.workflow_dispatch.inputs, 'release_version'), false,
+    'release_version never shipped; no tag reaches Infra');
+  assert.equal(mutate.env.DELIVERY_TRIGGER, '${{ inputs.delivery_trigger }}');
+  assert.equal(mutate.env.DISPATCHED_BY, '${{ inputs.dispatched_by }}');
+  // The entry event is readable from the run list: operation, trigger, artifact
+  // tag, and the dispatching run (or the actor for a manual dispatch).
+  assert.match(mutate['run-name'], /inputs\.operation/);
+  assert.match(mutate['run-name'], /inputs\.delivery_trigger/);
+  assert.match(mutate['run-name'], /inputs\.service_artifact_tag/);
+  assert.match(mutate['run-name'], /inputs\.dispatched_by/);
+  assert.match(mutate['run-name'], /github\.actor/);
   // #166 drill precondition: the retained Egress EIP allocation is an optional
   // string input passed to the operation env; its pattern is enforced by
   // check-operation/validateOperationInputs, not by a workflow_dispatch pattern.
@@ -177,6 +200,65 @@ test('no AWS credential precedes the release identity and travelled-byte checks'
   }
   assert.equal(steps.slice(operationIndex + 1).length, 0,
     'nothing runs after the credential-requesting operation: no record step');
+});
+
+// #226: the deploy chain's qualification hop. Its whole credential surface is one
+// App installation token narrowed to `AnyWear-E2E` with `actions: write`; it holds
+// no environment, no OIDC identity and no AWS role, and it dispatches last.
+test('the qualification hook is credential-free, single-token and dispatches last', async () => {
+  const mutate = await loadWorkflow('mutate.yml');
+  const hook = mutate.jobs['qualify-hook'];
+  assert.ok(hook, 'mutate.yml carries the deploy chain qualification hook');
+  // Only the operation that deploys a Runtime tuple, and only after `deploy`
+  // succeeded. A schema-boundary refusal fails `deploy`, so the hook never runs.
+  assert.equal(hook.if, "success() && inputs.operation == 'deploy-runtime'");
+  assert.equal(declaresEnvironment(hook), false, 'the hook declares no environment');
+  assert.equal(holdsIdToken(hook), false, 'the hook holds no OIDC identity');
+  assert.deepEqual(hook.permissions, { contents: 'read' }, 'the hook holds contents: read only');
+  // The census is the proof: the hook adds no credential job.
+  assert.deepEqual(credentialJobs(mutate), ['deploy']);
+  const jobText = JSON.stringify(hook);
+  for (const name of ['INFRA_DEPLOY_ROLE_ARN', 'INFRA_RUNTIME_ROLE_ARN', 'AWS_ACCOUNT_ID', 'id-token']) {
+    assert.equal(jobText.includes(name), false, `the qualification hook must not carry ${name}`);
+  }
+
+  // Exactly one token, for one repository, with exactly one permission.
+  const tokens = hook.steps.filter(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
+  assert.equal(tokens.length, 1, 'the hook mints exactly one App installation token');
+  const token = tokens[0];
+  assert.equal(token.with['app-id'], 3346940);
+  assert.equal(token.with['private-key'], '${{ secrets.APP_PRIVATE_KEY }}');
+  assert.equal(token.with.repositories, 'AnyWear-E2E');
+  assert.equal(token.with['permission-actions'], 'write');
+  assert.deepEqual(Object.keys(token.with).filter(name => name.startsWith('permission-')), ['permission-actions'],
+    'actions: write is the token\'s only permission');
+
+  // The dispatch is the job's last step: nothing may follow it.
+  const dispatchIndex = hook.steps.findIndex(step => step.run === 'node scripts/qualification-dispatch.mjs');
+  assert.ok(dispatchIndex > 0, 'the hook dispatches the qualification');
+  assert.equal(dispatchIndex, hook.steps.length - 1, 'nothing runs after the dispatch');
+  assert.equal(hook.steps.indexOf(token) < dispatchIndex, true, 'the token exists before the dispatch');
+  assert.equal(hook.steps[dispatchIndex].env.GH_TOKEN, '${{ steps.app.outputs.token }}');
+});
+
+// #226: `queue: max` beside `cancel-in-progress: false`, and the reviewed actionlint
+// ignore the pinned 1.7.12 needs because it predates the key.
+test('the runtime queue is bounded and the pinned linter rejection is reviewed', async () => {
+  const mutate = await loadWorkflow('mutate.yml');
+  assert.deepEqual(mutate.concurrency, { group: 'anywear-infra-runtime', 'cancel-in-progress': false, queue: 'max' });
+  const config = await actionlintConfig();
+  const ignore = config.paths['.github/workflows/mutate.yml']?.ignore;
+  assert.ok(Array.isArray(ignore), 'mutate.yml carries the reviewed queue ignore');
+  assert.equal(ignore.length, 1);
+  assert.match(ignore[0], /unexpected key "queue" for "concurrency" section/);
+  // The ignore names one file and one message: no other workflow uses `queue`.
+  const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file));
+  const queueHolders = [];
+  for (const file of files) {
+    if (Object.hasOwn((await loadWorkflow(file)).concurrency ?? {}, 'queue')) queueHolders.push(file);
+  }
+  assert.deepEqual(queueHolders, ['mutate.yml']);
+  assert.equal(Object.hasOwn(config.paths, '.github/workflows/runtime.yml'), false);
 });
 
 test('the only artifact a protected mutating run publishes is the release bytes, retained one day', async () => {

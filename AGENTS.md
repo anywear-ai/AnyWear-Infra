@@ -115,7 +115,16 @@ and must not be relabeled as an Infra-produced deployment.
   every mutation runs `preflight` → `verify` → `deploy` in one run and has no
   `observe` or `record` job: `deploy` is the only job that holds an AWS
   credential, and its first step proves the travelled release bytes against the
-  published digests before the first OIDC request. `deploy-egress`/`delete-egress`
+  published digests before the first OIDC request. Since #226 a `deploy-runtime`
+  run adds `qualify-hook` after a successful `deploy`: no environment, no
+  `id-token`, no AWS permission, `contents: read` and one App installation token
+  narrowed to `AnyWear-E2E` with `actions: write` only, dispatching the E2E
+  qualification without waiting for it. `delivery_trigger` and `dispatched_by` are
+  accepted only by `deploy-runtime` and proved in the same credential-free
+  preflight: `deploy` requires the dispatching run's HTTPS URL, `manual` requires
+  no URL, `release` is refused there because the release chain never deploys, and
+  the other eleven operations refuse a trigger that names an entry event.
+  `deploy-egress`/`delete-egress`
   change only the operation-owned `AnyWearEgressStack-beta`; `delete-egress`
   refuses unless the Runtime stack is absent. `production.yml`
   is `workflow_call`-only and is not an entry. The three tester operations are

@@ -18,7 +18,10 @@ const operationEnvironment = (operation, workflow = 'mutate') => ({ GITHUB_REPOS
   GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
   GITHUB_RUN_ID: '39100318242', GITHUB_RUN_ATTEMPT: '1', ENABLE_BETA_MUTATION: 'true',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired',
-  INFRA_RETENTION_PROTECTION: 'true', INFRA_OPERATION: operation, TESTER_EMAILS: '[]' });
+  INFRA_RETENTION_PROTECTION: 'true', INFRA_OPERATION: operation, TESTER_EMAILS: '[]',
+  // #226: every dispatch in this file is a human's, so the deploy chain's context
+  // stays at the workflow defaults.
+  DELIVERY_TRIGGER: 'manual', DISPATCHED_BY: '' });
 
 const simulation = ({ denyAction } = {}) => async (command, args) => {
   if (command !== 'aws') throw new Error(`unexpected command ${command}`);
