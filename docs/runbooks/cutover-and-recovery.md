@@ -52,7 +52,7 @@ This creates the six dedicated roles while retaining the old Beta trust/grants.
 Read back roles, immutable OIDC subjects and effective policies before configuring
 consumers. Keep the old executor usable until its jobs and rollback obligations
 have ended. Ordinary `mutate.yml` deployment later requires the reviewed sealed
-Service release identity; that requirement does not apply to this explicit
+Service artifact identity; that requirement does not apply to this explicit
 Foundation-only operator path.
 `deployScope=billing` similarly synthesizes only Billing and requires its separately
 assigned `us-east-1` window.

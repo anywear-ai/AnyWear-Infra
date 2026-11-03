@@ -34,7 +34,7 @@ Service source templates for the stack set this app still synthesizes
 environment stops by deleting the Egress and Runtime stacks, so the Base template
 has one variant. Fixture artifacts are a local stand-in for the
 stage base's Service-built Lambda inputs; deployments download the sealed Service
-release instead. CI repeats all three phases with explicit retention protection
+artifact instead. CI repeats all three phases with explicit retention protection
 and uploads `cdk.matrix/comparison.json` and
 `cdk.protected.matrix/comparison.json` as `infra-source-matrix`.
 
