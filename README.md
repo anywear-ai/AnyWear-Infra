@@ -157,7 +157,7 @@ per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
 every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
-`deploy-runtime`, `restore-release` and `migrate` take a Service release identity.
+`deploy-runtime`, `restore-release` and `migrate` take a Service artifact identity.
 There is no admission-mode or bound input: the only admission value is the exact
 tester allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no
@@ -167,7 +167,7 @@ one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
 E2E qualification executor's one-shot family.
 
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
-`id-token`, no App token; rejects a forbidden operation and an unexpected release
+`id-token`, no App token; rejects a forbidden operation and an unexpected artifact
 identity before any credential) → `verify` (**the only job that reads the Service
 release**: read-only App token only when the operation takes a Service release,
 `contents: read`, no environment and no OIDC; it reads the release and tag ref
@@ -193,7 +193,7 @@ carries the follow-up decision procedure. No step uses `continue-on-error`, so a
 failed or partial operation can never read as complete.
 
 Every Beta entry requires exact reviewed main and protected `beta`; the four
-operations that take a Service release identity also require the reviewed
+operations that take a Service artifact identity also require the reviewed
 Service release tag and commit. The release-identity read and the operation's
 consumed download happen before AWS credentials, and each travelled file is
 re-hashed once in the deploy job before its restricted STS session;
@@ -287,7 +287,7 @@ from newer executor heads. Public registration remained intentionally skipped
 while intake was closed; the recorded provider timeout/retry case is a
 correctness observation, not a latency guarantee.
 
-The stage base's Service-built Lambda assets come from a reviewed Service release
+The stage base's Service-built Lambda assets come from a reviewed Service artifact
 identity: `deploy-platform`/`restore-release` take `service_artifact_tag` and
 `service_commit`, read the sealed artifact and its tag ref over the REST API,
 require the two Lambda bundles and the runtime policy to be present, uploaded and
@@ -304,4 +304,4 @@ readable from the run log and the stack's own parameters. There is no
 committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake
 ceremony stays retired. See the
-[direct release identity procedure](docs/runbooks/cutover-and-recovery.md#direct-release-identity).
+[direct artifact identity procedure](docs/runbooks/cutover-and-recovery.md#direct-artifact-identity).

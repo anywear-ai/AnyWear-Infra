@@ -236,7 +236,7 @@ export function classifyChangeSet(changeSet) {
 
 /**
  * Issue #220: the board-authorized admission rule for a change set created under
- * an unchanged Service release identity.
+ * an unchanged Service artifact identity.
  *
  * A dispatched release that is already deployed may still carry a reviewed,
  * non-replacement Runtime template delta: an Infra-owned alarm or metric-filter

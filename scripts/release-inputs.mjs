@@ -5,7 +5,7 @@ import path from 'node:path';
 import { parseJson, sha256, exact, matches, integer, DIGEST, SHA } from './json-contract.mjs';
 import { SCHEMA_ASSET_NAME } from './schema-asset.mjs';
 
-// The reviewed Service release identity that replaces the committed `selection`:
+// The reviewed Service artifact identity that replaces the committed `selection`:
 // the tag names one sealed artifact; the commit names the Service source it was
 // built from. Both are explicit dispatch inputs. The release itself states the
 // identity a manifest used to carry: tag to commit, immutability and a digest per
@@ -31,7 +31,7 @@ export const RUNTIME_RELEASE_ASSETS = Object.freeze([SCHEMA_ASSET_NAME]);
 // consumed set into it and the deploy job re-hashes those bytes before any
 // credential, so both sides name the same bytes.
 export const SELECTED_RELEASE_DIRECTORY = path.join(root, '.service-artifacts', 'selected');
-// Four operations take one reviewed release identity. `deploy-platform` and
+// Four operations take one reviewed artifact identity. `deploy-platform` and
 // `restore-release` deploy the stage base, which consumes the Service-built Lambda
 // bundles and runtime policy; `deploy-runtime` and `migrate` consume the sealed
 // release's schema asset (its tag, commit and ECR image are resolved separately
@@ -66,7 +66,7 @@ export function validateReleaseInput(env = process.env, operation = env.INFRA_OP
     // The refusal is derived from the one frozen list, so a new release-taking
     // operation can never leave this message claiming an older set.
     if (releaseTag || serviceCommit) {
-      throw new Error(`Only ${RELEASE_IDENTITY_OPERATIONS.join(', ')} take a Service release identity`);
+      throw new Error(`Only ${RELEASE_IDENTITY_OPERATIONS.join(', ')} take a Service artifact identity`);
     }
     return null;
   }

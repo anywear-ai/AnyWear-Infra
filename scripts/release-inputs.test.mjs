@@ -35,7 +35,7 @@ const otherOperations = ['deploy-foundation', 'deploy-billing', 'admission-statu
   'set-testers', 'observe', 'state', 'verify', 'deploy-workload'];
 // The one refusal text, derived from the frozen list rather than retyped, so a
 // future release-taking operation cannot leave this assertion stale.
-const releaseIdentityMessage = `Only ${[...RELEASE_IDENTITY_OPERATIONS].join(', ')} take a Service release identity`;
+const releaseIdentityMessage = `Only ${[...RELEASE_IDENTITY_OPERATIONS].join(', ')} take a Service artifact identity`;
 
 const releaseEnv = (operation) => ({ INFRA_OPERATION: operation, SERVICE_ARTIFACT_TAG: releaseTag,
   SERVICE_COMMIT: serviceCommit });
@@ -108,7 +108,7 @@ async function releaseMock(fixture, { mutateRelease = release => release, mutate
 
 // #243: the four release-taking operations, `migrate` included, take the same
 // explicit identity, and a missing half fails closed before any credential.
-test('every release operation takes the reviewed Service release identity', () => {
+test('every release operation takes the reviewed Service artifact identity', () => {
   for (const operation of releaseOperations) {
     // The restore branch is the regression: this call threw on the pre-fix source.
     assert.deepEqual(validateReleaseInput(releaseEnv(operation)), { releaseTag, serviceCommit });
@@ -167,7 +167,7 @@ test('the frozen asset constants are the four published names and the per-operat
 test('every other operation still rejects a supplied release identity and takes none', () => {
   // The refusal is derived from the frozen list, so it names all four operations.
   assert.equal(releaseIdentityMessage,
-    'Only deploy-platform, deploy-runtime, restore-release, migrate take a Service release identity');
+    'Only deploy-platform, deploy-runtime, restore-release, migrate take a Service artifact identity');
   for (const operation of releaseOperations) assert.ok(releaseIdentityMessage.includes(operation), operation);
   for (const operation of otherOperations) {
     const rejects = fn => assert.throws(fn, (error) => {

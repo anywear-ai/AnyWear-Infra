@@ -63,7 +63,7 @@ env:
   INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
   GH_TELEMETRY: disabled
 jobs:
-  # Reject a forbidden operation, a missing or unexpected Service release identity
+  # Reject a forbidden operation, a missing or unexpected Service artifact identity
   # and unreviewed context before any job holds a token, an environment or an OIDC
   # identity.
   preflight:
@@ -81,7 +81,7 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Validate operation family and reviewed Service release identity
+      - name: Validate operation family and reviewed Service artifact identity
         run: node scripts/check-operation.mjs
   # The only job that reads the Service release. It proves the release and its tag
   # ref over the REST API, requires the asset names this operation consumes to be

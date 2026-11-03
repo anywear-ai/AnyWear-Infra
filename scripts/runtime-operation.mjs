@@ -543,7 +543,7 @@ export async function runOperation(env = process.env, {
   } else {
     // The Base and account-wide stacks take no release input; only the Base stack
     // consumes Service-built Lambda assets, and its deploy proved those bytes
-    // through the reviewed release identity before credentials. A Base deploy
+    // through the reviewed artifact identity before credentials. A Base deploy
     // additionally reads the Infra-owned Runtime stack terminal first (one
     // writer) and takes its live API origin.
     await deployOperationStack(io, operation);

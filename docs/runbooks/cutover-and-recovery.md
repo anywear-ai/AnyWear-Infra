@@ -69,11 +69,11 @@ resource security boundary. Inventory the deployed bootstrap assume/pass chain,
 inline/managed policies and execution role before authorizing that chain. A future
 permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
-## Direct release identity
+## Direct artifact identity
 
 After #158 step C there is no committed selection and no cross-repository native
 asset verification. `deploy-platform`, `deploy-runtime`, `restore-release` and
-`migrate` take one reviewed Service release identity (`service_artifact_tag` +
+`migrate` take one reviewed Service artifact identity (`service_artifact_tag` +
 `service_commit`). A source PR
 reviews the tag and the Service commit; the release and its tag ref are then read
 over the REST API with a read-only token (the tag must resolve to that commit,
@@ -86,15 +86,15 @@ and the runtime policy (`pre-sign-up.zip`, `post-confirmation.zip`,
 re-hashes each travelled byte once against those published digests before any
 credential, then resolves the release tag, Service commit and the ECR digest of the
 immutable `service-artifacts-<service_commit>` tag into the deploy's log and the
-stack's parameters. Every other operation rejects a release identity. No operation
+stack's parameters. Every other operation rejects an artifact identity. No operation
 writes a deployment record (#207): the run, the Environment deployment, the
 stack's own events and the release/ECR identities are the audit facts.
 
 The protected Beta job first checks exact main/workflow/account/region and
-operation, plus the release identity only for `deploy-platform`, `deploy-runtime`,
+operation, plus the artifact identity only for `deploy-platform`, `deploy-runtime`,
 `restore-release` and `migrate`,
 with explicit identity/retention only for CDK families and fixed protected source
-context for other entries. It then reads the release identity and downloads the
+context for other entries. It then reads the artifact identity and downloads the
 files it consumes, and the deploy job immediately re-hashes each downloaded
 byte once before any credential, and only then obtains
 operation-specific restricted AWS OIDC sessions. Final qualification also uses a restricted session, not a role-wide
@@ -194,7 +194,7 @@ that the effective repository policy has the same hash.
    separately assigned existing operator, not an expanded runtime role.
 6. Publish/import the sealed Service baseline with the verified policy hash and
    protected current/rollback list, then deploy the stage base through the
-   ordinary workflow described above with the reviewed Service release identity.
+   ordinary workflow described above with the reviewed Service artifact identity.
    Reconcile Platform later with the same live artifacts and explicit
    `ecrImageRetention=true`, so CDK owns
    the identical policy. Never deploy the default `false` context over the staged
