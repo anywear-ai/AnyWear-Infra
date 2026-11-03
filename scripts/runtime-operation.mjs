@@ -8,6 +8,7 @@ import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platfor
 import { normalizeTesterEmails, runTesterAllowlist } from './tester-allowlist.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
+import { validateDeliveryInput } from './delivery-inputs.mjs';
 import { readLifecycleStatus } from './lifecycle-status.mjs';
 import { runRestoreRelease } from './restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './one-writer.mjs';
@@ -48,6 +49,11 @@ export function validateOperationInputs(env = process.env) {
   // Service-built identity; every other operation must not carry a release
   // identity at all.
   const release = validateReleaseInput(env, operation);
+  // The deploy chain's entry event and its dispatching run belong to the one
+  // operation that deploys a Runtime tuple (#226). `release` is refused here, in
+  // the credential-free preflight, so a tag-shaped dispatch fails before any job
+  // holds a token, an environment or an OIDC identity.
+  validateDeliveryInput(env, operation);
   // The Runtime operations act only on the recorded live identity phase.
   if (operation === 'deploy-runtime' || operation === 'stop-runtime') assertRuntimePhase(operation, env);
   // Only a deployment or a release recovery may vary these workflow-level

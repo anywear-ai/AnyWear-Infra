@@ -1,5 +1,8 @@
 name: Beta infrastructure mutation
-run-name: Beta ${{ inputs.operation }} at ${{ github.sha }}
+# The entry event is readable from the run list: operation, `delivery_trigger`, the
+# artifact tag and the run that dispatched this one (or the actor for a manual
+# dispatch). The `dispatched_by` half is the key the dispatching workflow reads back.
+run-name: "Beta ${{ inputs.operation }}: ${{ inputs.delivery_trigger }} · ${{ inputs.service_artifact_tag }} · by ${{ inputs.dispatched_by || format('@{0}', github.actor) }}"
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +16,20 @@ on:
         default: ''
       service_commit:
         description: Service source commit the sealed artifact was built from; required with the tag
+        type: string
+        default: ''
+      # The deploy chain's context (#226). Only `deploy-runtime` accepts it: a merge
+      # sends `deploy` with the dispatching Service run URL, a human sends the
+      # `manual` default with no run URL, and `release` is refused in the
+      # credential-free preflight so a tag-shaped dispatch fails loudly.
+      delivery_trigger:
+        description: Entry event; deploy (the Service deploy chain) or manual, accepted only by deploy-runtime. release is refused
+        type: choice
+        options: [deploy, release, manual]
+        default: manual
+        required: true
+      dispatched_by:
+        description: HTTPS run URL of the run that dispatched this one; required for delivery_trigger=deploy, empty for manual
         type: string
         default: ''
       identity_phase:
@@ -39,6 +56,11 @@ permissions:
 concurrency:
   group: anywear-infra-runtime
   cancel-in-progress: false
+  # #226: bounded, non-cancelling serialization. `cancel-in-progress: true` is a
+  # workflow validation error with `queue`, so `false` is the only legal pairing.
+  # actionlint 1.7.12 rejects the key before it knows it; the reviewed ignore lives
+  # in `.github/actionlint.yaml`.
+  queue: max
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Single-account constants, not environment configuration: `vars` resolves at
@@ -55,6 +77,12 @@ env:
   # never open the gate.
   ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
   INFRA_OPERATION: ${{ inputs.operation }}
+  # Both are passed to every operation unchanged: their per-operation scope is
+  # enforced by `validateDeliveryInput` in the credential-free preflight, so a
+  # trigger that names an event on another operation is a refusal rather than an
+  # input the workflow silently dropped.
+  DELIVERY_TRIGGER: ${{ inputs.delivery_trigger }}
+  DISPATCHED_BY: ${{ inputs.dispatched_by }}
   SERVICE_ARTIFACT_TAG: ${{ inputs.service_artifact_tag }}
   SERVICE_COMMIT: ${{ inputs.service_commit }}
   TESTER_EMAILS: ${{ inputs.tester_emails }}
@@ -147,3 +175,44 @@ jobs:
           # root and `prove-release-bytes.mjs` would fail closed on every release.
           path: .service-artifacts/selected
       - uses: ./.github/actions/deploy-operation
+  # #226: the deploy chain's qualification hop. It runs only after `deploy`
+  # succeeded for `deploy-runtime`. It declares no `environment`, holds no
+  # `id-token` and no AWS permission, and mints exactly one App installation token,
+  # narrowed to AnyWear-E2E with `actions: write` only. It dispatches the
+  # qualification and does not wait for it: a red E2E run is a red E2E run and
+  # leaves the deployment's success standing. The dispatch step is the last step in
+  # the job, so nothing runs after the dispatch.
+  qualify-hook:
+    needs: deploy
+    if: success() && inputs.operation == 'deploy-runtime'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # The repository-module rule: a job that runs `node scripts/...` installs the
+      # pinned dependencies first, so a module import cannot fail on a missing tree.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Create the AnyWear-E2E qualification dispatch token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: git-malu
+          repositories: AnyWear-E2E
+          permission-actions: write
+      # Pre-dispatch dedupe, the dispatch with `return_run_details: true` and the
+      # post-dispatch run-name check are one step: nothing may follow the dispatch.
+      - name: Dispatch the deploy chain's qualification and print its run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: node scripts/qualification-dispatch.mjs

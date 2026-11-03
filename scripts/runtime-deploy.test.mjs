@@ -52,7 +52,10 @@ const SCHEMA_GATE = async () => ({ result: 'compatible' });
 const env = (overrides = {}) => ({
   GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '2',
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main', GITHUB_REF: 'refs/heads/main',
-  INFRA_OPERATION: 'deploy-runtime', INFRA_IDENTITY_PHASE: 'roles-added', INFRA_RETENTION_PROTECTION: 'true', ...overrides,
+  INFRA_OPERATION: 'deploy-runtime', INFRA_IDENTITY_PHASE: 'roles-added', INFRA_RETENTION_PROTECTION: 'true',
+  // #226: this deploy was dispatched by a human, so the deploy chain's context is
+  // the workflow default pair.
+  DELIVERY_TRIGGER: 'manual', DISPATCHED_BY: '', ...overrides,
 });
 const TEMPLATE = JSON.parse(readFileSync('test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json', 'utf8'));
 const SYNTHESIZED = { template: TEMPLATE, raw_sha256: 'a'.repeat(64),
