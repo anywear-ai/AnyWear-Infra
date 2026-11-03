@@ -98,10 +98,10 @@ test('runtime.yml state reports the allowlist with the mode parameter absent', a
 
 test('migrate completes with the mode parameter absent and reads no admission state', async () => {
   const surface = modeAbsentIo();
-  // #243: the migration takes the sealed release identity; Beta's Platform and
+  // #243: the migration takes the sealed artifact identity; Beta's Platform and
   // Egress stacks are present and terminal, which is Beta's normal running state.
   await captureStdout(() => runOperation({ ...baseEnv, INFRA_OPERATION: 'migrate',
-    SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit },
+    SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit },
   { createIo: async () => surface.io }));
   assert.ok(surface.calls.some(call => call[0] === 'oneShot' && call[1] === 'migrate'));
   assert.equal(surface.calls.some(call => call[0] === 'ssm'), false, 'migrate reads no admission state');
@@ -110,7 +110,7 @@ test('migrate completes with the mode parameter absent and reads no admission st
 test('restore-release completes with the mode parameter absent and reads no admission state', async () => {
   const surface = modeAbsentIo();
   await captureStdout(() => runOperation({ ...baseEnv, INFRA_OPERATION: 'restore-release',
-    SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit },
+    SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit },
   { createIo: async () => surface.io }));
   assert.ok(surface.calls.some(call => call[0] === 'deploy' && call[1] === 'AnyWearPlatformStack-beta'));
   assert.equal(surface.calls.some(call => call[0] === 'ssm'), false, 'restore-release reads no admission state');

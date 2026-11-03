@@ -7,12 +7,12 @@ on:
         type: choice
         options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers]
         required: true
-      service_release_tag:
-        description: Sealed Service release tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
+      service_artifact_tag:
+        description: Sealed Service artifact tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
         type: string
         default: ''
       service_commit:
-        description: Service source commit the sealed release was built from; required with the tag
+        description: Service source commit the sealed artifact was built from; required with the tag
         type: string
         default: ''
       identity_phase:
@@ -55,7 +55,7 @@ env:
   # never open the gate.
   ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
   INFRA_OPERATION: ${{ inputs.operation }}
-  SERVICE_RELEASE_TAG: ${{ inputs.service_release_tag }}
+  SERVICE_ARTIFACT_TAG: ${{ inputs.service_artifact_tag }}
   SERVICE_COMMIT: ${{ inputs.service_commit }}
   TESTER_EMAILS: ${{ inputs.tester_emails }}
   NAT_EIP_ALLOCATION_ID: ${{ inputs.nat_eip_allocation_id }}
@@ -63,7 +63,7 @@ env:
   INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
   GH_TELEMETRY: disabled
 jobs:
-  # Reject a forbidden operation, a missing or unexpected Service release identity
+  # Reject a forbidden operation, a missing or unexpected Service artifact identity
   # and unreviewed context before any job holds a token, an environment or an OIDC
   # identity.
   preflight:
@@ -81,7 +81,7 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Validate operation family and reviewed Service release identity
+      - name: Validate operation family and reviewed Service artifact identity
         run: node scripts/check-operation.mjs
   # The only job that reads the Service release. It proves the release and its tag
   # ref over the REST API, requires the asset names this operation consumes to be

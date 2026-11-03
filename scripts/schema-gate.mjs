@@ -10,7 +10,7 @@ import { SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 
 // The pre-mutation schema-boundary gate (#194).
 //
-// `deploy-runtime` reads the sealed release's `service-schema.json` and the live
+// `deploy-runtime` reads the sealed artifact's `service-schema.json` and the live
 // applied Drizzle journal before it synthesises or changes anything. The live
 // read is one bounded, read-only `schema-journal` one-shot from the existing
 // `verify` task family; its single canonical-JSON record is read back from the
@@ -440,7 +440,7 @@ export async function readSchemaBoundaryEvidence({ io, release, deployedRevision
     serviceCommit: release?.serviceCommit, imageDigest: release?.imageDigest };
   if (!SHA.test(releaseRevision.serviceCommit ?? '') || !DIGEST.test(releaseRevision.imageDigest ?? '')) {
     throw new SchemaBoundaryError('reader-unavailable', 'the release identity is unreadable',
-      [violation('reader-unavailable', 'a sealed release Service commit and image digest',
+      [violation('reader-unavailable', 'a sealed artifact Service commit and image digest',
         `commit ${releaseRevision.serviceCommit ?? 'absent'} digest ${releaseRevision.imageDigest ?? 'absent'}`)],
       { reader: null, readers: [], applied_rows: [] });
   }

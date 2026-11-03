@@ -20,8 +20,8 @@ and must not be relabeled as an Infra-produced deployment.
   deployment input. Client publishes independently through deployed interfaces.
 - There is no committed selection and no cross-repository native-asset
   verification path. `deploy-platform`, `deploy-runtime`, `restore-release` and
-  `migrate` take one reviewed Service release identity (`service_release_tag` +
-  `service_commit`), read the sealed release and its tag ref over the REST API,
+  `migrate` take one reviewed Service artifact identity (`service_artifact_tag` +
+  `service_commit`), read the sealed artifact and its tag ref over the REST API,
   require the release's schema declaration (`service-schema.json`) plus the two
   Lambda bundles and runtime policy to be present, uploaded and digest-valid
   while ignoring extras such as the retired legacy manifest, and prove the
@@ -41,8 +41,8 @@ and must not be relabeled as an Infra-produced deployment.
   release tag, Service commit and the ECR digest of the immutable
   `service-artifacts-<service_commit>` tag into its step
   log and the stack's parameters. No
-  Service-built artifact is committed here. Every other operation rejects a
-  release identity.
+  Service-built artifact is committed here. Every other operation rejects an
+  artifact identity.
 - There is no operation or deployment record (#207). An operation is audited from
   platform facts: the run and its job/step conclusions, the GitHub Environment
   deployment, CloudFormation stack events and status, the immutable release
@@ -72,7 +72,7 @@ and must not be relabeled as an Infra-produced deployment.
 - Use `gh` for GitHub and `aws` for AWS. Verify account, profile and region before
   cloud commands. Run package/build commands only within this repository.
 - Before AWS mutations, verify protected main/workflow, explicit operation,
-  account/region, the reviewed Service release identity when the operation takes
+  account/region, the reviewed Service artifact identity when the operation takes
   one, identity phase, retention protection and rollback inputs. Use one Infra
   runtime queue. Enumerate conflicting Actions, local processes, CloudFormation
   operations and ECS/helper tasks; timeout does not establish cessation. Repository
@@ -133,9 +133,9 @@ and must not be relabeled as an Infra-produced deployment.
   permissions to make a blocked bootstrap/consumer operation succeed.
 - Since #195 `deploy-runtime` and `stop-runtime` are the only mutation paths for
   the release slice (`AnyWearRuntimeStack-beta`); AnyWear-Service carries no CDK
-  source or deploy chain. `deploy-runtime` takes one reviewed Service release
-  identity (`service_release_tag` + `service_commit`), downloads and validates
-  the sealed release's `service-schema.json`, resolves the immutable ECR image
+  source or deploy chain. `deploy-runtime` takes one reviewed Service artifact
+  identity (`service_artifact_tag` + `service_commit`), downloads and validates
+  the sealed artifact's `service-schema.json`, resolves the immutable ECR image
   digest, admits the pre-mutation schema boundary with one bounded read-only
   `schema-journal` verify task under the existing verification-task role,
   judges and executes the change set, runs the unchanged 300-second six-signal

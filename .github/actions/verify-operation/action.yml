@@ -1,5 +1,5 @@
 name: Verify reviewed Beta operation inputs
-description: Verify the reviewed Service release identity before any job obtains AWS credentials
+description: Verify the reviewed Service artifact identity before any job obtains AWS credentials
 inputs:
   app_private_key:
     required: true
@@ -16,7 +16,7 @@ runs:
         node-version: 24
     - run: npm ci
       shell: bash
-    - name: Validate operation family and reviewed Service release identity before credentials
+    - name: Validate operation family and reviewed Service artifact identity before credentials
       shell: bash
       run: node scripts/check-operation.mjs
     - name: Create the read-only Service release token when this operation takes a release
@@ -29,7 +29,7 @@ runs:
         owner: git-malu
         repositories: AnyWear-Service
         permission-contents: read
-    - name: Read the Service release identity over REST and download only the consumed assets
+    - name: Read the Service artifact identity over REST and download only the consumed assets
       id: release-assets
       shell: bash
       env:

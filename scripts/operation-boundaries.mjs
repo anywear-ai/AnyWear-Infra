@@ -184,7 +184,7 @@ export function families(env, purpose) {
     if (boundary.readOnly) throw new Error('Read-only observation cannot qualify with tasks');
     // Observation no longer runs a verification task: the immutable-release
     // check that produced it moved into the deployment operations that prove the
-    // sealed release before any credential.
+    // sealed artifact before any credential.
     return [];
   }
   if (purpose !== 'operation') throw new Error('Unknown credential purpose');

@@ -241,7 +241,7 @@ test('every workflow gate on the release identity names exactly RELEASE_IDENTITY
     assert.deepEqual(named, [...RELEASE_IDENTITY_OPERATIONS].sort(), label);
   }
   // The only input description that enumerates the operations names each of them.
-  const description = mutate.on.workflow_dispatch.inputs.service_release_tag.description;
+  const description = mutate.on.workflow_dispatch.inputs.service_artifact_tag.description;
   for (const operation of RELEASE_IDENTITY_OPERATIONS) assert.ok(description.includes(operation), operation);
 });
 

@@ -150,7 +150,7 @@ export async function readRuntimeStageContract(io) {
 }
 
 // The deployment parameters whose values come from the stage contract rather than
-// from the sealed release or the live stack.
+// from the sealed artifact or the live stack.
 export async function readRuntimeDeployValues(io) {
   const response = await io.aws(['ssm', 'get-parameters', '--names', ...RUNTIME_DEPLOY_PARAMETER_INPUTS], 'ap-east-1');
   const invalid = response.InvalidParameters ?? [];

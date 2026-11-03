@@ -30,7 +30,7 @@ const env = (overrides = {}) => ({
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
   INFRA_OPERATION: 'deploy-platform', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
-  SERVICE_RELEASE_TAG: releaseTag, SERVICE_COMMIT: serviceCommit,
+  SERVICE_ARTIFACT_TAG: releaseTag, SERVICE_COMMIT: serviceCommit,
   // A credential endpoint that must never be consulted on this path.
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'must-not-be-used',
   ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.invalid/oidc',
@@ -119,7 +119,7 @@ test('a missing, malformed or different digest set fails closed', async () => {
 
 test('an operation that consumes no release requires an empty asset set', async () => {
   await travelled();
-  const nonRelease = { INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '', SERVICE_COMMIT: '' };
+  const nonRelease = { INFRA_OPERATION: 'deploy-foundation', SERVICE_ARTIFACT_TAG: '', SERVICE_COMMIT: '' };
   const empty = await run({ ...nonRelease, VERIFIED_RELEASE_ASSETS: '{}' });
   assert.equal(empty.code, 0, empty.stderr);
   assert.match(empty.stdout, /consumes no Service release/);
@@ -128,7 +128,7 @@ test('an operation that consumes no release requires an empty asset set', async 
   assert.match(carried.stderr, /Invalid travelled release assets fields/);
 });
 
-// #243: `migrate` takes the release identity and runs the sealed release's
+// #243: `migrate` takes the release identity and runs the sealed artifact's
 // migration, so it travels exactly `service-schema.json` and strictly loads it.
 // The summary line must not claim a deploy the operation does not perform.
 test('migrate proves only the schema asset and claims no deploy', async () => {

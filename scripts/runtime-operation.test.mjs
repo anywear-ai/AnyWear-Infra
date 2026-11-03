@@ -68,7 +68,7 @@ test('a Base deploy passes the live Base parameter as the ApiOriginDomainName pa
       throw new Error(`Unexpected AWS call ${args.join(' ')}`);
     };
     const io = await createRuntimeIo({ ...env, INFRA_OPERATION: operation, TESTER_EMAILS: '[]',
-      SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit }, {
+      SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit }, {
       purpose: 'operation', run, changedStacks,
       assume: async () => ({ AWS_ACCESS_KEY_ID: 'x', AWS_SECRET_ACCESS_KEY: 'y', AWS_SESSION_TOKEN: 'z' }),
       directory: '/verified',
@@ -115,7 +115,7 @@ test('delete-egress proves the retained EIP allocation before destroying the sta
 });
 
 // #193: a release operation resolves the deployed image digest from the immutable
-// ECR tag Service's release chain pushes for one Service commit.
+// ECR tag Service's deploy chain pushes for one Service commit.
 test('a release operation resolves the immutable ECR tag to its image digest', async () => {
   const tag = `service-artifacts-${serviceCommit}`;
   const calls = [];
@@ -155,7 +155,7 @@ const verifyEnv = {
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
   INFRA_OPERATION: 'deploy-runtime', INFRA_IDENTITY_PHASE: 'roles-added', INFRA_RETENTION_PROTECTION: 'true',
-  SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit,
+  SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit,
 };
 const revision = { commit: serviceCommit, digest: imageDigest };
 const verifyTaskArn = `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`;
@@ -247,7 +247,7 @@ test('the one-shot probe refuses a wrong action, command, image or missing ident
     /One-shot probe identity missing/);
 });
 
-// #243: `migrate` takes the sealed Service release identity instead of reading an
+// #243: `migrate` takes the sealed Service artifact identity instead of reading an
 // image out of `AnyWearRuntimeStack-beta`, and reads Beta's stacks only to refuse a
 // stopped or racing environment. These cases drive the real `runOperation` over an
 // injected io, so what they observe is the real precondition order: every refusal
@@ -255,7 +255,7 @@ test('the one-shot probe refuses a wrong action, command, image or missing ident
 const baseStack = 'AnyWearPlatformStack-beta';
 const migrateEnv = (overrides = {}) => ({
   ...env, INFRA_OPERATION: 'migrate',
-  SERVICE_RELEASE_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit, ...overrides,
+  SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit, ...overrides,
 });
 
 // The stack surface the operation reads: Platform, Egress and Runtime. A `null`
@@ -305,7 +305,7 @@ async function captureStreams(run) {
 
 test('migrate without a release identity is refused before any AWS call', async () => {
   let created = false;
-  await assert.rejects(runOperation({ ...migrateEnv(), SERVICE_RELEASE_TAG: '', SERVICE_COMMIT: '' }, {
+  await assert.rejects(runOperation({ ...migrateEnv(), SERVICE_ARTIFACT_TAG: '', SERVICE_COMMIT: '' }, {
     createIo: async () => { created = true; return migrateStacksIo().io; },
   }), /^Error: migrate requires the explicit Service release tag$/);
   assert.equal(created, false, 'the refusal precedes the restricted session');

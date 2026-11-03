@@ -34,7 +34,7 @@ Service source templates for the stack set this app still synthesizes
 environment stops by deleting the Egress and Runtime stacks, so the Base template
 has one variant. Fixture artifacts are a local stand-in for the
 stage base's Service-built Lambda inputs; deployments download the sealed Service
-release instead. CI repeats all three phases with explicit retention protection
+artifact instead. CI repeats all three phases with explicit retention protection
 and uploads `cdk.matrix/comparison.json` and
 `cdk.protected.matrix/comparison.json` as `infra-source-matrix`.
 
@@ -151,13 +151,13 @@ chain per deployable unit. `production.yml` stays in the tree but is
 
 The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
 surface is per workflow, so `identity_phase`, `retention_protection`,
-`tester_emails`, `service_release_tag` and `service_commit` are
+`tester_emails`, `service_artifact_tag` and `service_commit` are
 workflow-level inputs; `scripts/runtime-operation.mjs` enforces their
 per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
 every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
-`deploy-runtime`, `restore-release` and `migrate` take a Service release identity.
+`deploy-runtime`, `restore-release` and `migrate` take a Service artifact identity.
 There is no admission-mode or bound input: the only admission value is the exact
 tester allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no
@@ -167,7 +167,7 @@ one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
 E2E qualification executor's one-shot family.
 
 `mutate.yml` is one credential-timing chain: `preflight` (no environment, no
-`id-token`, no App token; rejects a forbidden operation and an unexpected release
+`id-token`, no App token; rejects a forbidden operation and an unexpected artifact
 identity before any credential) → `verify` (**the only job that reads the Service
 release**: read-only App token only when the operation takes a Service release,
 `contents: read`, no environment and no OIDC; it reads the release and tag ref
@@ -193,7 +193,7 @@ carries the follow-up decision procedure. No step uses `continue-on-error`, so a
 failed or partial operation can never read as complete.
 
 Every Beta entry requires exact reviewed main and protected `beta`; the four
-operations that take a Service release identity also require the reviewed
+operations that take a Service artifact identity also require the reviewed
 Service release tag and commit. The release-identity read and the operation's
 consumed download happen before AWS credentials, and each travelled file is
 re-hashed once in the deploy job before its restricted STS session;
@@ -287,9 +287,9 @@ from newer executor heads. Public registration remained intentionally skipped
 while intake was closed; the recorded provider timeout/retry case is a
 correctness observation, not a latency guarantee.
 
-The stage base's Service-built Lambda assets come from a reviewed Service release
-identity: `deploy-platform`/`restore-release` take `service_release_tag` and
-`service_commit`, read the sealed release and its tag ref over the REST API,
+The stage base's Service-built Lambda assets come from a reviewed Service artifact
+identity: `deploy-platform`/`restore-release` take `service_artifact_tag` and
+`service_commit`, read the sealed artifact and its tag ref over the REST API,
 require the two Lambda bundles and the runtime policy to be present, uploaded and
 digest-valid (extras such as the retired legacy manifest are ignored), download
 only those three, and re-hash each travelled byte once in the deploy job before
@@ -304,4 +304,4 @@ readable from the run log and the stack's own parameters. There is no
 committed selection, no release manifest, no vendored Service parser
 and no cross-repository native-attestation path; publication ZIP/receipt/handshake
 ceremony stays retired. See the
-[direct release identity procedure](docs/runbooks/cutover-and-recovery.md#direct-release-identity).
+[direct artifact identity procedure](docs/runbooks/cutover-and-recovery.md#direct-artifact-identity).

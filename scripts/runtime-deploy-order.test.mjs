@@ -16,7 +16,7 @@ const env = {
   GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
   INFRA_OPERATION: 'deploy-platform', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true',
-  SERVICE_RELEASE_TAG: 'beta-test', SERVICE_COMMIT: 'b'.repeat(40),
+  SERVICE_ARTIFACT_TAG: 'beta-test', SERVICE_COMMIT: 'b'.repeat(40),
 };
 
 
@@ -78,7 +78,7 @@ test('a completed Base deploy is a changed stack even when the retention step th
 
 test('a completed non-Base deploy marks exactly its own stack changed', async () => {
   const changedStacks = [];
-  const foundationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '', SERVICE_COMMIT: '' };
+  const foundationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_ARTIFACT_TAG: '', SERVICE_COMMIT: '' };
   const run = async (command, args) => {
     if (command === 'npx') return { stdout: '', stderr: '' };
     if (command === 'aws' && args[0] === 'iam' && args[1]?.startsWith('simulate-')) return simulatorAllowed(args);
@@ -117,7 +117,7 @@ test('a failed operation that already changed a stack appends one run-summary li
       },
     };
     const createIo = async (_environment, options) => { io.changedStacks = options.changedStacks; return io; };
-    const operationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '',
+    const operationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_ARTIFACT_TAG: '',
       SERVICE_COMMIT: '', GITHUB_STEP_SUMMARY: summary };
     await assert.rejects(runOperation(operationEnv, { createIo }), /the post-mutation gate refused/);
     const line = await readFile(summary, 'utf8');
@@ -139,7 +139,7 @@ test('a refusal before any mutation appends no changed-stack summary line', asyn
       async deploy() { throw new Error('must not deploy'); },
     };
     const createIo = async () => io;
-    const operationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_RELEASE_TAG: '',
+    const operationEnv = { ...env, INFRA_OPERATION: 'deploy-foundation', SERVICE_ARTIFACT_TAG: '',
       SERVICE_COMMIT: '', GITHUB_STEP_SUMMARY: summary };
     await assert.rejects(runOperation(operationEnv, { createIo }), /refused before any mutation/);
     await assert.rejects(readFile(summary, 'utf8'), /ENOENT/);

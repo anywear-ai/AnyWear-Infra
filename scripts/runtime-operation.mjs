@@ -90,7 +90,7 @@ export function validateOperationInputs(env = process.env) {
 }
 const baseStack = 'AnyWearPlatformStack-beta';
 const egressStack = 'AnyWearEgressStack-beta';
-// The ECR repository Service's release chain pushes to. Tag immutability makes
+// The ECR repository Service's deploy chain pushes to. Tag immutability makes
 // `service-artifacts-<commit>` a one-image lookup, so a release operation can
 // record the deployed image digest from ECR instead of a release manifest.
 export const SERVICE_IMAGE_REPOSITORY = 'beta-anywear-service';
@@ -501,7 +501,7 @@ export async function runOperation(env = process.env, {
   else if (operation === 'migrate') {
     // #243: the migration runs the release the operator names, whether or not it
     // is deployed. There is no Runtime stack to read an image from — the stack
-    // cannot be created before the migration it needs — so the sealed release
+    // cannot be created before the migration it needs — so the sealed artifact
     // identity resolved above is the only source of the image. The stack reads
     // below are refusals, not image selection: they stop a stopped or racing
     // environment by name before the task is registered, instead of letting the
@@ -543,7 +543,7 @@ export async function runOperation(env = process.env, {
   } else {
     // The Base and account-wide stacks take no release input; only the Base stack
     // consumes Service-built Lambda assets, and its deploy proved those bytes
-    // through the reviewed release identity before credentials. A Base deploy
+    // through the reviewed artifact identity before credentials. A Base deploy
     // additionally reads the Infra-owned Runtime stack terminal first (one
     // writer) and takes its live API origin.
     await deployOperationStack(io, operation);
