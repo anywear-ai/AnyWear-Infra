@@ -4,7 +4,7 @@ import { parseJson, sha256, exact, matches, integer, HASH } from './json-contrac
 
 // The consumer side of the Service `service-schema.json` release asset (#194).
 //
-// AnyWear-Service publishes one sealed release asset that states the database
+// AnyWear-Service publishes one sealed artifact whose schema asset states the database
 // schema the image can run against: the ordered Drizzle journal, the image's
 // current and minimum application schema version and the migration boundary that
 // applies to the minimum. Infra's `deploy-runtime` reads it here, before any AWS

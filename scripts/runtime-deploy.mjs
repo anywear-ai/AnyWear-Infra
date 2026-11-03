@@ -133,7 +133,7 @@ export function assertLiveRuntimeIdentity(liveNormalisedHash, accepted = accepte
  */
 export function runtimeDeployParameters({ liveParameters = [], deployValues, release }) {
   if (!Array.isArray(liveParameters)) throw new Error('Invalid live Runtime parameters');
-  if (!release || typeof release !== 'object') throw new Error('A sealed release identity is required');
+  if (!release || typeof release !== 'object') throw new Error('A sealed artifact identity is required');
   if (!SHA.test(release.serviceCommit ?? '')) throw new Error('Invalid release Service commit');
   if (!DIGEST.test(release.imageDigest ?? '')) throw new Error('Invalid release image digest');
   if (!deployValues || typeof deployValues !== 'object') throw new Error('The Runtime deploy inputs were not read');

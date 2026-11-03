@@ -6,7 +6,7 @@ import { parseJson, sha256, exact, matches, integer, DIGEST, SHA } from './json-
 import { SCHEMA_ASSET_NAME } from './schema-asset.mjs';
 
 // The reviewed Service release identity that replaces the committed `selection`:
-// the tag names one sealed release; the commit names the Service source it was
+// the tag names one sealed artifact; the commit names the Service source it was
 // built from. Both are explicit dispatch inputs. The release itself states the
 // identity a manifest used to carry: tag to commit, immutability and a digest per
 // asset, all read from the documented REST representation.
@@ -21,7 +21,7 @@ export const RELEASE_ASSET_NAMES = Object.freeze(['pre-sign-up.zip', 'post-confi
 // The three this repository's stage base consumes. `service-schema.json` belongs
 // to the Service runtime: `deploy-platform`/`restore-release` never download it.
 export const STAGE_BASE_ASSETS = Object.freeze(['pre-sign-up.zip', 'post-confirmation.zip', 'runtime-policy.json']);
-// The one asset `deploy-runtime` and `migrate` consume: the sealed release's schema
+// The one asset `deploy-runtime` and `migrate` consume: the sealed artifact's schema
 // boundary, which the deploy job re-hashes and strictly validates before any
 // credential; `deploy-runtime`'s gate then compares it against the live applied
 // journal before any stack mutation, and `migrate` runs the release it names.
@@ -60,7 +60,7 @@ export function releaseAssetsFor(operation) {
 // schema asset, and every other operation takes none and rejects a supplied
 // release identity.
 export function validateReleaseInput(env = process.env, operation = env.INFRA_OPERATION) {
-  const releaseTag = env.SERVICE_RELEASE_TAG ?? '';
+  const releaseTag = env.SERVICE_ARTIFACT_TAG ?? '';
   const serviceCommit = env.SERVICE_COMMIT ?? '';
   if (!RELEASE_IDENTITY_OPERATIONS.includes(operation)) {
     // The refusal is derived from the one frozen list, so a new release-taking

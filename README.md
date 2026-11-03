@@ -151,7 +151,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 
 The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
 surface is per workflow, so `identity_phase`, `retention_protection`,
-`tester_emails`, `service_release_tag` and `service_commit` are
+`tester_emails`, `service_artifact_tag` and `service_commit` are
 workflow-level inputs; `scripts/runtime-operation.mjs` enforces their
 per-operation scope in preflight, before any credential. Only a `deploy-*`
 operation or `restore-release` may vary identity phase and retention protection;
@@ -288,8 +288,8 @@ while intake was closed; the recorded provider timeout/retry case is a
 correctness observation, not a latency guarantee.
 
 The stage base's Service-built Lambda assets come from a reviewed Service release
-identity: `deploy-platform`/`restore-release` take `service_release_tag` and
-`service_commit`, read the sealed release and its tag ref over the REST API,
+identity: `deploy-platform`/`restore-release` take `service_artifact_tag` and
+`service_commit`, read the sealed artifact and its tag ref over the REST API,
 require the two Lambda bundles and the runtime policy to be present, uploaded and
 digest-valid (extras such as the retired legacy manifest are ignored), download
 only those three, and re-hash each travelled byte once in the deploy job before

@@ -825,7 +825,7 @@ test('one contract read yields both the hashed stage inputs and the bake values'
 test('a deploy-runtime dispatch from the wrong source, workflow family, account or region fails before credentials', () => {
   const dispatch = { ...env(), GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
     AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
-    SERVICE_RELEASE_TAG: release.releaseTag, SERVICE_COMMIT: SERVICE_SHA };
+    SERVICE_ARTIFACT_TAG: release.releaseTag, SERVICE_COMMIT: SERVICE_SHA };
   const inputs = validateOperationInputs(dispatch);
   assert.equal(inputs.operation, 'deploy-runtime');
   assert.deepEqual(inputs.service_release, { releaseTag: release.releaseTag, serviceCommit: SERVICE_SHA });
@@ -846,8 +846,8 @@ test('a deploy-runtime dispatch from the wrong source, workflow family, account 
   assert.throws(() => validateOperationInputs({ ...dispatch,
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main' }),
   /Operation is forbidden for this workflow family/);
-  // The sealed release identity is mandatory for this operation.
-  assert.throws(() => validateOperationInputs({ ...dispatch, SERVICE_RELEASE_TAG: '' }),
+  // The sealed artifact identity is mandatory for this operation.
+  assert.throws(() => validateOperationInputs({ ...dispatch, SERVICE_ARTIFACT_TAG: '' }),
     /deploy-runtime requires the explicit Service release tag/);
   assert.throws(() => validateOperationInputs({ ...dispatch, SERVICE_COMMIT: 'not-a-sha' }),
     /Service release source commit/);
@@ -865,7 +865,7 @@ const DELTA_CHANGE_SET = { Status: 'CREATE_COMPLETE', ExecutionStatus: 'AVAILABL
 // summary the operation's catch appends to.
 const operationEnv = (overrides = {}) => ({ ...env(), GITHUB_REPOSITORY_ID: '1409047265', GITHUB_EVENT_NAME: 'workflow_dispatch',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', ENABLE_BETA_MUTATION: 'true',
-  SERVICE_RELEASE_TAG: release.releaseTag, SERVICE_COMMIT: SERVICE_SHA, ...overrides });
+  SERVICE_ARTIFACT_TAG: release.releaseTag, SERVICE_COMMIT: SERVICE_SHA, ...overrides });
 
 async function withSummary(run) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-runtime-summary-'));

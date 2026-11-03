@@ -120,7 +120,7 @@ test('the loader refuses a missing, empty or duplicate-key asset before any AWS 
 
 test('the fixture content hash is stable canonical JSON plus the publisher newline', () => {
   // The Service publisher writes `canonicalJson(asset) + "\n"`; the fixture keeps
-  // those exact bytes so its digest is the one a sealed release would publish.
+  // those exact bytes so its digest is the one a sealed artifact would publish.
   const text = assetBytes.toString('utf8');
   assert.equal(text.endsWith('}\n'), true);
   const canonical = (value) => {

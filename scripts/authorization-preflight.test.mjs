@@ -196,7 +196,7 @@ test('the deploy, change-set and destroy paths run zero simulations', async () =
   const deployIo = await createRuntimeIo(deployEnv, { purpose: 'operation', run, assume });
   await deployIo.deploy('AnyWearEgressStack-beta');
   const changeSetEnv = { ...operationEnvironment('deploy-runtime'), INFRA_IDENTITY_PHASE: 'roles-added',
-    SERVICE_RELEASE_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
+    SERVICE_ARTIFACT_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
   const changeSetIo = await createRuntimeIo(changeSetEnv, { purpose: 'operation', run, assume });
   await changeSetIo.deployRuntimeChangeSet({ args: ['cdk', 'deploy', 'AnyWearRuntimeStack-beta', '--no-execute'] });
   const destroyEnv = operationEnvironment('delete-egress');
@@ -213,7 +213,7 @@ test('the deploy, change-set and destroy paths run zero simulations', async () =
 // (and the schema-journal probe runs the same plan before the change set exists).
 test('the schema-journal probe still fails closed when the runtime role denies a bake read', async () => {
   const env = { ...operationEnvironment('deploy-runtime'), INFRA_IDENTITY_PHASE: 'roles-added',
-    SERVICE_RELEASE_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
+    SERVICE_ARTIFACT_TAG: 'service-artifacts-4f2ba555', SERVICE_COMMIT: '4f2ba555'.padEnd(40, '0') };
   const revision = { digest: `sha256:${'c'.repeat(64)}`, commit: 'd'.repeat(40) };
   for (const denied of ['cloudwatch:DescribeAlarms', 'logs:FilterLogEvents']) {
     const calls = [];

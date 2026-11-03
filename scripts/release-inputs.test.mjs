@@ -37,7 +37,7 @@ const otherOperations = ['deploy-foundation', 'deploy-billing', 'admission-statu
 // future release-taking operation cannot leave this assertion stale.
 const releaseIdentityMessage = `Only ${[...RELEASE_IDENTITY_OPERATIONS].join(', ')} take a Service release identity`;
 
-const releaseEnv = (operation) => ({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag,
+const releaseEnv = (operation) => ({ INFRA_OPERATION: operation, SERVICE_ARTIFACT_TAG: releaseTag,
   SERVICE_COMMIT: serviceCommit });
 
 const directories = [];
@@ -118,11 +118,11 @@ test('every release operation takes the reviewed Service release identity', () =
   for (const operation of releaseOperations) {
     assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_COMMIT: serviceCommit }),
       new RegExp(`${operation} requires the explicit Service release tag`));
-    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag }),
+    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_ARTIFACT_TAG: releaseTag }),
       /Invalid Service release source commit/);
-    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag,
+    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_ARTIFACT_TAG: releaseTag,
       SERVICE_COMMIT: 'a'.repeat(39) }), /Invalid Service release source commit/);
-    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: 'bad tag',
+    assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_ARTIFACT_TAG: 'bad tag',
       SERVICE_COMMIT: serviceCommit }), /requires the explicit Service release tag/);
     // A restore dispatch with no release identity is a failure, not a null gate.
     assert.throws(() => validateReleaseInput({ INFRA_OPERATION: operation }), /requires the explicit Service release tag/);
@@ -131,7 +131,7 @@ test('every release operation takes the reviewed Service release identity', () =
   // identity is the named refusal the operator acts on.
   assert.throws(() => validateReleaseInput({ INFRA_OPERATION: 'migrate' }),
     /^Error: migrate requires the explicit Service release tag$/);
-  assert.throws(() => validateReleaseInput({ INFRA_OPERATION: 'migrate', SERVICE_RELEASE_TAG: releaseTag }),
+  assert.throws(() => validateReleaseInput({ INFRA_OPERATION: 'migrate', SERVICE_ARTIFACT_TAG: releaseTag }),
     /^Error: Invalid Service release source commit$/);
 });
 
@@ -175,7 +175,7 @@ test('every other operation still rejects a supplied release identity and takes 
       return true;
     });
     rejects(() => validateReleaseInput(releaseEnv(operation)));
-    rejects(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_RELEASE_TAG: releaseTag }));
+    rejects(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_ARTIFACT_TAG: releaseTag }));
     rejects(() => validateReleaseInput({ INFRA_OPERATION: operation, SERVICE_COMMIT: serviceCommit }));
     assert.equal(validateReleaseInput({ INFRA_OPERATION: operation }), null, operation);
   }
@@ -408,7 +408,7 @@ test('fails closed without an identity or a read-only Service token', async () =
   const forbidden = async () => { invoked = true; throw new Error('must not read a release without an identity'); };
   await assert.rejects(runVerifyInputs({ env: { INFRA_OPERATION: 'restore-release' }, run: forbidden,
     token: 'read-only-token', directory: selected }), /requires the explicit Service release tag/);
-  await assert.rejects(runVerifyInputs({ env: { INFRA_OPERATION: 'restore-release', SERVICE_RELEASE_TAG: releaseTag },
+  await assert.rejects(runVerifyInputs({ env: { INFRA_OPERATION: 'restore-release', SERVICE_ARTIFACT_TAG: releaseTag },
     run: forbidden, token: 'read-only-token', directory: selected }), /Invalid Service release source commit/);
   assert.equal(invoked, false);
 

@@ -20,8 +20,8 @@ and must not be relabeled as an Infra-produced deployment.
   deployment input. Client publishes independently through deployed interfaces.
 - There is no committed selection and no cross-repository native-asset
   verification path. `deploy-platform`, `deploy-runtime`, `restore-release` and
-  `migrate` take one reviewed Service release identity (`service_release_tag` +
-  `service_commit`), read the sealed release and its tag ref over the REST API,
+  `migrate` take one reviewed Service release identity (`service_artifact_tag` +
+  `service_commit`), read the sealed artifact and its tag ref over the REST API,
   require the release's schema declaration (`service-schema.json`) plus the two
   Lambda bundles and runtime policy to be present, uploaded and digest-valid
   while ignoring extras such as the retired legacy manifest, and prove the
@@ -134,8 +134,8 @@ and must not be relabeled as an Infra-produced deployment.
 - Since #195 `deploy-runtime` and `stop-runtime` are the only mutation paths for
   the release slice (`AnyWearRuntimeStack-beta`); AnyWear-Service carries no CDK
   source or deploy chain. `deploy-runtime` takes one reviewed Service release
-  identity (`service_release_tag` + `service_commit`), downloads and validates
-  the sealed release's `service-schema.json`, resolves the immutable ECR image
+  identity (`service_artifact_tag` + `service_commit`), downloads and validates
+  the sealed artifact's `service-schema.json`, resolves the immutable ECR image
   digest, admits the pre-mutation schema boundary with one bounded read-only
   `schema-journal` verify task under the existing verification-task role,
   judges and executes the change set, runs the unchanged 300-second six-signal

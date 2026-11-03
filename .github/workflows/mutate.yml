@@ -7,12 +7,12 @@ on:
         type: choice
         options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers]
         required: true
-      service_release_tag:
-        description: Sealed Service release tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
+      service_artifact_tag:
+        description: Sealed Service artifact tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
         type: string
         default: ''
       service_commit:
-        description: Service source commit the sealed release was built from; required with the tag
+        description: Service source commit the sealed artifact was built from; required with the tag
         type: string
         default: ''
       identity_phase:
@@ -55,7 +55,7 @@ env:
   # never open the gate.
   ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
   INFRA_OPERATION: ${{ inputs.operation }}
-  SERVICE_RELEASE_TAG: ${{ inputs.service_release_tag }}
+  SERVICE_ARTIFACT_TAG: ${{ inputs.service_artifact_tag }}
   SERVICE_COMMIT: ${{ inputs.service_commit }}
   TESTER_EMAILS: ${{ inputs.tester_emails }}
   NAT_EIP_ALLOCATION_ID: ${{ inputs.nat_eip_allocation_id }}

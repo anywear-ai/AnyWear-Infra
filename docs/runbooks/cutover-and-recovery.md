@@ -73,7 +73,7 @@ permissions-boundary/bootstrap redesign needs its own accepted scope and diff.
 
 After #158 step C there is no committed selection and no cross-repository native
 asset verification. `deploy-platform`, `deploy-runtime`, `restore-release` and
-`migrate` take one reviewed Service release identity (`service_release_tag` +
+`migrate` take one reviewed Service release identity (`service_artifact_tag` +
 `service_commit`). A source PR
 reviews the tag and the Service commit; the release and its tag ref are then read
 over the REST API with a read-only token (the tag must resolve to that commit,
@@ -109,7 +109,7 @@ A direct invocation uses the same reviewed inputs through the workflow:
 ```sh
 gh workflow run mutate.yml --repo git-malu/AnyWear-Infra \
   -f operation=deploy-platform \
-  -f service_release_tag="$SERVICE_RELEASE_TAG" -f service_commit="$SERVICE_COMMIT"
+  -f service_artifact_tag="$SERVICE_ARTIFACT_TAG" -f service_commit="$SERVICE_COMMIT"
 ```
 
 There is no publication Actions ZIP, executable candidate/receipt/handshake,
