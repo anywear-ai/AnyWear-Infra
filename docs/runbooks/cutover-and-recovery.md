@@ -311,7 +311,7 @@ run final
 E2E v3 qualification in its scheduled window: it reads the deployed tuple and
 takes its own authenticated before/after observations. Pre-retirement
 rehearsal hashes cannot substitute. Preserve the run ids and conclusions,
-sealed Service release identities, signed releases and publisher identities, authenticated
+sealed Service artifact identities, signed releases and publisher identities, authenticated
 before/after observations and exact source/run/attempt/artifact hashes before root
 registration, repository reconciliation or resource cleanup.
 

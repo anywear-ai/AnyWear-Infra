@@ -247,7 +247,7 @@ test('the one-shot probe refuses a wrong action, command, image or missing ident
     /One-shot probe identity missing/);
 });
 
-// #243: `migrate` takes the sealed Service release identity instead of reading an
+// #243: `migrate` takes the sealed Service artifact identity instead of reading an
 // image out of `AnyWearRuntimeStack-beta`, and reads Beta's stacks only to refuse a
 // stopped or racing environment. These cases drive the real `runOperation` over an
 // injected io, so what they observe is the real precondition order: every refusal

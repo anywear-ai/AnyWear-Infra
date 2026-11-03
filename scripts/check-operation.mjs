@@ -13,7 +13,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Database recovery targets are a deployment precondition, so a Platform
 // operation proves them from local source before anything requests credentials.
-// The sealed Service release is not downloaded in this job; the synthesis
+// The sealed Service artifact is not downloaded in this job; the synthesis
 // therefore uses the local release-directory fixture. It is a scratch fixture for
 // stack-shape checks only and is never uploaded as deployable bytes.
 export async function assertDatabaseRecoveryPrecondition(env = process.env) {
