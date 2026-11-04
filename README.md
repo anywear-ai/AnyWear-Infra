@@ -136,6 +136,9 @@ Infra exposes **3 entries / 2 manual dispatch surfaces / 1 switch**
 chain per deployable unit. `production.yml` stays in the tree but is
 `workflow_call`-only, so it is not an entry.
 
+The procedures that use these entries are in `docs/runbooks/`; its [index](docs/runbooks/README.md)
+says when to use each, including the hand stop and start of Beta.
+
 | Entry | Trigger | Purpose |
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
