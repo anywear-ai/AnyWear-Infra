@@ -209,8 +209,9 @@ jobs:
           owner: git-malu
           repositories: AnyWear-E2E
           permission-actions: write
-      # Pre-dispatch dedupe, the dispatch with `return_run_details: true` and the
-      # post-dispatch run-name check are one step: nothing may follow the dispatch.
+      # Pre-dispatch dedupe, the dispatch with `return_run_details: true`, the
+      # created run verified by id and the run-name poll used only when the response
+      # names no run id are one step: nothing may follow the dispatch.
       - name: Dispatch the deploy chain's qualification and print its run
         shell: bash
         env:

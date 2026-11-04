@@ -310,12 +310,21 @@ Before dispatching, the hook lists the target's `queued` and `in_progress` runs
 and skips when this run's URL already appears in one of their names, printing that
 run's URL. A failed listing dispatches anyway and says so: a duplicate
 qualification wastes a run, while a skipped legitimate one would hide a release.
-The dispatch calls the workflow-dispatch REST endpoint with
+That lookup runs before the dispatch because an existing run's name has settled by
+the time it appears. The dispatch calls the workflow-dispatch REST endpoint with
 `return_run_details: true` through `gh api` (`gh workflow run` does not expose the
-flag), prints the created run's URL and fails when that run's name does not carry
-this run's URL, which also catches a run dropped at birth by a full queue. The
-Infra `run-name` is `Beta <operation>: <delivery_trigger> · <service_artifact_tag>
-· by <dispatched_by or @actor>`, so the entry event is readable from the run list.
+flag) and prints the created run's URL from the response. When the response carries
+a positive `workflow_run_id`, the hook reads
+`repos/git-malu/AnyWear-E2E/actions/runs/<id>` once and accepts the run when the
+returned `id` equals that id; it does not read `display_title`, so a run whose
+title has not propagated yet is not a failure. Only when the response carries no
+run id does the hook poll the target's active runs for this run's URL in their
+names — the E2E `run-name` still renders `dispatched_by` — a fixed small number of
+attempts with a short wait between them, and it fails only after those attempts are
+exhausted, naming the marker and the attempt count; that path still catches a
+dispatch dropped at birth by a full queue. The Infra `run-name` is `Beta
+<operation>: <delivery_trigger> · <service_artifact_tag> · by <dispatched_by or
+@actor>`, so the entry event is readable from the run list.
 
 Every STS assumption includes an inline session restriction of at most 2048
 characters. Task register/run/PassRole are limited to the operation's exact

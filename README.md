@@ -192,8 +192,10 @@ permission, keeps `contents: read` and mints exactly one App installation token
 narrowed to `AnyWear-E2E` with `actions: write` only; it lists the target's
 `queued` and `in_progress` runs and dispatches nothing when this run's URL already
 appears in one of their names, otherwise it calls the REST dispatch endpoint with
-`return_run_details: true`, prints the created run's URL and fails when that run's
-name does not carry this run's URL. `delivery_trigger=deploy` sends E2E `full`
+`return_run_details: true`, prints the created run's URL and verifies the created
+run by the id the response names; only when that id is absent does it poll the
+active-run names for this run's URL a bounded number of attempts before failing.
+`delivery_trigger=deploy` sends E2E `full`
 with `trigger=deploy-qualify`, `expected_service_commit=<service_commit>` and
 `worker_slot_offset=0`; `manual` sends `smoke` with `trigger=deploy-smoke`, no
 expected commits and `worker_slot_offset=0`; both carry `dispatched_by=<this run
