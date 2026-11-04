@@ -30,8 +30,8 @@ node scripts/synth-matrix.mjs --artifact-directory .service-artifacts/test --bas
 checkouts or cloud credentials. The matrix compares dev active, Beta active and
 prod active across the three identity phases against the preserved
 Service source templates for the stack set this app still synthesizes
-(Foundation, Base, Billing). Issue #166 removed the stopped Beta template: the
-environment stops by deleting the Egress and Runtime stacks, so the Base template
+(Foundation, Platform, Billing). Issue #166 removed the stopped Beta template: the
+environment stops by deleting the Egress and Runtime stacks, so the Platform template
 has one variant. Fixture artifacts are a local stand-in for the
 stage base's Service-built Lambda inputs; deployments download the sealed Service
 artifact instead. CI repeats all three phases with explicit retention protection
@@ -40,7 +40,7 @@ and uploads `cdk.matrix/comparison.json` and
 
 ## Stage contract
 
-`AnyWearPlatformStack-beta` (the persistent `Base` stack) publishes the Beta stage
+`AnyWearPlatformStack-beta` (the persistent `Platform` stack) publishes the Beta stage
 base as plain SSM parameters under `/anywear/beta/`. **35 names exist in every
 identity phase and environment variant**: the public API distribution base URL
 (`api_base_url`), the VPC and subnet tiers (public, private and isolated),
@@ -55,16 +55,16 @@ while the identity phase creates the cleanup task role
 (`cognito_user_pool_id`, `cognito_client_id`, `s3_bucket_name`,
 `qweather_api_host`); the runtime-owned `tester_allowlist` and
 `aws_region` parameters are not duplicated. Values come from the existing
-Base resources; nothing reads another stack at deploy time. The ten values
+Platform resources; nothing reads another stack at deploy time. The ten values
 added by the issue #158 extension replace the remaining weak
 `Fn::GetStackOutput` reads; the Runtime stack resolves them from the stage
-contract, so the Base/Runtime deploy order no longer matters. `private_subnet_ids` and
-`isolated_subnet_ids` are the two Base subnet groups and are never empty
-`StringList`s; the Egress stack adds the 0.0.0.0/0 routes to the Base-owned
-Private route tables while it exists (Base keeps the route tables and their single
+contract, so the Platform/Runtime deploy order no longer matters. `private_subnet_ids` and
+`isolated_subnet_ids` are the two Platform subnet groups and are never empty
+`StringList`s; the Egress stack adds the 0.0.0.0/0 routes to the Platform-owned
+Private route tables while it exists (Platform keeps the route tables and their single
 per-subnet associations).
 
-Two values have no Base resource: `vlm_config_arn` and
+Two values have no Platform resource: `vlm_config_arn` and
 `cloudfront_prefix_list_id` are reviewed constants read from the then-live
 `AnyWearWorkloadStack-beta` parameters before the #166 split (account `650880818323`,
 `ap-east-1`), recorded as identifiers only. They are changed only in a reviewed
@@ -145,7 +145,7 @@ chain per deployable unit. `production.yml` stays in the tree but is
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
 | [bin/infra.ts](bin/infra.ts), `deployScope=egress` | CLI | Separate disposable `AnyWearEgressStack-beta` scope; no Service artifact input |
-| [migrate-beta-split.mjs](scripts/migrate-beta-split.mjs) | CLI (Deployment-gated) | One-time Base/Runtime split: three separately authorized stages, validation-only by default; see its runbook |
+| [migrate-beta-split.mjs](scripts/migrate-beta-split.mjs) | CLI (Deployment-gated) | One-time Platform/Runtime split: three separately authorized stages, validation-only by default; see its runbook |
 | [ecr-retention.mjs](scripts/ecr-retention.mjs) | CLI | Verify exact effective policy, protected current/rollback digests and completed expiration preview |
 | [prove-release-bytes.mjs](scripts/prove-release-bytes.mjs) | CLI (deploy step) | Prove the travelled release bytes against the published digests and load the schema asset before any credential |
 

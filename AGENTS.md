@@ -2,7 +2,7 @@
 
 This repository owns shared AWS infrastructure and environment operations after
 the verified #54 cutover. It owns the account-wide Foundation and Billing stacks
-and the Beta stage's persistent `Base` stack (`AnyWearPlatformStack-beta`), plus
+and the Beta stage's persistent `Platform` stack (`AnyWearPlatformStack-beta`), plus
 the disposable `Egress` stack (`AnyWearEgressStack-beta`). Infra also owns
 the release slice (`AnyWearRuntimeStack-beta`, formerly `AnyWearWorkloadStack-beta`),
 its CDK source and its deploy chain; no other repository synthesizes, deploys or
@@ -78,33 +78,39 @@ and must not be relabeled as an Infra-produced deployment.
   operations and ECS/helper tasks; timeout does not establish cessation. Repository
   concurrency is not a cross-repository lock; migration rollout stays separately
   coordinated.
-- Issue #166: Beta is three stacks with disjoint lifetimes. `Base`
+- Issue #166: Beta is three stacks with disjoint lifetimes. `Platform`
   (`AnyWearPlatformStack-beta`, physical name retained) holds the VPC and its
   subnets plus each subnet's route table and association, Aurora, S3, Cognito,
   ECR, SQS, SSM params and both CloudFront distributions and is persistent;
   `Egress` (`AnyWearEgressStack-beta`) holds the NAT, EIP, the 0.0.0.0/0 default
-  routes in the Base-owned private route tables and the S3 gateway endpoint and
+  routes in the Platform-owned private route tables and the S3 gateway endpoint and
   is deleted on stop (it creates no route table and no subnet association);
   `Runtime` (`AnyWearRuntimeStack-beta`, Infra-owned since #195) holds ALB, ECS
   services/task definitions, log groups and the cleanup operation and is deleted
   on stop. There is no `environmentRunning` switch, no `BetaActive` output and no
   stopped template. Beta run state is one fact: whether the Runtime stack exists.
   Stop deletes Runtime then Egress; start recreates Egress then Runtime, and
-  `restore-release` requires Runtime to exist ("start first"). A Base mutation
+  `restore-release` requires Runtime to exist ("start first"). A Platform mutation
   still reads Runtime terminal first (one writer); a missing Runtime is the
   stopped state, not an inactive variant to maintain.
-- The Base stack publishes `api_base_url` and retains Aurora, both S3 buckets,
+- The Platform stack publishes `api_base_url` and retains Aurora, both S3 buckets,
   the Cognito pool, the ECR repository and both CloudFront distributions
   (`DeletionPolicy`/`UpdateReplacePolicy: Retain`). The API CloudFront
-  distribution moved from the Service stack into Base with a one-time reviewed
+  distribution moved from the Service stack into Platform with a one-time reviewed
   CloudFormation stack-refactor MOVE; its logical ID is pinned in
   `lib/api-distribution.json` and its origin is the live API load-balancer DNS
-  name, passed as the `ApiOriginDomainName` stack parameter every Base deploy
+  name, passed as the `ApiOriginDomainName` stack parameter every Platform deploy
   sets (`deploy-platform`, `restore-release`, and a `deploy-runtime` that
   repoints the edge), never a same-stack `Fn::GetAtt` — a same-stack reference
   is what made the resource unmovable. The one-time
   migration (`scripts/migrate-beta-split.mjs` + its runbook) is never automatic,
   defaults to validation-only, and is a Deployment-stage action.
+- The role name is `Platform`; the code keeps the word `Base` in the identifiers
+  `BASE_STACK`, `BASE_EXPORTS`, `baseStack` and `baseStackPolicy`, in the module
+  `lib/base-exports.ts`, in the `api_base_url` contract value and in operator-visible
+  messages such as `deploy-runtime requires a terminal Base stack`. They all name
+  `AnyWearPlatformStack-<stage>`, and no code, stack id, construct id, operation or
+  SSM parameter name changes with this rename.
 - Issue #166 keeps the three bounded Beta entries in the
   [operations catalog](README.md#operations): `check.yml` is automatic;
   `runtime.yml` is the manual `state` entry,

@@ -236,7 +236,7 @@ identities; source-matrix equality alone does not authorize a replacement.
 Verify stable independent Client publication through existing CFN/SSM outputs.
 Retain the original templates, selected assets and usable recovery writer.
 
-Exercise reviewed `restore-release` as the Base recovery path; it deploys only
+Exercise reviewed `restore-release` as the Platform recovery path; it deploys only
 `AnyWearPlatformStack-beta` and leaves the Runtime slice to this repository's
 `deploy-runtime` operation. It does not run down migrations and it never
 verifies a candidate release. (The former `deploy-workload` path no longer exists
@@ -244,10 +244,10 @@ in Infra; #166 renamed the slice to `AnyWearRuntimeStack-beta`, and since #195 t
 slice's CDK source and deploy chain are in this repository.)
 `restore-release` requires an existing terminal Runtime stack ("start first")
 before CFN, reads the Runtime terminal before and after its own deploy, and
-redeploys only Base; stable stack status is required for the CloudFormation
+redeploys only Platform; stable stack status is required for the CloudFormation
 mutation itself. It reads no admission state after #213: the tester allowlist
 constrains registration only, so it is neither a precondition nor a postcondition
-of a Base recovery. Failures preserve observed state and require an explicitly
+of a Platform recovery. Failures preserve observed state and require an explicitly
 reviewed recovery; no automatic sibling deploy or revert occurs.
 
 Admission after #213 is one input: `/anywear/beta/tester_allowlist` (a JSON array
@@ -262,7 +262,7 @@ precondition and the same read-back. `migrate`, `restore-release` and
 Current dispatches use `mutate.yml` for maintenance, `deploy-egress`/
 `delete-egress` for the disposable network edge, and `restore-release`. Beta
 stops by deleting Runtime then Egress and starts by recreating Egress then
-Runtime; the persistent Base stack is never deleted and no stopped Base template
+Runtime; the persistent Platform stack is never deleted and no stopped Platform template
 exists. After a change, read the run's job/step conclusions, the `beta`
 Environment deployment and the scoped stack's CloudFormation events; E2E v3
 qualification consumes no Infra record and observes the platform itself. Read-only
@@ -338,8 +338,8 @@ authenticated observations, digest-preserving promotion and scan policy. Artifac
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
 
-There is no inactive Base deployment path. Every protected Base deploy requires a
-terminal Base stack and a terminal Runtime stack when Runtime exists; the
-postcondition is exactly that observed state, not a `BetaActive` output. A Base
+There is no inactive Platform deployment path. Every protected Platform deploy requires a
+terminal Platform stack and a terminal Runtime stack when Runtime exists; the
+postcondition is exactly that observed state, not a `BetaActive` output. A Platform
 mutation fails closed while Runtime is non-terminal (one writer). Preserve actual
 stack statuses and Runtime existence on failure.
