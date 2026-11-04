@@ -19,28 +19,28 @@ IAM exclusivity or Beta resource isolation.
 
 ## Issue #166: three Beta stacks
 
-Beta is three stacks with disjoint lifetimes. `Base` (`AnyWearPlatformStack-beta`,
+Beta is three stacks with disjoint lifetimes. `Platform` (`AnyWearPlatformStack-beta`,
 physical name retained) holds the VPC and its subnets plus each subnet's route
 table and association, Aurora, S3, Cognito, ECR, SQS, SSM parameters and both
 CloudFront distributions and is persistent. `Egress` (`AnyWearEgressStack-beta`)
-holds only the NAT, EIP, the 0.0.0.0/0 default routes in the Base-owned private
+holds only the NAT, EIP, the 0.0.0.0/0 default routes in the Platform-owned private
 route tables, and the S3 gateway endpoint, and is deleted on stop; it creates no
 route table and no subnet route-table association (AWS allows one association per
-subnet and Base owns it). `Runtime` (`AnyWearRuntimeStack-beta`, Infra-owned; it
+subnet and Platform owns it). `Runtime` (`AnyWearRuntimeStack-beta`, Infra-owned; it
 replaced the old Workload identity) holds the ALB, ECS services/task definitions,
 log groups and the cleanup operation and is deleted on stop.
 
 There is no `environmentRunning` switch, no `BetaActive` output and no stopped
 template. Run state is one fact: whether the Runtime stack exists. Stop deletes
 Runtime then Egress; start recreates Egress then Runtime. The Runtime deploy is
-also the edge repair: once its stack is terminal it compares the Base stack's
+also the edge repair: once its stack is terminal it compares the Platform stack's
 `ApiOriginDomainName` parameter with the load-balancer name that stack published,
 and when they differ it sets that parameter before it reads `/health`, so the
 start's own `deploy-runtime` run ends with the public `/health` answering.
-`deploy-platform` is the standalone Base deploy, not a start step.
-`restore-release` requires Runtime to exist ("start first"). A Base mutation still
+`deploy-platform` is the standalone Platform deploy, not a start step.
+`restore-release` requires Runtime to exist ("start first"). A Platform mutation still
 reads Runtime terminal first (one writer), and a missing Runtime is the stopped
-state rather than an inactive variant to maintain. The one-time Base/Runtime split
+state rather than an inactive variant to maintain. The one-time Platform/Runtime split
 migration is Deployment-gated: see [beta-split-migration.md](beta-split-migration.md).
 
 ### Egress NAT/EIP replacement experiment
@@ -96,7 +96,7 @@ context and the delete event.
 > through the existing `beta-infra-deploy-role` and the standard CDK bootstrap
 > path, and no Foundation per-service role exists.
 
-After #158 step C, Infra owned Foundation, the Beta Base stack, Egress and Billing
+After #158 step C, Infra owned Foundation, the Beta Platform stack, Egress and Billing
 only. The Service release slice's CDK source and deploy chain lived in
 AnyWear-Service. The only path that could deploy that stack was Service's release
 chain, and that path needed the deferred Foundation deploy (the two Service deploy
@@ -276,9 +276,9 @@ Non-deployment operations fixing `retired`/`true` source context does not change
 CFN or prove observed IAM/retention state. Deployment and tester-write dispatches
 require explicit authorization. Beta's paid compute and egress stop by deleting
 the Runtime and Egress stacks, and start by recreating Egress then Runtime; the
-Runtime deploy sets the API origin parameter on the Base stack before its
-`/health` read, so no Base dispatch sits between them. No operation selects a
-stopped Base template. Source delivery alone does not grant an environment
+Runtime deploy sets the API origin parameter on the Platform stack before its
+`/health` read, so no Platform dispatch sits between them. No operation selects a
+stopped Platform template. Source delivery alone does not grant an environment
 writer or establish runtime acceptance.
 
 ### The deploy chain receiver and its qualification hook (#226)
@@ -345,14 +345,14 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | --- | --- |
 | `deploy-foundation` | Reconcile existing Foundation with reviewed identity phase; takes no Service artifact identity and no committed selection |
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
-| `deploy-platform` | Deploy the persistent Base stack from one reviewed Service artifact identity (`service_artifact_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job proves the travelled bytes against those published digests before any credential and resolves the release tag, Service commit and ECR image digest. A Base deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin. `deploy-runtime` sets this same origin parameter as a start's edge repair when the recorded value differs from its new load balancer, so `deploy-platform` is not a start step. The Environment deployment, the stack's events and the step log are the deployment's record |
-| `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Base VPC, NAT-placement subnet and private route-table ids from the Base CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
-| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service artifact identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed artifact's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-connect-timeout`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different artifact identity executes as before. Once the Runtime stack is terminal it repairs the Beta edge: it compares the Base stack `AnyWearPlatformStack-beta`'s `ApiOriginDomainName` parameter with the same run's `ApiLoadBalancerDnsName`, sets that one parameter when they differ (before `/health` and the bake, and with no write when they are equal) and prints `api_origin_repointed <old> -> <new>`. It then reads `/health` and bakes the unchanged 300-second six-signal gate under the read-only runtime session, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
+| `deploy-platform` | Deploy the persistent Platform stack from one reviewed Service artifact identity (`service_artifact_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job proves the travelled bytes against those published digests before any credential and resolves the release tag, Service commit and ECR image digest. A Platform deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin. `deploy-runtime` sets this same origin parameter as a start's edge repair when the recorded value differs from its new load balancer, so `deploy-platform` is not a start step. The Environment deployment, the stack's events and the step log are the deployment's record |
+| `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Platform VPC, NAT-placement subnet and private route-table ids from the Platform CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service artifact identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed artifact's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-connect-timeout`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different artifact identity executes as before. Once the Runtime stack is terminal it repairs the Beta edge: it compares the Platform stack `AnyWearPlatformStack-beta`'s `ApiOriginDomainName` parameter with the same run's `ApiLoadBalancerDnsName`, sets that one parameter when they differ (before `/health` and the bake, and with no write when they are equal) and prints `api_origin_repointed <old> -> <new>`. It then reads `/health` and bakes the unchanged 300-second six-signal gate under the read-only runtime session, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice, and read no admission state |
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Run the sealed Service artifact's forward migration on Beta as one one-shot task, with no application deployment. It takes the reviewed Service artifact identity (`service_artifact_tag` + `service_commit`), consumes exactly `service-schema.json` and deploys nothing: the verify job downloads that one asset, the deploy job proves and strictly loads it before any credential, and the operation resolves the immutable ECR tag to exactly one image and launches one `beta-anywear-migrate` task with the command `["node","dist/migrate.js"]` at `<ServiceRepositoryUri>@<digest>`. It reads Beta's stacks to refuse a stopped or racing environment by name, before the task is registered — `migrate requires the explicit Service release tag`, `migrate requires a terminal AnyWearPlatformStack-beta`, `migrate requires AnyWearEgressStack-beta; Beta is stopped, run its start sequence`, `migrate requires a terminal AnyWearEgressStack-beta` and `migrate requires a terminal AnyWearRuntimeStack-beta` — and needs no Runtime stack: an absent one proceeds. Beta's Egress and Runtime stacks are on by default, and this operation creates, starts or deletes neither. The order is publication (a precondition outside the launcher), then `migrate`, then a later `deploy-runtime` as a separate authorization. The wait is the ECS `TasksStopped` waiter's shipped 100 attempts of 6 seconds (about 600 seconds); a run that reaches that ceiling fails, leaves the task running and names the task it left. The run is complete when its log stream `beta-anywear-migrate/OneShot/<task-id>` under `/anywear/beta/one-shot` carries `Reset the legacy domain and work rows before applying migration 0027` with its per-table `rowsRemoved` counts and then `Database migrations completed` with `schemaVersion: 24`, and the stopped task reports exit code 0 with a container image digest equal to the resolved digest |
 | `verify` | Invoke Service's verification command; verify the selected runtime without migrating |
-| `state` | Print the Base/Runtime status, Runtime existence and the tester allowlist count and hash to the step log and summary; no DB/schema/policy qualification and no admission state |
+| `state` | Print the Platform/Runtime status, Runtime existence and the tester allowlist count and hash to the step log and summary; no DB/schema/policy qualification and no admission state |
 | `admission-status` | Read the tester allowlist count and hash through the deployed Service lifecycle `status` command and compare them with one SSM read-back of `/anywear/beta/tester_allowlist`. Prints `{"operation":"admission-status","tester_count":N,"tester_allowlist_hash":"<64 hex>","matches":true}`; no mode field |
 | `add-testers`, `set-testers` | Replace the exact normalized tester list through the deployed Service lifecycle `set-testers` command. There is no admission or lifecycle precondition: the operation is one SSM write, then one read-back compares the persisted list's count and hash with the Service status line. Prints the same count/hash proof for the list it persisted |
 
@@ -700,7 +700,7 @@ Foundation/Billing retain their explicit historical producers. Review the exact
 Platform component/resource diff and recovery selection before allocating runtime.
 The operation never migrates, changes phase/retention, writes testers or opens
 admission. It preserves observed membership and closed admission at every phase
-boundary, and its postcondition is a terminal Base stack plus an existing
+boundary, and its postcondition is a terminal Platform stack plus an existing
 terminal Runtime stack after each deploy.
 
 An old signed release alone does not establish a usable rollback image: a raw

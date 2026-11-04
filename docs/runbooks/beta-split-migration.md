@@ -5,6 +5,12 @@
 > roles it names (`beta-service-deploy-role`, `beta-service-deploy-cfn-role`) no
 > longer describe source: #195 retired both roles and moved the Runtime stack's
 > CDK source and deploy chain into AnyWear-Infra (`deploy-runtime`).
+>
+> *2026-11-04 role-name correction ([AnyWear#255](https://github.com/git-malu/AnyWear/issues/255)):
+> the role name `Base` in this executed record is `Platform` — `AnyWearPlatformStack-<stage>`, and
+> `AnyWearPlatformStack-beta` for Beta — the name the CDK class `PlatformStack` and the operation
+> `deploy-platform` use. The steps, stack ids and template names below are the executed history of
+> #166 and are not rewritten.*
 
 Issue #166 turns Beta into three stacks with disjoint lifetimes:
 
