@@ -20,8 +20,11 @@ const stackRead = (io, name) => describeStack(io, name);
 
 function assertContext(infraSha, env) {
   assertProtectedExecutor(infraSha, env);
-  if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || !SHA.test(infraSha ?? '') || env.GITHUB_SHA !== infraSha
-    || env.GITHUB_WORKFLOW_REF !== 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main') {
+  // Issue #266: the repository numeric id is the durable identity, and the
+  // workflow ref is this run's own full name, so the guard passes under either
+  // owner.
+  if (env.GITHUB_REPOSITORY_ID !== '1409047265' || !SHA.test(infraSha ?? '') || env.GITHUB_SHA !== infraSha
+    || env.GITHUB_WORKFLOW_REF !== `${env.GITHUB_REPOSITORY}/.github/workflows/mutate.yml@refs/heads/main`) {
     throw new Error('Restore requires the reviewed Infra executor source');
   }
   if (env.INFRA_IDENTITY_PHASE !== 'retired' || env.INFRA_RETENTION_PROTECTION !== 'true') {

@@ -1,5 +1,5 @@
 {
-  "note": "Historical identity of the retired @git-malu/stage-contracts 0.7.0 package. The tag stage-contracts-v0.7.0 is an annotated tag: producer_ref is its tag object and producer_commit is the commit it peels to. The two producer paths are the package blobs at that tag; the committed files are those bytes with the declared comment rewrites applied, which remove the retired package name. Reversing the rewrites reproduces the recorded producer digests. This fixture is a dated historical record, not a current dependency.",
+  "note": "Historical identity of the retired @git-malu/stage-contracts 0.7.0 package. The tag stage-contracts-v0.7.0 is an annotated tag: producer_ref is its tag object and producer_commit is the commit it peels to. The two producer paths are the package blobs at that tag; the committed files are those bytes with the declared rewrites applied, which remove the retired package name and, since issue #266, rename the two repository-owner constants to the durable `anywear-ai` organization. Reversing the rewrites reproduces the recorded producer digests, so the producer's own `git-malu` owner names stay recorded only as the reverse side of those rewrites. This fixture is a dated historical record, not a current dependency.",
   "recorded_at": "2026-10-24",
   "producer_tag": "stage-contracts-v0.7.0",
   "producer_ref": "418dc408659bccd2e9bb3cac712eedeefec0a7e0",
@@ -28,6 +28,21 @@
       "file": "lib/contracts.d.mts",
       "from": "// Type declarations for @git-malu/stage-contracts.\n//\n// The package is plain ESM JavaScript; these declarations are the consumer-facing",
       "to": "// Type declarations for the AnyWear-Infra stage and deployment contract.\n//\n// The module is plain ESM JavaScript; these declarations are the consumer-facing"
+    },
+    {
+      "file": "lib/contracts.mjs",
+      "from": "export const INFRA_REPOSITORY = 'git-malu/AnyWear-Infra';\nexport const SERVICE_REPOSITORY = 'git-malu/AnyWear-Service';",
+      "to": "export const INFRA_REPOSITORY = 'anywear-ai/AnyWear-Infra';\nexport const SERVICE_REPOSITORY = 'anywear-ai/AnyWear-Service';"
+    },
+    {
+      "file": "lib/contracts.d.mts",
+      "from": "export declare const INFRA_REPOSITORY: 'git-malu/AnyWear-Infra';",
+      "to": "export declare const INFRA_REPOSITORY: 'anywear-ai/AnyWear-Infra';"
+    },
+    {
+      "file": "lib/contracts.d.mts",
+      "from": "export declare const SERVICE_REPOSITORY: 'git-malu/AnyWear-Service';",
+      "to": "export declare const SERVICE_REPOSITORY: 'anywear-ai/AnyWear-Service';"
     }
   ],
   "export_names": [
@@ -98,7 +113,7 @@
     "taskDefinitionContentHash",
     "validateStageInputs"
   ],
-  "canonical_export_sha256": "35b2a57da8b995cba1bcad1d5173425de8c24fe7df612cc6f82b3bcc9c97adb4",
+  "canonical_export_sha256": "77916c0dff693d2ce04e656b59065520c7ce2846c6f341e5f2f8c16d04efbaa5",
   "counts": {
     "parameters": 35,
     "conditional_parameters": 1,

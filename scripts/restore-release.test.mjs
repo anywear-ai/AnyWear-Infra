@@ -4,7 +4,8 @@ import { runRestoreRelease } from './restore-release.mjs';
 import { runtimeStack } from './one-writer.mjs';
 
 const infraSha = '5'.repeat(40);
-const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
+const env = { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
+  GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
   GITHUB_RUN_ID: '31', GITHUB_RUN_ATTEMPT: '2', GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main',
   AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1', INFRA_IDENTITY_PHASE: 'retired', INFRA_RETENTION_PROTECTION: 'true' };
 const platformOutputs = () => Object.fromEntries(['EcsClusterName', 'PrivateSubnetIds', 'OneShotSecurityGroupId', 'VerificationTaskRoleArn',

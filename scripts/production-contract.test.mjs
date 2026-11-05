@@ -14,7 +14,7 @@ const now = Date.parse('2026-10-08T01:00:00Z');
 const infraSha = '5'.repeat(40); const e2eSha = '6'.repeat(40); const serviceSha = '1'.repeat(40);
 const imageDigest = `sha256:${'4'.repeat(64)}`;
 const run = { id: 77, run_attempt: 2, head_sha: e2eSha, head_branch: 'main', path: '.github/workflows/beta-qualification.yml',
-  repository: { full_name: 'git-malu/AnyWear-E2E' }, head_repository: { full_name: 'git-malu/AnyWear-E2E' },
+  repository: { full_name: 'anywear-ai/AnyWear-E2E' }, head_repository: { full_name: 'anywear-ai/AnyWear-E2E' },
   event: 'workflow_dispatch', status: 'completed', conclusion: 'success', run_started_at: '2026-10-08T00:00:00Z', updated_at: '2026-10-08T00:30:00Z' };
 const artifact = { id: 78, expired: false, name: 'beta-qualification-77-2', workflow_run: { id: 77, head_sha: e2eSha },
   created_at: '2026-10-08T00:20:00Z', expires_at: '2099-01-01T00:00:00Z' };
@@ -68,11 +68,11 @@ function qualificationFixture() {
     qualification_id: 'beta-77-2', result: 'passed', operation: 'full', qualified_at: '2026-10-08T00:25:00Z',
     environment: { stage: 'beta', aws_account_id: '650880818323', aws_region: 'ap-east-1', client_url: clientUrl, service_url: serviceUrl },
     expected: { service_commit: serviceSha, client_commit: null, source: 'trigger' },
-    revisions: { e2e: { repository: 'git-malu/AnyWear-E2E', sha: e2eSha },
-      client: { repository: 'git-malu/AnyWear-Client', sha: clientSha, client_version: clientVersion },
-      service: { repository: 'git-malu/AnyWear-Service', sha: serviceSha, image_digest: imageDigest,
+    revisions: { e2e: { repository: 'anywear-ai/AnyWear-E2E', sha: e2eSha },
+      client: { repository: 'anywear-ai/AnyWear-Client', sha: clientSha, client_version: clientVersion },
+      service: { repository: 'anywear-ai/AnyWear-Service', sha: serviceSha, image_digest: imageDigest,
         minimum_client_version: minimumClientVersion } },
-    service_artifacts: { repository: 'git-malu/AnyWear-Service', release_id: 76, tag: `service-artifacts-${serviceSha}`,
+    service_artifacts: { repository: 'anywear-ai/AnyWear-Service', release_id: 76, tag: `service-artifacts-${serviceSha}`,
       manifest_asset_id: 1, manifest_sha256: 'e'.repeat(64) },
     observations: { before: observation('2026-10-08T00:05:00Z'), after: observation('2026-10-08T00:20:00Z') },
     test: { runner: 'playwright', result: 'passed', selection: { invocation: 'pnpm test:regression', tag: '@regression' },
@@ -137,7 +137,7 @@ test('authenticated input resolver keeps metadata outside the download directory
   }, async mkdir() {}, async writeFile(file, value) { saved.set(file, value); } };
   await resolveProductionInputs(env, io);
   assert.deepEqual([...saved.keys()], ['.qualification/trusted/run.json', '.qualification/trusted/artifact.json', '.qualification/trusted/stable-release.json']);
-  assert.ok(calls.includes('repos/git-malu/AnyWear-E2E/actions/runs/77/attempts/2'));
+  assert.ok(calls.includes('repos/anywear-ai/AnyWear-E2E/actions/runs/77/attempts/2'));
   await assert.rejects(resolveProductionInputs(env, { ...io, async api(endpoint) {
     return endpoint.includes('/releases/') ? { ...stable, prerelease: true } : io.api(endpoint);
   } }), /sealed stable/);
@@ -157,10 +157,10 @@ test('qualification v3 binds the reviewed release identity and the independent o
       /Invalid qualification revisions fields/],
     ['another Service source', r => r.revisions.service.sha = '9'.repeat(40), /identity differs from promotion/],
     ['another image digest', r => r.revisions.service.image_digest = `sha256:${'9'.repeat(64)}`, /identity differs from promotion/],
-    ['another Service repository', r => r.revisions.service.repository = 'git-malu/AnyWear-E2E', /identity differs from promotion/],
+    ['another Service repository', r => r.revisions.service.repository = 'anywear-ai/AnyWear-E2E', /identity differs from promotion/],
     ['another release id', r => r.service_artifacts.release_id = 75, /artifact identity differs/],
     ['another release tag', r => r.service_artifacts.tag = `service-artifacts-${'9'.repeat(40)}`, /artifact identity differs/],
-    ['another artifact repository', r => r.service_artifacts.repository = 'git-malu/AnyWear-E2E', /artifact identity differs/],
+    ['another artifact repository', r => r.service_artifacts.repository = 'anywear-ai/AnyWear-E2E', /artifact identity differs/],
     ['Client below the enforced floor', r => r.revisions.service.minimum_client_version = clientVersion + 1, /below the minimum/],
     ['another Client commit', r => r.revisions.client.sha = '9'.repeat(40), /differs from the recorded revisions/],
     ['another expected Service commit', r => r.expected.service_commit = '9'.repeat(40), /differs from the recorded revisions/],

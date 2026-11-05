@@ -7,10 +7,13 @@ import { parseJson, sha256, HASH, SHA, DIGEST, canonicalJson, exact, matches, in
 import { stageContractSchemaHash, validateStageInputs } from '../lib/contracts.mjs';
 
 const execute = promisify(execFile);
-const INFRA = 'git-malu/AnyWear-Infra';
-const E2E = 'git-malu/AnyWear-E2E';
-const SERVICE = 'git-malu/AnyWear-Service';
-const CLIENT = 'git-malu/AnyWear-Client';
+// Issue #266: the durable owner is the `anywear-ai` organization, so a machine
+// reference (an API path, a record field or a verifier origin) names the new
+// owner; the old name keeps resolving through GitHub's transfer redirect. The
+// current run's own repository is matched by its immutable numeric id below.
+const E2E = 'anywear-ai/AnyWear-E2E';
+const SERVICE = 'anywear-ai/AnyWear-Service';
+const CLIENT = 'anywear-ai/AnyWear-Client';
 const QUALIFICATION_WORKFLOW = '.github/workflows/beta-qualification.yml';
 export const PRODUCTION_WORKFLOW = '.github/workflows/production.yml';
 
@@ -22,9 +25,11 @@ export const PRODUCTION_WORKFLOW = '.github/workflows/production.yml';
 // and the source blocker fails before any credential even when an activation
 // variable changes.
 export function validateProductionContext(env = process.env) {
-  if (env.GITHUB_REPOSITORY !== INFRA
-    || env.GITHUB_REPOSITORY_ID !== '1409047265' || env.GITHUB_REF !== 'refs/heads/main'
-    || env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_REF !== `${INFRA}/${PRODUCTION_WORKFLOW}@refs/heads/main`) {
+  // Issue #266: the repository numeric id is the durable identity across a
+  // transfer, and the workflow ref is compared against this run's own full
+  // name, so the guard passes under either owner without naming one.
+  if (env.GITHUB_REPOSITORY_ID !== '1409047265' || env.GITHUB_REF !== 'refs/heads/main'
+    || env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_REF !== `${env.GITHUB_REPOSITORY}/${PRODUCTION_WORKFLOW}@refs/heads/main`) {
     throw new Error('Protected Production activation remains closed');
   }
   matches(env.GITHUB_SHA, SHA, 'Production source');

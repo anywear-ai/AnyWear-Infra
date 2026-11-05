@@ -147,8 +147,9 @@ test('the operation modules re-export this single source', () => {
 // ---------------------------------------------------------------------------
 // Stack identity
 test('stack identities are derived from the stage, not duplicated per caller', () => {
-  assert.equal(INFRA_REPOSITORY, 'git-malu/AnyWear-Infra');
-  assert.equal(SERVICE_REPOSITORY, 'git-malu/AnyWear-Service');
+  // Issue #266: the durable owner is the `anywear-ai` organization.
+  assert.equal(INFRA_REPOSITORY, 'anywear-ai/AnyWear-Infra');
+  assert.equal(SERVICE_REPOSITORY, 'anywear-ai/AnyWear-Service');
   assert.equal(platformStackName('dev'), 'AnyWearPlatformStack-dev');
   assert.equal(platformStackName('beta'), 'AnyWearPlatformStack-beta');
   assert.equal(platformStackName('prod'), 'AnyWearPlatformStack-prod');

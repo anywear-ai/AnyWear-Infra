@@ -7,9 +7,14 @@ import { SIMULATE_ACTIONS } from './authorization-preflight.mjs';
 import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
 
 const infraSha = '5'.repeat(40);
+// Issue #266: the fabricated runs keep the old `git-malu` full name on purpose.
+// The guard identifies the repository by its immutable numeric id and compares
+// the workflow ref against the run's own full name, so the same assertions hold
+// before and after the transfer.
 const env = (operation, overrides = {}) => {
   const workflow = operation === 'state' ? 'runtime' : 'mutate';
-  return { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
+  return { GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
+    GITHUB_REF: 'refs/heads/main', GITHUB_SHA: infraSha,
     GITHUB_RUN_ID: '11', GITHUB_RUN_ATTEMPT: '1', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
     GITHUB_WORKFLOW_REF: `git-malu/AnyWear-Infra/.github/workflows/${workflow}.yml@refs/heads/main`,
     INFRA_OPERATION: operation, TESTER_EMAILS: '[]', ...overrides };
@@ -296,15 +301,34 @@ test('the protected executor gate binds repository, workflow, source, account an
     { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Client/.github/workflows/x.yml@refs/heads/main' }]) {
     assert.throws(() => assertProtectedExecutor(infraSha, env('deploy-platform', overrides)));
   }
+  // Issue #266: the current run's repository is matched by its immutable numeric
+  // id and the workflow ref against the run's own full name, so the same reviewed
+  // executor is accepted under either owner. A wrong id, a wrong workflow file and
+  // a foreign full name still fail closed.
+  const transferred = env('deploy-platform', { GITHUB_REPOSITORY: 'anywear-ai/AnyWear-Infra',
+    GITHUB_WORKFLOW_REF: 'anywear-ai/AnyWear-Infra/.github/workflows/mutate.yml@refs/heads/main' });
+  assert.equal(assertProtectedExecutor(infraSha, transferred).repository, 'anywear-ai/AnyWear-Infra');
+  assert.deepEqual(operationBoundary(transferred), { workflow: '.github/workflows/mutate.yml', family: 'beta-deploy', readOnly: false });
+  for (const overrides of [{ GITHUB_REPOSITORY_ID: '1409047264' }, { GITHUB_REPOSITORY_ID: '1158460323' },
+    { GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/production.yml@refs/heads/main' }]) {
+    assert.throws(() => assertProtectedExecutor(infraSha, env('deploy-platform', overrides)), /Protected executor|workflow required/);
+  }
   // AnyWear-E2E executes from its own pinned checkout and states the observed
   // Infra revision explicitly. Its run SHA is the executor identity, so it must
   // not be forced to equal the Infra helper SHA.
-  const e2e = (overrides = {}) => env('deploy-platform', { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_SHA: '6'.repeat(40),
+  const e2e = (overrides = {}) => env('deploy-platform', { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E',
+    GITHUB_REPOSITORY_ID: '1317091305', GITHUB_SHA: '6'.repeat(40),
     GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main', ...overrides });
   const executor = assertProtectedExecutor(infraSha, e2e());
   assert.equal(executor.repository, 'git-malu/AnyWear-E2E');
   assert.equal(executor.sha, infraSha);
   assert.equal(executor.workflow_path, '.github/workflows/beta-qualification.yml');
+  // The same E2E executor is accepted under the new owner, and the numeric id is
+  // still the branch that selects the E2E allow-list.
+  assert.equal(assertProtectedExecutor(infraSha, e2e({ GITHUB_REPOSITORY: 'anywear-ai/AnyWear-E2E',
+    GITHUB_WORKFLOW_REF: 'anywear-ai/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main' })).repository,
+  'anywear-ai/AnyWear-E2E');
+  assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_REPOSITORY_ID: '1409047265' })), /workflow required/);
   assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_WORKFLOW_REF:
     'git-malu/AnyWear-E2E/.github/workflows/other.yml@refs/heads/main' })), /workflow required/);
   assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_REF: 'refs/heads/feature' })), /Protected executor/);

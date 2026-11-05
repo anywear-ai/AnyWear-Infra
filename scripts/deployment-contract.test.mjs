@@ -19,8 +19,8 @@ const REMOVED = Object.freeze([
 test('the deployment contract keeps the reviewed account, region and repository identities', () => {
   assert.equal(deployment.account, '650880818323');
   assert.equal(deployment.region, 'ap-east-1');
-  assert.equal(deployment.INFRA_REPOSITORY, 'git-malu/AnyWear-Infra');
-  assert.equal(deployment.SERVICE_REPOSITORY, 'git-malu/AnyWear-Service');
+  assert.equal(deployment.INFRA_REPOSITORY, 'anywear-ai/AnyWear-Infra');
+  assert.equal(deployment.SERVICE_REPOSITORY, 'anywear-ai/AnyWear-Service');
 });
 
 test('no retired record or observation validator remains on the module', () => {

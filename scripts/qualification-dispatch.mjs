@@ -19,7 +19,7 @@ import { validateOperationInputs } from './runtime-operation.mjs';
 // URL is the value it sends. The normal post-dispatch check does not use the title:
 // the dispatch response names the created run, and that run is verified by id.
 const execute = promisify(execFile);
-export const E2E_REPOSITORY = 'git-malu/AnyWear-E2E';
+export const E2E_REPOSITORY = 'anywear-ai/AnyWear-E2E';
 export const QUALIFICATION_WORKFLOW = 'beta-qualification.yml';
 export const QUALIFICATION_REF = 'main';
 export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'in_progress']);

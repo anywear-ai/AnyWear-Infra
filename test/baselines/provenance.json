@@ -28,12 +28,12 @@
     "infra/lib/workload-stack.ts": "63c6bbd81378a00c13557283a5815f5108dc4fd29933f7cf300c741b9eb7f91d"
   },
   "templates": {
-    "dev-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
+    "dev-active/AnyWearFoundationStack.template.json": "7ad823e90e56e008f09c350c24182785a02686ccb8dea9270bb940463dcf3379",
     "dev-active/AnyWearPlatformStack-dev.template.json": "19f31ad8bb6903f50855481d043454a473019629edcd8c7f04d4a3dea254a176",
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
-    "beta-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
+    "beta-active/AnyWearFoundationStack.template.json": "7ad823e90e56e008f09c350c24182785a02686ccb8dea9270bb940463dcf3379",
     "beta-active/AnyWearPlatformStack-beta.template.json": "83556dccf5aa0c22428f88aaae74f41a910a165a29b61d864e9c27f82754cd84",
-    "prod-active/AnyWearFoundationStack.template.json": "94755f3d54572a27963419da38a86567c2d9ee700c8141860b5434641ff3b840",
+    "prod-active/AnyWearFoundationStack.template.json": "7ad823e90e56e008f09c350c24182785a02686ccb8dea9270bb940463dcf3379",
     "prod-active/AnyWearPlatformStack-prod.template.json": "5e6e4f327158f15eeff48bcd71b4db757685b4281095a13b18e6f69f97b4d409"
   },
   "platform_baseline": {
@@ -70,9 +70,19 @@
         "beta-active/AnyWearPlatformStack-beta.template.json"
       ],
       "reason": "The Beta Base stack declares the `ApiOriginDomainName` stack parameter and the pinned API distribution's origin `DomainName` reads `{\"Ref\": \"ApiOriginDomainName\"}` instead of a synthesis literal, so `deploy-runtime` can repoint the edge at the load balancer its own run created. The template was re-recorded from this source synthesis and differs from the previous bytes only by that parameter block and the origin `DomainName`; the recorded pre-#201 stage-contract descriptions stay unchanged and remain the comparator's declared allowance."
+    },
+    "foundation_dual_owner_subjects": {
+      "recorded_at": "2026-11-05",
+      "issue": 266,
+      "files": [
+        "dev-active/AnyWearFoundationStack.template.json",
+        "beta-active/AnyWearFoundationStack.template.json",
+        "prod-active/AnyWearFoundationStack.template.json"
+      ],
+      "reason": "Issue #266 transfers the repositories from the personal owner `git-malu@11473072` to the organization `anywear-ai@352675702` with every repository numeric id unchanged. The three Foundation baselines were re-recorded from this source synthesis for exactly that change: the three legacy `*-github-actions-pipeline-role` trusts now list both owner subjects per repository, old first, with the repository halves unchanged. No other byte moved (no resource, output, role name, policy statement or condition), and the `retired` phase still renders the unmatchable single subject."
     }
   },
-  "scope": "Source synth comparison only. Foundation and Billing templates remain the Service source move anchor; the Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes. The #166 three-stack split re-recorded only the Base (Beta Platform) baseline; Foundation and Billing still match the Service move anchor.",
+  "scope": "Source synth comparison only. The Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth, and issue #266 re-recorded the Foundation templates for the dual owner subjects while the Billing template remains the Service source move anchor. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes. The #166 three-stack split re-recorded only the Base (Beta Platform) baseline; Billing still matches the Service move anchor.",
   "egress_identity_experiment": {
     "recorded_at": "2026-10-21",
     "issue": 166,

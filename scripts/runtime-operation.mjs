@@ -39,7 +39,10 @@ const contextVariableOperations = ['deploy-foundation', 'deploy-billing', 'deplo
 export function validateOperationInputs(env = process.env) {
   const boundary = operationBoundary(env);
   const operation = env.INFRA_OPERATION;
-  if (env.GITHUB_REPOSITORY !== 'git-malu/AnyWear-Infra' || env.GITHUB_REPOSITORY_ID !== '1409047265'
+  // Issue #266: the repository numeric id is the durable identity; the owner name
+  // moves with the transfer and the boundary above already binds this run's own
+  // repository and workflow.
+  if (env.GITHUB_REPOSITORY_ID !== '1409047265'
     || env.GITHUB_REF !== 'refs/heads/main' || !SHA.test(env.GITHUB_SHA ?? '') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || !boundary.readOnly && env.ENABLE_BETA_MUTATION !== 'true') throw new Error('Protected Infra main executor and activation required');
   if (env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Unexpected account/region');

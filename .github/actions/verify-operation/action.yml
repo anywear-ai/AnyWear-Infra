@@ -26,7 +26,7 @@ runs:
       with:
         app-id: 3346940
         private-key: ${{ inputs.app_private_key }}
-        owner: git-malu
+        owner: ${{ github.repository_owner }}
         repositories: AnyWear-Service
         permission-contents: read
     - name: Read the Service artifact identity over REST and download only the consumed assets
