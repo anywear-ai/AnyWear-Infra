@@ -972,19 +972,18 @@ describe('Platform safety controls', () => {
     const beta = roles.find((role) => role.Properties.RoleName === 'beta-github-actions-pipeline-role');
     const subjects = (role: any): string[] => role.Properties.AssumeRolePolicyDocument.Statement[0]
       .Condition.StringEquals['token.actions.githubusercontent.com:sub'];
-    // Issue #266: the transfer window lists both owner subjects for the same
-    // repository id, so the id is trusted once per owner and at most one subject
-    // can ever match.
-    const owners = ['git-malu@11473072', 'anywear-ai@352675702'];
-    const dual = (repository: string, id: number, stage: string): string[] => owners.map((owner) => (
-      `repo:${owner}/${repository}@${id}:environment:${stage}`));
-    expect(subjects(beta)).toHaveLength(6);
+    // Issue #266 step 24: every trust lists exactly one subject, the
+    // organization owner `anywear-ai@352675702`, with the repository half
+    // (`@<repository id>`) unchanged from the transfer-window list.
+    const subject = (repository: string, id: number, stage: string): string =>
+      `repo:anywear-ai@352675702/${repository}@${id}:environment:${stage}`;
+    expect(subjects(beta)).toHaveLength(3);
     expect(subjects(beta)).toEqual([
-      ...dual('AnyWear-Service', 1158460323, 'beta'),
-      ...dual('AnyWear-E2E', 1317091305, 'beta'),
-      ...dual('AnyWear-Client', 1176104200, 'beta'),
+      subject('AnyWear-Service', 1158460323, 'beta'),
+      subject('AnyWear-E2E', 1317091305, 'beta'),
+      subject('AnyWear-Client', 1176104200, 'beta'),
     ]);
-    expect(subjects(prod)).toEqual(dual('AnyWear-Service', 1158460323, 'prod'));
+    expect(subjects(prod)).toEqual([subject('AnyWear-Service', 1158460323, 'prod')]);
 
     const policies = Object.values(template.Resources).filter(
       (resource: any) => resource.Type === 'AWS::IAM::Policy',
@@ -997,46 +996,56 @@ describe('Platform safety controls', () => {
     expect(devPolicy).toContain('/anywear/dev/cloudfront_origin_header-*');
   });
 
-  // Issue #266: every role trust in the transfer window carries the old
-  // `git-malu@11473072` owner subject and the new `anywear-ai@352675702` one with
-  // an identical `@<repository id>` half. Step 8 deploys this list; step 24
-  // narrows it back to the new owner alone.
-  it('lists both owner subjects on all nine synthesized role trusts', () => {
+  // Issue #266 step 24: every role trust carries exactly one subject, the
+  // organization owner `anywear-ai@352675702`, with the repository half
+  // (`@<repository id>`) unchanged from the step-8 transfer-window list. The
+  // personal owner `git-malu@11473072` no longer authorizes any repository.
+  it('trusts only the new owner subject on all nine synthesized role trusts', () => {
     const template = synthesizeFoundation('roles-added');
     const subjectsOf = (roleName: string): string[] => {
       const role = (Object.values(template.Resources) as any[]).find((resource) => (
         resource.Type === 'AWS::IAM::Role' && resource.Properties?.RoleName === roleName));
       expect(role).toBeDefined();
-      return role.Properties.AssumeRolePolicyDocument.Statement[0]
-        .Condition.StringEquals['token.actions.githubusercontent.com:sub'];
+      // A dedicated role binds its single subject as a string; a legacy role
+      // keeps the array form. Normalize both to the trusted set.
+      return [role.Properties.AssumeRolePolicyDocument.Statement[0]
+        .Condition.StringEquals['token.actions.githubusercontent.com:sub']].flat();
     };
-    const dedicated = ['beta-infra-deploy-role', 'beta-infra-runtime-role', 'beta-service-data-role',
-      'beta-service-artifact-role', 'beta-client-publish-role', 'beta-e2e-qualification-role'];
-    for (const roleName of dedicated) {
-      const subjects = subjectsOf(roleName);
-      // Exactly the old and the new form of one repository trust.
-      expect(subjects).toHaveLength(2);
-      const [old, next] = subjects;
-      const parsed = old.match(/^repo:git-malu@11473072\/([A-Za-z0-9-]+)@(\d+):environment:([a-z-]+)$/);
-      expect(parsed).not.toBeNull();
-      expect(next).toBe(`repo:anywear-ai@352675702/${parsed![1]}@${parsed![2]}:environment:${parsed![3]}`);
+    const subject = (repository: string, id: number, stage: string): string =>
+      `repo:anywear-ai@352675702/${repository}@${id}:environment:${stage}`;
+    // The six dedicated Beta identities, each bound to its one repository id.
+    const dedicated: Record<string, string> = {
+      'beta-infra-deploy-role': subject('AnyWear-Infra', 1409047265, 'beta'),
+      'beta-infra-runtime-role': subject('AnyWear-Infra', 1409047265, 'beta'),
+      'beta-service-data-role': subject('AnyWear-Service', 1158460323, 'beta'),
+      'beta-service-artifact-role': subject('AnyWear-Service', 1158460323, 'service-artifacts'),
+      'beta-client-publish-role': subject('AnyWear-Client', 1176104200, 'beta'),
+      'beta-e2e-qualification-role': subject('AnyWear-E2E', 1317091305, 'beta'),
+    };
+    // The three legacy pipeline identities keep their exact subject sets.
+    const legacy: Record<string, string[]> = {
+      'dev-github-actions-pipeline-role': [
+        subject('AnyWear-Service', 1158460323, 'dev'),
+        subject('AnyWear-E2E', 1317091305, 'dev'),
+      ],
+      'beta-github-actions-pipeline-role': [
+        subject('AnyWear-Service', 1158460323, 'beta'),
+        subject('AnyWear-E2E', 1317091305, 'beta'),
+        subject('AnyWear-Client', 1176104200, 'beta'),
+      ],
+      'prod-github-actions-pipeline-role': [subject('AnyWear-Service', 1158460323, 'prod')],
+    };
+    for (const [roleName, expected] of Object.entries(dedicated)) {
+      expect(subjectsOf(roleName)).toEqual([expected]);
     }
-    const legacy = ['dev-github-actions-pipeline-role', 'beta-github-actions-pipeline-role',
-      'prod-github-actions-pipeline-role'];
-    for (const roleName of legacy) {
-      const subjects = subjectsOf(roleName);
-      expect(subjects.length % 2).toBe(0);
-      for (let index = 0; index < subjects.length; index += 2) {
-        expect(subjects[index]).toMatch(/^repo:git-malu@11473072\//);
-        expect(subjects[index + 1]).toBe(subjects[index].replace('git-malu@11473072', 'anywear-ai@352675702'));
-      }
+    for (const [roleName, expected] of Object.entries(legacy)) {
+      expect(subjectsOf(roleName)).toEqual(expected);
     }
-    // A repository id appears once per owner and never twice for one owner.
-    const legacyRepositories = (roleName: string): string[] => subjectsOf(roleName)
-      .map((subject) => subject.replace(/^repo:[^/]+\//, '').replace(/:environment:.*$/, ''));
-    for (const roleName of legacy) {
-      const repositories = legacyRepositories(roleName);
-      expect(new Set(repositories).size).toBe(repositories.length / 2);
+    // No trust lists a second subject or the retired personal owner.
+    for (const roleName of [...Object.keys(dedicated), ...Object.keys(legacy)]) {
+      const subjects = subjectsOf(roleName);
+      expect(subjects.every((value) => /^repo:anywear-ai@352675702\//.test(value))).toBe(true);
+      expect(new Set(subjects).size).toBe(subjects.length);
     }
     // The retired phase still trusts no repository, including the new owner.
     const retired = synthesizeFoundation('retired');
