@@ -11,7 +11,6 @@ const execute = promisify(execFile);
 // reference (an API path, a record field or a verifier origin) names the new
 // owner; the old name keeps resolving through GitHub's transfer redirect. The
 // current run's own repository is matched by its immutable numeric id below.
-const INFRA = 'anywear-ai/AnyWear-Infra';
 const E2E = 'anywear-ai/AnyWear-E2E';
 const SERVICE = 'anywear-ai/AnyWear-Service';
 const CLIENT = 'anywear-ai/AnyWear-Client';
