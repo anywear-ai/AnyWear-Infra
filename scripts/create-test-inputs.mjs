@@ -20,7 +20,7 @@ export async function createTestInputs(directory) {
 // Infra produces every stack it still owns; the release slice's producer left.
 export function stackManifestFixture(sources = {}) {
   return configuredStacks.map(stack => ({ ...stack,
-    source_repository: sources[stack.stack_name]?.source_repository ?? 'git-malu/AnyWear-Infra',
+    source_repository: sources[stack.stack_name]?.source_repository ?? 'anywear-ai/AnyWear-Infra',
     source_sha: sources[stack.stack_name]?.source_sha ?? '1'.repeat(40) }));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await createTestInputs(path.resolve(process.argv[2] ?? '.service-artifacts/test'));
