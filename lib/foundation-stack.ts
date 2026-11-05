@@ -31,18 +31,16 @@ export class FoundationStack extends cdk.Stack {
     });
 
     // GitHub's immutable OIDC subject remains stable if a repository is renamed,
-    // so trust only the owner/repository ID form. Issue #266 transfers the owner
-    // from `git-malu@11473072` to `anywear-ai@352675702` with every repository ID
-    // unchanged, so the transfer window lists both owner subjects: the
-    // `(owner id, repository id)` pair is exclusive, at most one can ever match,
-    // and a later reviewed deploy narrows each trust back to the new owner alone.
-    const ownerSubjects = (repository: string, id: number, stage: string) => [
-      `repo:git-malu@11473072/${repository}@${id}:environment:${stage}`,
-      `repo:anywear-ai@352675702/${repository}@${id}:environment:${stage}`,
-    ];
-    const serviceSubject = (stage: 'dev' | 'beta' | 'prod') => ownerSubjects('AnyWear-Service', 1158460323, stage);
-    const e2eSubject = (stage: 'dev' | 'beta') => ownerSubjects('AnyWear-E2E', 1317091305, stage);
-    const clientSubject = ownerSubjects('AnyWear-Client', 1176104200, 'beta');
+    // so trust only the owner/repository ID form. Issue #266 step 8 moved the
+    // owner from `git-malu@11473072` to `anywear-ai@352675702` with every
+    // repository ID unchanged and listed both owner subjects for the transfer
+    // window; step 24 narrows each trust back to the new owner alone, so the
+    // `(owner id, repository id)` pair is trusted exactly once.
+    const ownerSubject = (repository: string, id: number, stage: string) =>
+      `repo:anywear-ai@352675702/${repository}@${id}:environment:${stage}`;
+    const serviceSubject = (stage: 'dev' | 'beta' | 'prod') => ownerSubject('AnyWear-Service', 1158460323, stage);
+    const e2eSubject = (stage: 'dev' | 'beta') => ownerSubject('AnyWear-E2E', 1317091305, stage);
+    const clientSubject = ownerSubject('AnyWear-Client', 1176104200, 'beta');
 
     // The deployed Foundation owns only its OIDC provider/helpers. Existing
     // Dev/Beta pipeline identities stay outside it; no adoption or Prod creation.
@@ -52,9 +50,9 @@ export class FoundationStack extends cdk.Stack {
         // repository is trusted, including the new Infra repository.
         'anywear:retired:beta-github-actions-pipeline-role',
       ] : [
-        ...serviceSubject(stage),
-        ...(stage === 'prod' ? [] : e2eSubject(stage)),
-        ...(stage === 'beta' ? clientSubject : []),
+        serviceSubject(stage),
+        ...(stage === 'prod' ? [] : [e2eSubject(stage)]),
+        ...(stage === 'beta' ? [clientSubject] : []),
       ];
       const role = new iam.Role(this, `${stage}GitHubActionsRole`, {
         roleName: `${stage}-github-actions-pipeline-role`,
@@ -96,13 +94,13 @@ export class FoundationStack extends cdk.Stack {
     }
 
     if (identityPhase === 'legacy') return;
-    const betaSubject = (repository: string, id: number) => ownerSubjects(repository, id, 'beta');
-    const createRole = (constructId: string, name: string, subjects: string[]) => new iam.Role(this, constructId, {
+    const betaSubject = (repository: string, id: number) => ownerSubject(repository, id, 'beta');
+    const createRole = (constructId: string, name: string, subject: string) => new iam.Role(this, constructId, {
       roleName: `beta-${name}-role`,
       assumedBy: new iam.WebIdentityPrincipal(githubProvider.openIdConnectProviderArn, {
         StringEquals: {
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-          'token.actions.githubusercontent.com:sub': subjects,
+          'token.actions.githubusercontent.com:sub': subject,
         },
       }),
     });
@@ -110,7 +108,7 @@ export class FoundationStack extends cdk.Stack {
     const deploy = createRole('BetaInfraDeployRole', 'infra-deploy', infraSubject);
     const runtime = createRole('BetaInfraRuntimeRole', 'infra-runtime', infraSubject);
     const artifacts = createRole('BetaServiceArtifactRole', 'service-artifact',
-      ownerSubjects('AnyWear-Service', 1158460323, 'service-artifacts'));
+      ownerSubject('AnyWear-Service', 1158460323, 'service-artifacts'));
     createRole('BetaServiceDataRole', 'service-data', betaSubject('AnyWear-Service', 1158460323));
     createRole('BetaClientPublishRole', 'client-publish', betaSubject('AnyWear-Client', 1176104200));
     createRole('BetaE2EQualificationRole', 'e2e-qualification', betaSubject('AnyWear-E2E', 1317091305));

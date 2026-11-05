@@ -95,9 +95,7 @@
         "StringEquals": {
          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
          "token.actions.githubusercontent.com:sub": [
-          "repo:git-malu@11473072/AnyWear-Service@1158460323:environment:dev",
           "repo:anywear-ai@352675702/AnyWear-Service@1158460323:environment:dev",
-          "repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:dev",
           "repo:anywear-ai@352675702/AnyWear-E2E@1317091305:environment:dev"
          ]
         }
@@ -160,11 +158,8 @@
         "StringEquals": {
          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
          "token.actions.githubusercontent.com:sub": [
-          "repo:git-malu@11473072/AnyWear-Service@1158460323:environment:beta",
           "repo:anywear-ai@352675702/AnyWear-Service@1158460323:environment:beta",
-          "repo:git-malu@11473072/AnyWear-E2E@1317091305:environment:beta",
           "repo:anywear-ai@352675702/AnyWear-E2E@1317091305:environment:beta",
-          "repo:git-malu@11473072/AnyWear-Client@1176104200:environment:beta",
           "repo:anywear-ai@352675702/AnyWear-Client@1176104200:environment:beta"
          ]
         }
@@ -227,7 +222,6 @@
         "StringEquals": {
          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
          "token.actions.githubusercontent.com:sub": [
-          "repo:git-malu@11473072/AnyWear-Service@1158460323:environment:prod",
           "repo:anywear-ai@352675702/AnyWear-Service@1158460323:environment:prod"
          ]
         }
