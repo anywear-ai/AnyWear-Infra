@@ -28,7 +28,7 @@ export function buildProductionPromotionPlan({ release, qualification, stableRel
     infra_sha: env.GITHUB_SHA, service_sha: release.source_sha, service_release_id: release.release_id,
     qualification: { run_id: Number(env.QUALIFICATION_RUN_ID), run_attempt: Number(env.QUALIFICATION_RUN_ATTEMPT),
       artifact_id: Number(env.QUALIFICATION_ARTIFACT_ID), record_sha256: env.QUALIFICATION_RECORD_SHA256, e2e_sha: env.QUALIFICATION_E2E_SHA },
-    stable_release: { repository: 'git-malu/AnyWear-Service', id: stableRelease.id, tag: stableRelease.tag_name },
+    stable_release: { repository: 'anywear-ai/AnyWear-Service', id: stableRelease.id, tag: stableRelease.tag_name },
     image: { source: 'beta-anywear-service', destination, digest: release.image_digest },
     copy: { command: 'skopeo', args: ['copy', '--all', '--preserve-digests',
       `docker://650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@${release.image_digest}`, `docker://${destination}:service-artifacts-${release.source_sha}`] },
