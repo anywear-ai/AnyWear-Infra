@@ -833,9 +833,10 @@ test('a deploy-runtime dispatch from the wrong source, workflow family, account 
   assert.equal(inputs.operation, 'deploy-runtime');
   assert.deepEqual(inputs.service_release, { releaseTag: release.releaseTag, serviceCommit: SERVICE_SHA });
   // Another repository's dispatch cannot execute this operation, even with a
-  // mutate.yml workflow ref.
+  // mutate.yml workflow ref: issue #266 compares the workflow ref against the
+  // run's own full name, so a foreign repository matches no reviewed workflow.
   assert.throws(() => validateOperationInputs({ ...dispatch, GITHUB_REPOSITORY: 'git-malu/AnyWear-Service' }),
-    /Protected Infra main executor and activation required/);
+    /Operation is forbidden for this workflow family/);
   assert.throws(() => validateOperationInputs({ ...dispatch, GITHUB_REPOSITORY_ID: '1158460323' }),
     /Protected Infra main executor and activation required/);
   // Only reviewed main, and only a dispatch event, may run it.

@@ -85,7 +85,7 @@ test('the proof accepts the exact travelled set and prints each published digest
   for (const name of STAGE_BASE_ASSETS) {
     assert.match(result.stdout, new RegExp(`${name} ${assets[name]} matches the published digest`));
   }
-  assert.match(result.stdout, /deploy-platform consumes git-malu\/AnyWear-Service/);
+  assert.match(result.stdout, /deploy-platform consumes anywear-ai\/AnyWear-Service/);
 });
 
 test('a corrupted travelled byte fails closed before any credential', async () => {
@@ -137,7 +137,7 @@ test('migrate proves only the schema asset and claims no deploy', async () => {
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout,
     new RegExp(`service-schema\\.json ${assets['service-schema.json']} matches the published digest`));
-  assert.match(result.stdout, /mutate\.yml migrate consumes git-malu\/AnyWear-Service/);
+  assert.match(result.stdout, /mutate\.yml migrate consumes anywear-ai\/AnyWear-Service/);
   assert.equal(/deploys/.test(result.stdout), false, 'migrate runs a one-shot and deploys nothing');
 });
 

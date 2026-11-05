@@ -52,7 +52,7 @@ jobs:
         with:
           app-id: 3346940
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: git-malu
+          owner: ${{ github.repository_owner }}
           repositories: |
             AnyWear-Service
             AnyWear-E2E
@@ -67,14 +67,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ vars.PROD_QUALIFICATION_ARTIFACT_ID }}
-          repository: git-malu/AnyWear-E2E
+          repository: ${{ github.repository_owner }}/AnyWear-E2E
           run-id: ${{ vars.PROD_QUALIFICATION_RUN_ID }}
           github-token: ${{ steps.app.outputs.token }}
           path: .qualification/download
           merge-multiple: true
       - uses: actions/checkout@v4
         with:
-          repository: git-malu/AnyWear-E2E
+          repository: ${{ github.repository_owner }}/AnyWear-E2E
           ref: ${{ steps.qualified.outputs.e2e_sha }}
           path: .qualification-verifier
           token: ${{ steps.app.outputs.token }}

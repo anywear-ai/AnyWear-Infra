@@ -1,7 +1,7 @@
 import { parseJson, canonicalJson } from './json-contract.mjs';
 import { changedStackNames } from './operation-stacks.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
-import { INFRA_REPOSITORY, account, region } from './deployment-contract.mjs';
+import { account, region } from './deployment-contract.mjs';
 import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
@@ -52,15 +52,18 @@ export function assertProtectedExecutor(infraSha, env = process.env) {
   if (typeof infraSha !== 'string' || !/^[a-f0-9]{40}$/.test(infraSha)) throw new Error('Reviewed Infra source required');
   if (typeof env.GITHUB_SHA !== 'string' || !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA) || env.GITHUB_REF !== 'refs/heads/main'
     || env.AWS_ACCOUNT_ID !== account || env.AWS_REGION !== region) throw new Error('Protected executor/account/region/source required');
-  const paths = env.GITHUB_REPOSITORY === INFRA_REPOSITORY ? qualifiedWorkflowPaths
-    : env.GITHUB_REPOSITORY === 'git-malu/AnyWear-E2E' ? e2eExecutorPaths : [];
+  // Issue #266: a repository's numeric id is immutable across an owner transfer
+  // while its owner name is not, so the executor is identified by id and the
+  // workflow ref is compared against this run's own full name.
+  const paths = env.GITHUB_REPOSITORY_ID === '1409047265' ? qualifiedWorkflowPaths
+    : env.GITHUB_REPOSITORY_ID === '1317091305' ? e2eExecutorPaths : [];
   if (!paths.some(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`)) {
     throw new Error('Protected executor workflow required');
   }
   // An Infra executor must execute the reviewed revision. AnyWear-E2E executes
   // from its own pinned checkout and states the observed Infra helper revision
   // explicitly, so its run SHA is the executor identity rather than the Infra SHA.
-  if (env.GITHUB_REPOSITORY === INFRA_REPOSITORY && env.GITHUB_SHA !== infraSha) {
+  if (env.GITHUB_REPOSITORY_ID === '1409047265' && env.GITHUB_SHA !== infraSha) {
     throw new Error('Protected executor source required');
   }
   if (!Number.isSafeInteger(Number(env.GITHUB_RUN_ID)) || !Number.isSafeInteger(Number(env.GITHUB_RUN_ATTEMPT))) throw new Error('Executor run identity required');
@@ -70,7 +73,9 @@ export function assertProtectedExecutor(infraSha, env = process.env) {
 
 export function operationBoundary(env) {
   const operation = env.INFRA_OPERATION;
-  const workflow = Object.keys(workflowOperations).find(file => env.GITHUB_WORKFLOW_REF === `git-malu/AnyWear-Infra/${file}@refs/heads/main`);
+  // Issue #266: the workflow ref names this run's own repository, so the same
+  // exact match holds under either owner.
+  const workflow = Object.keys(workflowOperations).find(file => env.GITHUB_WORKFLOW_REF === `${env.GITHUB_REPOSITORY}/${file}@refs/heads/main`);
   if (!workflow || !workflowOperations[workflow].includes(operation)) throw new Error('Operation is forbidden for this workflow family');
   return { workflow, family: operationFamilies[operation], readOnly: operation === 'state' };
 }

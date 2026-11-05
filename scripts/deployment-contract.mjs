@@ -10,5 +10,5 @@
 // `lib/contracts.mjs`.
 export const account = '650880818323';
 export const region = 'ap-east-1';
-export const INFRA_REPOSITORY = 'git-malu/AnyWear-Infra';
-export const SERVICE_REPOSITORY = 'git-malu/AnyWear-Service';
+export const INFRA_REPOSITORY = 'anywear-ai/AnyWear-Infra';
+export const SERVICE_REPOSITORY = 'anywear-ai/AnyWear-Service';

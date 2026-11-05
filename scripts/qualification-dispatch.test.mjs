@@ -92,13 +92,13 @@ test('the dispatch goes through the REST endpoint with return_run_details and pr
   assert.equal(result.dispatched, true);
   const post = gh.calls.find(args => args.includes('--method'));
   assert.ok(post, 'the dispatch is a POST');
-  assert.equal(post[3], 'repos/git-malu/AnyWear-E2E/actions/workflows/beta-qualification.yml/dispatches');
+  assert.equal(post[3], 'repos/anywear-ai/AnyWear-E2E/actions/workflows/beta-qualification.yml/dispatches');
   assert.equal(post[post.indexOf('return_run_details=true') - 1], '-F', 'the boolean uses the typed field flag');
   assert.equal(post[post.indexOf('ref=main') - 1], '-f');
   assert.deepEqual(inputFields(post), qualificationPayload(dispatchEnv({ DELIVERY_TRIGGER: 'deploy', DISPATCHED_BY: dispatchedBy })));
   // The dispatch response names the created run and that run is read back by id;
   // the printed line carries the URL the operator follows.
-  assert.ok(gh.calls.some(args => args[1] === 'repos/git-malu/AnyWear-E2E/actions/runs/4242'));
+  assert.ok(gh.calls.some(args => args[1] === 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242'));
   assert.ok(gh.output().includes(createdUrl));
   assert.equal(result.run_url, createdUrl);
 });
@@ -113,7 +113,7 @@ test('a dispatch response naming the run id is verified by id, never by the run 
   const postIndex = gh.calls.findIndex(args => args.includes('--method'));
   assert.ok(postIndex > -1, 'the qualification is dispatched');
   assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'the dispatch happens once');
-  assert.equal(gh.calls.filter(args => args[1] === 'repos/git-malu/AnyWear-E2E/actions/runs/4242').length, 1,
+  assert.equal(gh.calls.filter(args => args[1] === 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242').length, 1,
     'the created run is fetched exactly once, by the id the dispatch response named');
   assert.deepEqual(gh.calls.slice(postIndex + 1).filter(args => /\?status=/.test(String(args[1]))), [],
     'the active-run lookup is not consulted after the dispatch');

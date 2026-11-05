@@ -13,7 +13,7 @@
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
   "dedicated_candidate_canonical_sha256": "9e399b24b2c7fa30ba76da874689b811fb968d45e7c5d69a16b5f9b22bf483d1",
-  "dedicated_additions_sha256": "d42178307679b7325e54b0adfb89d5e87cc4e71998bec898130243ba58e804fd",
+  "dedicated_additions_sha256": "ed0dfd0696acc47ff6b141691cb51340ed8787138d3e626be499992a6cc08d72",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -97,6 +97,13 @@
       "source_branch": "issue/166-elb-grants",
       "scope": "M6 Runtime queue-depth alarm prefix grant on beta-service-deploy-cfn-role",
       "detail": "The Runtime template creates two CDK-auto-named queue-depth alarms whose names carry the AnyWearRuntimeStack-beta- prefix, so the existing cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms grant on alarm:beta-anywear-* does not match them (the same evaluation gap that made them undeletable at M3). Foundation adds exactly cloudwatch:PutMetricAlarm/DescribeAlarms/DeleteAlarms on arn:aws:cloudwatch:ap-east-1:650880818323:alarm:AnyWearRuntimeStack-beta-*, Sid RuntimeQueueDepthAlarms. The nine explicitly named beta-anywear-* alarms stay covered by the existing statement; no broader prefix, action or role. Source-side only, not live: publication_verified and deployment_qualified stay false until the Deployment gate deploys Foundation."
+    },
+    {
+      "issue": 266,
+      "recorded_at": "2026-11-05",
+      "source_branch": "issue/266-owner-and-trust",
+      "scope": "dual owner subjects on the six dedicated Beta role trusts, old `git-malu@11473072` plus new `anywear-ai@352675702`, repository halves unchanged",
+      "detail": "Every one of the six dedicated Beta role trusts (beta-infra-deploy-role, beta-infra-runtime-role, beta-service-data-role, beta-service-artifact-role, beta-client-publish-role, beta-e2e-qualification-role) lists both owner subjects in one StringEquals array, old first, with the repository half unchanged (`@1158460323` Service, `@1317091305` E2E, `@1176104200` Client, `@1409047265` Infra). The `(owner id, repository id)` pair is exclusive, so at most one subject can match at any moment. The additions fixture was re-recorded from this source synthesis and its `dedicated_additions_sha256` recomputed over the new raw bytes; `original_canonical_sha256`, `fixture_sha256`, `addition_allowlist` and the recorded `dedicated_candidate_canonical_sha256`/`dedicated_source_sha` pair stay the historical authenticated capture. This is the transfer-window trust that step 8 `deploy-foundation` deploys before any repository transfer, and step 24 narrows each trust back to `anywear-ai@352675702` alone with a second `deploy-foundation`. Source-side only, not live: publication_verified and deployment_qualified stay false until step 8."
     }
   ]
 }

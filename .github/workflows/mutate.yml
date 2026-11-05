@@ -206,7 +206,7 @@ jobs:
         with:
           app-id: 3346940
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: git-malu
+          owner: ${{ github.repository_owner }}
           repositories: AnyWear-E2E
           permission-actions: write
       # Pre-dispatch dedupe, the dispatch with `return_run_details: true`, the

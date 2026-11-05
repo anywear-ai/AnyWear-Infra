@@ -54,10 +54,10 @@ export declare function validateStageInputs<T extends readonly StageInputRow[]>(
 export declare function stageContractSchemaHash(rows: readonly StageInputRow[]): string;
 
 /** The repository that owns the shared infrastructure, Foundation and stage base. */
-export declare const INFRA_REPOSITORY: 'git-malu/AnyWear-Infra';
+export declare const INFRA_REPOSITORY: 'anywear-ai/AnyWear-Infra';
 
 /** The repository that owns the release source; since #195 it produces no record. */
-export declare const SERVICE_REPOSITORY: 'git-malu/AnyWear-Service';
+export declare const SERVICE_REPOSITORY: 'anywear-ai/AnyWear-Service';
 
 /** `platformStackName('beta')` -> `AnyWearPlatformStack-beta`. */
 export declare function platformStackName(stage: string): string;
