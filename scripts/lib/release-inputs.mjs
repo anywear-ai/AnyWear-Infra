@@ -4,6 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseJson, sha256, exact, matches, integer, DIGEST, SHA } from './json-contract.mjs';
 import { SCHEMA_ASSET_NAME } from './schema-asset.mjs';
+import { SERVICE_REPOSITORY } from './deployment-contract.mjs';
 
 // The reviewed Service artifact identity that replaces the committed `selection`:
 // the tag names one sealed artifact; the commit names the Service source it was
@@ -12,7 +13,6 @@ import { SCHEMA_ASSET_NAME } from './schema-asset.mjs';
 // asset, all read from the documented REST representation.
 const execute = promisify(execFile);
 const root = path.resolve(import.meta.dirname, '../..');
-export const SERVICE_REPOSITORY = 'anywear-ai/AnyWear-Service';
 // The four files a post-#193 Service release publishes. Publication requires
 // exactly this set; a consumer requires only the names it consumes and ignores
 // extras, so a pre-change five-asset release stays deployable and restorable.

@@ -7,9 +7,9 @@ paths:
       # actions/create-github-app-token v3.3.0 added the `permission-attestations`
       # input (the v3.3.0 release is newer than actionlint 1.7.12). The input is
       # valid on the pinned `@v3` major tag, and
-      # `scripts/authorization-canary.test.mjs` pins that the app token carries
-      # the attestations read the release-verification path needs. The ignore
-      # covers only this stale-metadata message for this one file.
+      # `test/scripts/authorization-preflight.test.mjs` pins that the app token
+      # carries the attestations read the release-verification path needs. The
+      # ignore covers only this stale-metadata message for this one file.
       - 'input "permission-attestations" is not defined in action "actions/create-github-app-token@v3"'
   .github/workflows/mutate.yml:
     ignore:
@@ -17,7 +17,7 @@ paths:
       # in-flight cloud mutation instead of replacing the pending one. actionlint
       # 1.7.12 predates the key and refuses it with this one syntax-check message;
       # the key is valid GitHub workflow syntax, `cancel-in-progress: false` is its
-      # only legal pairing, and `scripts/entry-surface.test.mjs` pins both. The
-      # ignore covers only this message for this one file; no other workflow uses
-      # `queue`.
+      # only legal pairing, and `test/scripts/entry-surface.test.mjs` pins both.
+      # The ignore covers only this message for this one file; no other workflow
+      # uses `queue`.
       - 'unexpected key "queue" for "concurrency" section. expected one of "cancel-in-progress", "group"'

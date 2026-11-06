@@ -15,12 +15,11 @@ import { synthStage } from './recovery-contract.mjs';
 import { readRuntimeDeployValues, readRuntimeStageContract, runtimeBakeQueueUrls, runtimeEcsClusterName } from './runtime-stage-inputs.mjs';
 import { runBakeGate } from './bake-gate.mjs';
 import { SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
+import { BASE_STACK } from './deployment-contract.mjs';
 import { runSchemaBoundaryGate } from './schema-gate.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const RUNTIME_STACK = runtimeStack;
-export const BASE_STACK = 'AnyWearPlatformStack-beta';
-export const RUNTIME_REGION = 'ap-east-1';
 export const PHASE = 'roles-added';
 // The five template parameters a `deploy-runtime` passes. The first two identify
 // the release, the retained sizing profile comes from the live stack (the reviewed
@@ -177,13 +176,6 @@ export function runtimeCdkDeployArguments({ parameters, changeSetName, identityP
     '--previous-parameters=false',
     ...RUNTIME_DEPLOY_PARAMETER_KEYS.flatMap((key) =>
       ['--parameters', `${RUNTIME_STACK}:${key}=${parameters[key]}`])];
-}
-
-/** The CDK destroy arguments for `stop-runtime`. */
-export function runtimeCdkDestroyArguments(identityPhase, retentionProtection) {
-  return ['cdk', 'destroy', RUNTIME_STACK, '--force', '--exclusively',
-    '-c', 'deployScope=runtime', '-c', 'stage=beta', '-c', 'legacyRoleSource=external',
-    '-c', `identityPhase=${identityPhase}`, '-c', `ecrImageRetention=${retentionProtection}`];
 }
 
 /**

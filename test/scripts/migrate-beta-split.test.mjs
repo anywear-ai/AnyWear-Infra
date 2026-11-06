@@ -6,7 +6,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   API_DISTRIBUTION,
-  BASE_STACK,
   DESTINATION_LOGICAL_ID,
   MOVED_OUTPUTS,
   SOURCE_LOGICAL_ID,
@@ -28,6 +27,7 @@ import {
   workloadParameterArguments,
   workloadParameterKeys,
 } from '../../scripts/migrate-beta-split.mjs';
+import { BASE_STACK } from '../../scripts/lib/deployment-contract.mjs';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`../../test/fixtures/beta-split/${name}`, import.meta.url), 'utf8'));
 const liveWorkload = () => fixture('workload-live.template.json');

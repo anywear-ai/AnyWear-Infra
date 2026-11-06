@@ -1,7 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { RECOVERY_TARGETS } from './recovery-contract.mjs';
 
 export function canonical(value) {
@@ -325,14 +322,4 @@ export function compareTemplates(before, after, { phase = 'legacy', stage, stack
     } else rejected.push(difference);
   }
   return { phase, stage, stackName, accepted: rejected.length === 0, allowed, rejected };
-}
-
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [beforeFile, afterFile, phase = 'legacy', stage, outputFile] = process.argv.slice(2);
-  assert.ok(beforeFile && afterFile, 'Usage: compare-templates.mjs BEFORE AFTER [PHASE STAGE OUTPUT]');
-  const report = compareTemplates(JSON.parse(readFileSync(beforeFile, 'utf8')),
-    JSON.parse(readFileSync(afterFile, 'utf8')), { phase, stage, stackName: path.basename(afterFile, '.template.json') });
-  if (outputFile) writeFileSync(outputFile, `${JSON.stringify(report, null, 2)}\n`);
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (!report.accepted) process.exitCode = 1;
 }

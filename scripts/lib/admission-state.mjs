@@ -23,25 +23,10 @@ export function normalizeTesterEmails(bytes) {
 // sha256 of the canonical JSON array of normalized addresses.
 export const testerAllowlistHash = emails => sha256(canonicalJson(emails));
 
-export function unavailableAdmissionState() {
-  return { tester_emails: 'unavailable' };
-}
-
 // Read only the allowlist. A present-but-malformed value is a failed read, not a
 // value to interpret: there is no fail-closed mode word any more.
 export async function readAdmissionState(io) {
   const parameter = (await io.aws(['ssm', 'get-parameter', '--name', TESTER_ALLOWLIST_PARAMETER])).Parameter;
   if (parameter?.Name !== undefined && parameter.Name !== TESTER_ALLOWLIST_PARAMETER) throw new Error('Unexpected tester allowlist parameter identity');
   return { tester_emails: parseJson(normalizeTesterEmails(parameter?.Value)) };
-}
-
-// Evidence-only reads record what was observed without turning a failed read into
-// a failed operation. A sanitized `unavailable` keeps "empty" distinct from
-// "unreadable" in the run evidence.
-export async function observeAdmissionState(io) {
-  try {
-    return { state: await readAdmissionState(io), result: 'observed' };
-  } catch {
-    return { state: unavailableAdmissionState(), result: 'unavailable' };
-  }
 }

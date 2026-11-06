@@ -2,8 +2,9 @@ import { readdir } from 'node:fs/promises';
 import { parseJson, exact, matches, DIGEST } from './lib/json-contract.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
 import { operationBoundary } from './lib/operation-boundaries.mjs';
-import { validateReleaseInput, SERVICE_REPOSITORY, SELECTED_RELEASE_DIRECTORY,
+import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY,
   assertSelectedReleaseBytes, releaseAssetsFor } from './lib/release-inputs.mjs';
+import { SERVICE_REPOSITORY } from './lib/deployment-contract.mjs';
 import { loadLocalArtifactInputs } from './local-artifact-inputs.mjs';
 import { loadSchemaAsset } from './lib/schema-asset.mjs';
 

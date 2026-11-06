@@ -42,14 +42,6 @@ export function configuredStackNames() {
   return configuredStacks.map(stack => stack.stack_name);
 }
 
-export function operationStackNames() {
-  return [...configuredStacks, ...operationOwnedStacks].map(stack => stack.stack_name);
-}
-
-export function configuredStack(stackName) {
-  return configuredStacks.find(stack => stack.stack_name === stackName);
-}
-
 export function changedStackNames(operation) {
   return [...(stackChanges[operation] ?? [])];
 }

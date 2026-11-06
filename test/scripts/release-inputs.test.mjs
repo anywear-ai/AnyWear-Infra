@@ -8,12 +8,12 @@ import {
   RELEASE_IDENTITY_OPERATIONS,
   RUNTIME_RELEASE_ASSETS,
   STAGE_BASE_ASSETS,
-  SERVICE_REPOSITORY,
   assertSelectedReleaseBytes,
   releaseAssetsFor,
   runVerifyInputs,
   validateReleaseInput,
 } from '../../scripts/lib/release-inputs.mjs';
+import { SERVICE_REPOSITORY } from '../../scripts/lib/deployment-contract.mjs';
 import { createTestInputs } from '../../scripts/create-test-inputs.mjs';
 import { parseJson, sha256 } from '../../scripts/lib/json-contract.mjs';
 

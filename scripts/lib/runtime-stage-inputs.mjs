@@ -1,4 +1,5 @@
 import { sha256 } from './json-contract.mjs';
+import { SSM_GET_PARAMETERS_LIMIT } from './stage-contract-parameters.mjs';
 
 // The exact `/anywear/beta/...` surface one `deploy-runtime` consumes. The list is
 // the reviewed Service release read set moved into this repository (#195): the 36
@@ -74,8 +75,6 @@ export const RUNTIME_QUEUE_URL_NAMES = Object.freeze({
 export const RUNTIME_ECS_CLUSTER_INPUT = '/anywear/beta/ecs_cluster_name';
 const QUEUE_URL = /^https:\/\/sqs\.[a-z0-9.-]+\/\d{12}\/[A-Za-z0-9_.-]+$/;
 const ECS_CLUSTER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,254}$/;
-
-export const SSM_GET_PARAMETERS_LIMIT = 10;
 
 export function runtimeStageInputBatches() {
   return Array.from({ length: Math.ceil(RUNTIME_STAGE_INPUT_NAMES.length / SSM_GET_PARAMETERS_LIMIT) },

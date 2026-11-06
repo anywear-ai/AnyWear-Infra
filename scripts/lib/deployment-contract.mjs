@@ -1,3 +1,10 @@
+import {
+  INFRA_REPOSITORY,
+  SERVICE_REPOSITORY,
+  STAGE_CONTRACT_STAGE,
+  platformStackName,
+} from '../../lib/contracts.mjs';
+
 // Single-account constants and the repository identities the operation controls
 // import.
 //
@@ -10,5 +17,7 @@
 // `lib/contracts.mjs`.
 export const account = '650880818323';
 export const region = 'ap-east-1';
-export const INFRA_REPOSITORY = 'anywear-ai/AnyWear-Infra';
-export const SERVICE_REPOSITORY = 'anywear-ai/AnyWear-Service';
+export { INFRA_REPOSITORY, SERVICE_REPOSITORY };
+// The persistent Beta stage base keeps the Base identifier; the stage contract's
+// helper is the one definition of its name.
+export const BASE_STACK = platformStackName(STAGE_CONTRACT_STAGE);
