@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { canonicalJson, contentHash, matches, HASH, integer } from './json-contract.mjs';
+import { canonicalJson, contentHash, matches, HASH, integer } from './lib/json-contract.mjs';
 import { validateProductionContext, assertQualifiedRelease } from './production-preflight.mjs';
 
 // #54 implements the v2 consumer; Production execution is not onboarded. These

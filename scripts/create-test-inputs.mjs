@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { configuredStacks } from './operation-stacks.mjs';
+import { configuredStacks } from './lib/operation-stacks.mjs';
 
 // Local fixture for the two source matrices and the pre-credential deployment
 // check. It reproduces the three Service-built files the stage base consumes: the

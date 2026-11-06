@@ -15,7 +15,7 @@
     "test": "npm run build && jest",
     "cdk": "cdk",
     "test:cdk": "npm run build && jest --runInBand",
-    "test:contracts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs test/contracts/*.test.mjs",
+    "test:contracts": "node --test test/scripts/*.test.mjs test/contracts/*.test.mjs .github/scripts/*.test.mjs",
     "check": "npm run test:cdk && npm run test:contracts"
   },
   "devDependencies": {

@@ -80,6 +80,6 @@ test('the retirement leaves no in-repo package boundary behind', () => {
     assert.equal(String(specifier).startsWith('file:'), false, `${name} must not be a file: dependency`);
   }
   assert.equal(manifest.scripts['test:contracts'],
-    'node --test scripts/*.test.mjs .github/scripts/*.test.mjs test/contracts/*.test.mjs');
+    'node --test test/scripts/*.test.mjs test/contracts/*.test.mjs .github/scripts/*.test.mjs');
   assert.equal(exists('packages'), false, 'the retired in-repo package directory must not return');
 });

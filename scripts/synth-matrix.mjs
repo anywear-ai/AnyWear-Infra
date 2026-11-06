@@ -4,9 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compareTemplates } from './compare-templates.mjs';
+import { compareTemplates } from './lib/compare-templates.mjs';
 import { canonicalDeployedTemplateHash } from '../lib/contracts.mjs';
-import { platformStackName, recoveryFailureMessage, recoveryViolations, synthStage } from './recovery-contract.mjs';
+import { platformStackName, recoveryFailureMessage, recoveryViolations, synthStage } from './lib/recovery-contract.mjs';
 
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, args) => {
   if (index % 2 === 0) { assert.ok(value.startsWith('--') && args[index + 1], 'Options require --name value pairs');

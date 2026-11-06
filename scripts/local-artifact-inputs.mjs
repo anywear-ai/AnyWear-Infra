@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseJson, exact, integer } from './json-contract.mjs';
+import { parseJson, exact, integer } from './lib/json-contract.mjs';
 
 // The stage base deploys two Service-built Lambda bundles and the task runtime
 // policy. They are read from a Service release directory, never rebuilt or
