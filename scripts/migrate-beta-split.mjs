@@ -28,11 +28,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { BASE_STACK } from './lib/deployment-contract.mjs';
 
 export const API_DISTRIBUTION = Object.freeze(JSON.parse(
   readFileSync(new URL('../lib/api-distribution.json', import.meta.url), 'utf8')));
 export const WORKLOAD_STACK = API_DISTRIBUTION.sourceStack;
-export const BASE_STACK = API_DISTRIBUTION.destinationStack;
 export const SOURCE_LOGICAL_ID = API_DISTRIBUTION.sourceLogicalId;
 export const DESTINATION_LOGICAL_ID = API_DISTRIBUTION.logicalId;
 export const MOVED_OUTPUTS = Object.freeze(['ApiDistributionDomainName', 'ApiBaseUrl']);

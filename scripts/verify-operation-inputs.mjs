@@ -1,7 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { validateOperationInputs } from './runtime-operation.mjs';
-import { operationBoundary } from './operation-boundaries.mjs';
-import { runVerifyInputs } from './release-inputs.mjs';
+import { operationBoundary } from './lib/operation-boundaries.mjs';
+import { runVerifyInputs } from './lib/release-inputs.mjs';
 
 // The `verify` job completes every immutable-input check before any job acquires
 // AWS credentials, and publishes exactly what it proved (#207):

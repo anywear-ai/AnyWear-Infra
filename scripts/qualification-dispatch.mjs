@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { matches, parseJson, SHA } from './json-contract.mjs';
-import { DELIVERY_TRIGGER_OPERATION, dispatchingRunUrl } from './delivery-inputs.mjs';
+import { matches, parseJson, SHA } from './lib/json-contract.mjs';
+import { DELIVERY_TRIGGER_OPERATION, dispatchingRunUrl } from './lib/delivery-inputs.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
 
 // The deploy chain's qualification hop (#226). After `deploy` succeeded for

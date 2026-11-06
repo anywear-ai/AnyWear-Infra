@@ -206,7 +206,7 @@ retired.
 The former `stack-sources/<reviewed-name>.json` map (four rows: `stack_name`,
 `region`, `source_repository`, `source_sha`) was deleted in #158 step C with the
 selection contract. The configured stack set is now code
-(`scripts/operation-stacks.mjs`): Foundation, the Beta stage base and Billing.
+(`scripts/lib/operation-stacks.mjs`): Foundation, the Beta stage base and Billing.
 Actual authenticated CFN Original hashes remain independent evidence.
 
 The historical committed Beta restart map (deleted with the selection contract)
@@ -751,10 +751,10 @@ failed or partial run still ends visibly failed.
 
 | Control | Where it lives | Reason |
 | --- | --- | --- |
-| Deployment authorization and credential boundaries | `scripts/authorization-preflight.mjs`, `scripts/operation-boundaries.mjs`, `scripts/operation-stacks.mjs`, `scripts/one-writer.mjs` | A dispatch must not touch a stack, role, one-shot family or AWS action its operation was not reviewed for, and the job that may read the private Service release must never be the job that may change the account. |
-| Schema boundary gate | `scripts/schema-gate.mjs`, `scripts/schema-asset.mjs` | A deployment must not replace a runtime whose database the release image cannot read; the refusal names the release's expectation and the database's state before CloudFormation changes anything. |
-| 300-second six-signal bake | `scripts/bake-gate.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. |
-| Pre-credential byte and identity check | `scripts/release-inputs.mjs` + `scripts/prove-release-bytes.mjs` | The bytes about to be deployed must be the bytes the reviewed release published, and that must be true before an AWS credential exists. |
+| Deployment authorization and credential boundaries | `scripts/lib/authorization-preflight.mjs`, `scripts/lib/operation-boundaries.mjs`, `scripts/lib/operation-stacks.mjs`, `scripts/lib/one-writer.mjs` | A dispatch must not touch a stack, role, one-shot family or AWS action its operation was not reviewed for, and the job that may read the private Service release must never be the job that may change the account. |
+| Schema boundary gate | `scripts/lib/schema-gate.mjs`, `scripts/lib/schema-asset.mjs` | A deployment must not replace a runtime whose database the release image cannot read; the refusal names the release's expectation and the database's state before CloudFormation changes anything. |
+| 300-second six-signal bake | `scripts/lib/bake-gate.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. |
+| Pre-credential byte and identity check | `scripts/lib/release-inputs.mjs` + `scripts/prove-release-bytes.mjs` | The bytes about to be deployed must be the bytes the reviewed release published, and that must be true before an AWS credential exists. |
 
 **The deployed age alarms' calibration (issue #220)**
 

@@ -2,8 +2,8 @@ import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
-import { parseJson, contentHash, exact, matches, HASH, SHA, DIGEST } from './json-contract.mjs';
-import { region } from './deployment-contract.mjs';
+import { parseJson, contentHash, exact, matches, HASH, SHA, DIGEST } from './lib/json-contract.mjs';
+import { region } from './lib/deployment-contract.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
 
 const execute = promisify(execFile);

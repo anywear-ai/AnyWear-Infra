@@ -35,8 +35,8 @@ import {
   rewritesFor,
   sha256,
 } from '../support/contracts-identity.mjs';
-import * as stages from '../../scripts/stage-contract-parameters.mjs';
-import * as recovery from '../../scripts/recovery-contract.mjs';
+import * as stages from '../../scripts/lib/stage-contract-parameters.mjs';
+import * as recovery from '../../scripts/lib/recovery-contract.mjs';
 
 // ---------------------------------------------------------------------------
 // Producer identity

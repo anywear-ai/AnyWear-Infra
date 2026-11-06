@@ -3,11 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateOperationInputs } from './runtime-operation.mjs';
-import { validateReleaseInput } from './release-inputs.mjs';
-import { changedStackNames } from './operation-stacks.mjs';
+import { validateReleaseInput } from './lib/release-inputs.mjs';
+import { changedStackNames } from './lib/operation-stacks.mjs';
 import { createTestInputs } from './create-test-inputs.mjs';
-import { platformStackName, platformStackStage, recoveryFailureMessage, recoveryViolations, synthStage } from './recovery-contract.mjs';
-import { PHASE, synthesizeRuntimeTemplate } from './runtime-deploy.mjs';
+import { platformStackName, platformStackStage, recoveryFailureMessage, recoveryViolations, synthStage } from './lib/recovery-contract.mjs';
+import { PHASE, synthesizeRuntimeTemplate } from './lib/runtime-deploy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 

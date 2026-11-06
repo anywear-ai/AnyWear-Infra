@@ -1,11 +1,12 @@
 import { readdir } from 'node:fs/promises';
-import { parseJson, exact, matches, DIGEST } from './json-contract.mjs';
+import { parseJson, exact, matches, DIGEST } from './lib/json-contract.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
-import { operationBoundary } from './operation-boundaries.mjs';
-import { validateReleaseInput, SERVICE_REPOSITORY, SELECTED_RELEASE_DIRECTORY,
-  assertSelectedReleaseBytes, releaseAssetsFor } from './release-inputs.mjs';
+import { operationBoundary } from './lib/operation-boundaries.mjs';
+import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY,
+  assertSelectedReleaseBytes, releaseAssetsFor } from './lib/release-inputs.mjs';
+import { SERVICE_REPOSITORY } from './lib/deployment-contract.mjs';
 import { loadLocalArtifactInputs } from './local-artifact-inputs.mjs';
-import { loadSchemaAsset } from './schema-asset.mjs';
+import { loadSchemaAsset } from './lib/schema-asset.mjs';
 
 // The pre-credential byte and identity proof (#207).
 //

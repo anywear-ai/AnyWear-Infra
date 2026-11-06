@@ -136,6 +136,10 @@ Infra exposes **3 entries / 2 manual dispatch surfaces / 1 switch**
 chain per deployable unit. `production.yml` stays in the tree but is
 `workflow_call`-only, so it is not an entry.
 
+Every `scripts/` entry program is declared in [`scripts/README.md`](scripts/README.md)
+with its caller, credential context and proof, and `npm run check` fails when the
+tree and that table disagree.
+
 The procedures that use these entries are in `docs/runbooks/`; its [index](docs/runbooks/README.md)
 says when to use each, including the hand stop and start of Beta.
 

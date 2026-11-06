@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { canonicalJson, sha256, parseJson } from './json-contract.mjs';
+import { canonicalJson, sha256, parseJson } from './lib/json-contract.mjs';
 
 const pseudo = { 'AWS::AccountId': '650880818323', 'AWS::Region': 'ap-east-1', 'AWS::Partition': 'aws' };
 // Resolve only fixed-account pseudo parameters and diagnostic conditions. A

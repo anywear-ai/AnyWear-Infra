@@ -70,8 +70,7 @@ export type PlatformReference = {
  * time, so the release slice needs no `Fn::GetStackOutput` read of the stage
  * base. Every legacy entry records the exact Platform output it replaced;
  * `test/workload-identity.test.ts` cross-checks the same list against
- * `test/baselines/provenance.json`, and `scripts/reference-form.mjs` classifies
- * the stage-base parameter references the identity proof allows.
+ * `test/baselines/provenance.json`.
  */
 export const PLATFORM_REFERENCES = {
   // Platform VPC (`AnyWearVpc`) and its Public/Private/Isolated subnet tiers.
