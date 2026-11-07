@@ -871,3 +871,38 @@ test('run-one-shot-task.sh validates the verify action and appends it to the con
   assert.match(script, /if \$role == "verify" and \$api != "" and \$api != "schema-journal"/);
   assert.equal(canonicalJson([...SCHEMA_VERIFY_COMMAND]), canonicalJson(['node', 'dist/verify.js', 'schema-journal']));
 });
+
+// ---------------------------------------------------------------------------
+// The Beta runbook contract (#257)
+// ---------------------------------------------------------------------------
+test('the Beta runbook lists every boundary reason and the reader rule names all nine exit-coded reasons', () => {
+  const markdown = readFileSync(new URL('../../docs/runbooks/beta-infrastructure.md', import.meta.url), 'utf8');
+  const lines = markdown.split('\n');
+  // The operation row is found by its lead-in, never by a line number.
+  const operationRow = lines.find((line) => line.startsWith('| `deploy-runtime` / `stop-runtime` |'));
+  assert.ok(operationRow, 'the deploy-runtime / stop-runtime operation row');
+  for (const reason of SCHEMA_BOUNDARY_REASONS) {
+    assert.ok(operationRow.includes(`\`${reason}\``), `the reason list names ${reason}`);
+  }
+  // The reader rule is found by its lead-in and runs to the next bullet. Its
+  // range shifts as the section grows, so no line range appears here.
+  const start = lines.findIndex((line) => line.includes('**The reader rule.**'));
+  assert.ok(start >= 0, 'the reader rule bullet');
+  let end = start + 1;
+  while (end < lines.length && !lines[end].startsWith('- **')) end += 1;
+  const paragraph = lines.slice(start, end).join('\n');
+  for (const refusal of SCHEMA_READER_EXITS) {
+    assert.ok(paragraph.includes(`| ${refusal.exit} | \`${refusal.reason}\` |`),
+      `the reader rule names exit ${refusal.exit} as ${refusal.reason}`);
+  }
+  // The rule keeps its invariants: a non-zero exit is never retried on another
+  // image, exit 4 is the connect timeout, it is one bounded read under the
+  // existing verification-task role with no task-definition change, at most two
+  // launches happen, and the waiter's 600-second envelope stays.
+  assert.match(paragraph, /never retried on another image/);
+  assert.match(paragraph, /connect timeout/i);
+  assert.match(paragraph, /existing verification-task role/);
+  assert.match(paragraph, /no\s+task-definition change/);
+  assert.match(paragraph, /At most two one-shot launches/);
+  assert.match(paragraph, /600 seconds/);
+});

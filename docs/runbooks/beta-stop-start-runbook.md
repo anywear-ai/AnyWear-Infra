@@ -52,11 +52,18 @@ Service's `SCHEMA_JOURNAL_CONNECT_TIMEOUT_SECONDS`) — well above the "30 secon
 AWS documents for a cluster paused more than 24 hours — so an ordinary resume records
 `result=compatible` and the run continues. A resume that outlasts the budget refuses as
 `reader-connect-timeout` and says the database did not answer in time: dispatch the run again,
-because that attempt already started the resume. A refusal that names a schema reason
+because that attempt already started the resume. Every other non-connect read failure now refuses
+with its own named reason — `reader-configuration-invalid` (5), `reader-secret-unavailable` (6),
+`reader-image-journal-invalid` (7), `reader-connection-failed` (8), `reader-credential-refused` (9),
+`reader-privilege-insufficient` (10) and `reader-applied-journal-invalid` (11) — and the reader-rule
+table in the [Beta infrastructure runbook](beta-infrastructure.md#schema-boundary-gate-and-applied-evidence)
+names the one operator action each carries. A refusal that names a schema reason
 (`live-version-unproven`, `below-minimum-version`, `journal-entry-differs`,
 `applied-beyond-release`, `below-minimum-migration-count`) is a code or migration decision that a
-retry cannot change. A Service image released before issue #252 exits 3 on a connect timeout and
-still reads as `reader-failed` with the `CONNECT_TIMEOUT` line in its task log.
+retry cannot change. A Service image released before issue #252 still exits 3 on a connect timeout
+and reads as `reader-failed` with the `CONNECT_TIMEOUT` line in its task log; any image released
+before #257 (including that one) exits 3 for every read failure and reads as `reader-failed` with
+the code printed.
 
 ## Optional: the daily E2E reconcile
 

@@ -347,7 +347,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Platform stack from one reviewed Service artifact identity (`service_artifact_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job proves the travelled bytes against those published digests before any credential and resolves the release tag, Service commit and ECR image digest. A Platform deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin. `deploy-runtime` sets this same origin parameter as a start's edge repair when the recorded value differs from its new load balancer, so `deploy-platform` is not a start step. The Environment deployment, the stack's events and the step log are the deployment's record |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Platform VPC, NAT-placement subnet and private route-table ids from the Platform CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
-| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service artifact identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed artifact's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-connect-timeout`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different artifact identity executes as before. Once the Runtime stack is terminal it repairs the Beta edge: it compares the Platform stack `AnyWearPlatformStack-beta`'s `ApiOriginDomainName` parameter with the same run's `ApiLoadBalancerDnsName`, sets that one parameter when they differ (before `/health` and the bake, and with no write when they are equal) and prints `api_origin_repointed <old> -> <new>`. It then reads `/health` and bakes the unchanged 300-second six-signal gate under the read-only runtime session, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service artifact identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed artifact's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-connect-timeout`, `reader-configuration-invalid`, `reader-secret-unavailable`, `reader-image-journal-invalid`, `reader-connection-failed`, `reader-credential-refused`, `reader-privilege-insufficient`, `reader-applied-journal-invalid`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different artifact identity executes as before. Once the Runtime stack is terminal it repairs the Beta edge: it compares the Platform stack `AnyWearPlatformStack-beta`'s `ApiOriginDomainName` parameter with the same run's `ApiLoadBalancerDnsName`, sets that one parameter when they differ (before `/health` and the bake, and with no write when they are equal) and prints `api_origin_repointed <old> -> <new>`. It then reads `/health` and bakes the unchanged 300-second six-signal gate under the read-only runtime session, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice, and read no admission state |
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Run the sealed Service artifact's forward migration on Beta as one one-shot task, with no application deployment. It takes the reviewed Service artifact identity (`service_artifact_tag` + `service_commit`), consumes exactly `service-schema.json` and deploys nothing: the verify job downloads that one asset, the deploy job proves and strictly loads it before any credential, and the operation resolves the immutable ECR tag to exactly one image and launches one `beta-anywear-migrate` task with the command `["node","dist/migrate.js"]` at `<ServiceRepositoryUri>@<digest>`. It reads Beta's stacks to refuse a stopped or racing environment by name, before the task is registered — `migrate requires the explicit Service release tag`, `migrate requires a terminal AnyWearPlatformStack-beta`, `migrate requires AnyWearEgressStack-beta; Beta is stopped, run its start sequence`, `migrate requires a terminal AnyWearEgressStack-beta` and `migrate requires a terminal AnyWearRuntimeStack-beta` — and needs no Runtime stack: an absent one proceeds. Beta's Egress and Runtime stacks are on by default, and this operation creates, starts or deletes neither. The order is publication (a precondition outside the launcher), then `migrate`, then a later `deploy-runtime` as a separate authorization. The wait is the ECS `TasksStopped` waiter's shipped 100 attempts of 6 seconds (about 600 seconds); a run that reaches that ceiling fails, leaves the task running and names the task it left. The run is complete when its log stream `beta-anywear-migrate/OneShot/<task-id>` under `/anywear/beta/one-shot` carries `Reset the legacy domain and work rows before applying migration 0027` with its per-table `rowsRemoved` counts and then `Database migrations completed` with `schemaVersion: 24`, and the stopped task reports exit code 0 with a container image digest equal to the resolved digest |
@@ -381,13 +381,32 @@ change set.
   complete scans), proves the task/definition/log identity and command, and
   refuses `reader-evidence-unavailable` on malformed, ambiguous or changing
   evidence.
-- **The reader rule.** The selected release image is read first. A non-zero exit
-  is `reader-failed` with the exit code recorded and is never retried on another
-  image, except exit 4 — the `schema-journal` connect timeout (`CONNECT_TIMEOUT`),
-  which the gate refuses as `reader-connect-timeout` before any journal read. That
-  refusal names the connect timeout, says the database did not answer in time,
-  says to dispatch the run again, and says it is not a schema-boundary
-  disagreement: a sleeping database is a retry, not a code or migration decision.
+- **The reader rule.** The selected release image is read first, and a non-zero
+  exit is a hard refusal, never a fallback: it is never retried on another image
+  and the gate reads no CloudWatch stream on that path, so the class is the exit
+  code alone. Exit 3 is the residual `reader-failed` — the image named no class,
+  which is what an image older than #257 does — with the failing task stream as
+  the follow-up. Exit 4 is the `schema-journal` connect timeout
+  (`CONNECT_TIMEOUT`): the gate refuses `reader-connect-timeout`, names the
+  connect timeout, says the database did not answer in time, says to dispatch the
+  run again, and says it is not a schema-boundary disagreement. Exits 5-11 each
+  name the class the Service action proved. The rule performs one bounded read
+  under the existing verification-task role and the existing task definition (no
+  task-definition change), and the nine exit-coded reasons with the one operator
+  action each message carries are:
+
+  | Exit | Reason | Operator action |
+  | --- | --- | --- |
+  | 3 | `reader-failed` | open the task stream; an image older than #257, an error outside the stages and a close failure after a good read all land here |
+  | 4 | `reader-connect-timeout` | dispatch the run again; a sleeping database is a retry, not a code or migration decision |
+  | 5 | `reader-configuration-invalid` | correct the task's database inputs |
+  | 6 | `reader-secret-unavailable` | check the secret and the reader permission |
+  | 7 | `reader-image-journal-invalid` | fix the release |
+  | 8 | `reader-connection-failed` | dispatch the run again |
+  | 9 | `reader-credential-refused` | correct the username or password |
+  | 10 | `reader-privilege-insufficient` | restore the SELECT grants |
+  | 11 | `reader-applied-journal-invalid` | inspect the Beta database |
+
   Exit 0 without a marker (a release image that predates the reader) triggers
   exactly one fallback read from the deployed image and records
   `reader.source=deployed-image`; if neither image reports the journal the run
@@ -397,6 +416,17 @@ change set.
   inside the runner's 4,200-second process timeout and the `deploy` job's 120
   minutes. A run that reaches the waiter's ceiling fails, leaves the task running
   and names the task it left.
+- **The follow-up the message cannot carry.** The exit code proves one class and
+  the message carries one action; three classes need a second step. For
+  `reader-configuration-invalid` (5) read the task stream: it names which
+  database input is missing or malformed, and the verify task definition lists
+  the four inputs to check — `DB_SECRET_ARN`, `DB_HOST`, `DB_PORT` and `DB_NAME`.
+  For `reader-secret-unavailable` (6) the message already carries the denied-read
+  remedy; a throttled read means dispatch the run again, and a repeat means the
+  secret or the reader role. For `reader-connection-failed` (8) a repeat means
+  the endpoint, the database name or the network: the class merges the session
+  that did not open and the read that did not complete, and it deliberately does
+  not claim which one fired.
 - **The comparison.** Every violation is collected: no recorded live version
   (`live-version-unproven`), an applied version below `minimum_version`
   (`below-minimum-version`), a differing `{sha256, created_at}` at a shared index
@@ -413,11 +443,14 @@ change set.
   line: `result=compatible`, the asset digest (`asset.sha256`, bare 64 hex), the
   artifact identity (`{tag, service_commit}`), the reader identity
   (`{source, service_sha, image_digest}`), the compared `applied_rows` and the
-  boundary body. On refusal the thrown `SchemaBoundaryError` names the reason, every
-  violation with both sides and the reader/task identity, and it carries
-  `evidence.applied_rows` and `evidence.reader(s)` for the log. The stack's
-  unchanged `LastUpdatedTime`, template and parameters are the proof it was not
-  touched. The admitted body the gate validates is:
+  boundary body. On refusal the thrown `SchemaBoundaryError` names the reason and,
+  for a non-zero reader exit, prints the exit code, the failed part and exactly
+  one of the reader-rule actions; exit 3 and an unassigned code say no class was
+  named and print the code. It also names every violation with both sides and the
+  reader/task identity, and it carries `evidence.applied_rows` and
+  `evidence.reader(s)` for the log; no CloudWatch stream is read on any non-zero
+  exit. The stack's unchanged `LastUpdatedTime`, template and parameters are the
+  proof it was not touched. The admitted body the gate validates is:
 
   ```json
   {"result":"compatible",
