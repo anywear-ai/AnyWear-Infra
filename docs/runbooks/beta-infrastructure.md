@@ -195,9 +195,10 @@ publisher-run identity check on this path. See
 Runtime uses the reviewed main workspace and `GITHUB_SHA`. A deploy proves the
 synthesized template against the recorded `roles-added` identity, reads the
 `Original` template and the five parameters back, and prints the deployed template
-hash, the two Runtime task-definition identities with the release digest each was
-compared with, the bake result and the minimum Client version floor in its step
-log; there is no deployment record to write or read.
+hash, the `beta-anywear-ecs-identity` line naming both Runtime task-definition
+identities with the release digest each was compared with, the bake result and the
+minimum Client version floor in its step log; there is no deployment record to
+write or read.
 `APP_PRIVATE_KEY` stays in protected secrets and is used only by the four
 operations that take a release and by the `deploy-runtime` qualification hook,
 which mints a write-scoped `AnyWear-E2E` token from the same App after the
@@ -779,10 +780,11 @@ failed or partial run still ends visibly failed.
    `service-artifacts-<service commit>`.
 6. The deploy step log's `beta-anywear-ecs-identity` line, present whenever the
    ECS identity proof passed, including on a run a later gate failed: keyed by the
-   two service names, each entry names the service ARN, the task-definition ARN,
-   the task definition's content hash (bare 64 hex), the image reference that task
-   definition carried (ending `@sha256:<64 hex>`) and the release image digest it
-   was compared with. A refused proof writes no line and fails the run.
+   two service names, `beta-anywear-api` and `beta-anywear-worker`, each entry
+   names the service ARN, the task-definition ARN, the task definition's content
+   hash (bare 64 hex), the image reference that task definition carried (ending
+   `@sha256:<64 hex>`) and the release image digest it was compared with. A
+   refused proof writes no line and fails the run.
 7. The deployed endpoints: `/health` (`service_commit`, `image_digest`,
    `minimum_client_version`, `status`) and `/readyz`, which is the bake gate's
    probe path.
