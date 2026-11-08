@@ -377,7 +377,7 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
     // schema-journal probe. It performs the same authorization, launch, unique
     // task/definition identity, STOPPED, image-digest and command-identity checks,
     // but *returns* the container exit code so the schema gate can decide the
-    // refusal (a non-zero read is a `reader-failed`, not a launcher crash). A
+    // refusal (a non-zero read is a named reader refusal, not a launcher crash). A
     // launch or identity failure still throws, as it invalidates the evidence.
     async oneShotProbe(role, revision, argument = '') {
       if (purpose !== 'operation') throw new Error('Qualification cannot invoke operation helpers');

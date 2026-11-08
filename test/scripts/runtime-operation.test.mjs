@@ -144,10 +144,11 @@ test('a missing, ambiguous or malformed ECR tag fails before the deploy', async 
 });
 
 // Issue #194: the non-throwing one-shot probe. `deploy-runtime` needs the verify
-// task's container exit code as a *result* (the gate refuses `reader-failed`), so
-// the probe returns it instead of turning a non-zero read into a launcher crash.
-// The launch, authorization, unique identity, STOPPED, image-digest and command
-// checks are the same ones `oneShot` performs and still throw.
+// task's container exit code as a *result* (the gate names the refusal from that
+// code), so the probe returns it instead of turning a non-zero read into a
+// launcher crash. The launch, authorization, unique identity, STOPPED,
+// image-digest and command checks are the same ones `oneShot` performs and still
+// throw.
 const verifyEnv = {
   GITHUB_REPOSITORY: 'git-malu/AnyWear-Infra', GITHUB_REPOSITORY_ID: '1409047265',
   GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '77', GITHUB_RUN_ATTEMPT: '2',
@@ -223,7 +224,9 @@ test('the one-shot probe returns a non-zero container exit instead of throwing',
   const surface = probeIo({ exitCode: 3, scriptFailure: true });
   const io = await surface.io();
   // run-one-shot-task.sh exits 1 after printing the identity; the container exit
-  // code is the probe result the schema gate judges as reader-failed.
+  // code is the probe result the schema gate judges as a named reader refusal (one
+  // of the nine exit-coded reasons) or as the `reader-failed` residual when it
+  // names no class.
   const result = await io.oneShotProbe('verify', revision, 'schema-journal');
   assert.equal(result.exitCode, 3);
 });

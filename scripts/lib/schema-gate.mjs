@@ -149,12 +149,22 @@ export function validateSchemaBoundary(boundary) {
 
 // The existing verification one-shot family and the exact command the verify
 // action registers. The stopped task identity, its log destination and its
-// command are all proven before a log read. Exit 4 is the `schema-journal`
-// action's connect timeout (`CONNECT_TIMEOUT`, #252): the one non-zero exit the
-// gate maps to its own refusal instead of `reader-failed`.
+// command are all proven before a log read. The class of a failed
+// `schema-journal` read travels on the process exit code alone: the gate reads
+// no CloudWatch stream on a non-zero exit, so one code names one reason and one
+// operator action. `3` is the residual (`reader-failed`, no class named), `4` is
+// #252's connect timeout (`CONNECT_TIMEOUT`), and `5`-`11` are the classes the
+// Service action proves (#257). Nothing outside `3`-`11` is assigned.
 export const SCHEMA_VERIFY_FAMILY = 'beta-anywear-verify';
 export const SCHEMA_VERIFY_COMMAND = Object.freeze(['node', 'dist/verify.js', SCHEMA_JOURNAL_ACTION]);
 export const SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT = 4;
+export const SCHEMA_READER_CONFIGURATION_INVALID_EXIT = 5;
+export const SCHEMA_READER_SECRET_UNAVAILABLE_EXIT = 6;
+export const SCHEMA_READER_IMAGE_JOURNAL_INVALID_EXIT = 7;
+export const SCHEMA_READER_CONNECTION_FAILED_EXIT = 8;
+export const SCHEMA_READER_CREDENTIAL_REFUSED_EXIT = 9;
+export const SCHEMA_READER_PRIVILEGE_INSUFFICIENT_EXIT = 10;
+export const SCHEMA_READER_APPLIED_JOURNAL_INVALID_EXIT = 11;
 export const ONE_SHOT_CLUSTER = 'beta-anywear';
 export const ONE_SHOT_LOG_GROUP = '/anywear/beta/one-shot';
 export const ONE_SHOT_REGION = 'ap-east-1';
@@ -173,12 +183,66 @@ export const SCHEMA_BOUNDARY_REASONS = Object.freeze([
   'reader-unavailable',
   'reader-failed',
   'reader-connect-timeout',
+  'reader-configuration-invalid',
+  'reader-secret-unavailable',
+  'reader-image-journal-invalid',
+  'reader-connection-failed',
+  'reader-credential-refused',
+  'reader-privilege-insufficient',
+  'reader-applied-journal-invalid',
   'reader-evidence-unavailable',
   'live-version-unproven',
   'below-minimum-version',
   'journal-entry-differs',
   'applied-beyond-release',
   'below-minimum-migration-count',
+]);
+
+// The closed operator-action list for exits 5-11 (#257): every named reader
+// message carries exactly one of these phrases verbatim, never sentence-
+// capitalised.
+export const SCHEMA_READER_REFUSAL_ACTIONS = Object.freeze([
+  "correct the task's database inputs",
+  'check the secret and the reader permission',
+  'fix the release',
+  'dispatch the run again',
+  'correct the username or password',
+  'restore the SELECT grants',
+  'inspect the Beta database',
+]);
+
+// One row per exit-coded reader refusal, in exit order. It is the single source
+// the gate, its tests and the Beta runbook contract test read: `part` is the
+// failed part a message names and `action` is the one operator action it gives.
+// Exit 4 keeps its own byte-identical message in `refuseProbeExit`; the 5-11
+// rows build theirs, and the residual row documents the branch exit 3 shares
+// with every unrecognised code. No row claims a timeout outside exit 4.
+export const SCHEMA_READER_EXITS = Object.freeze([
+  Object.freeze({ exit: 3, reason: 'reader-failed',
+    part: 'the image named no class for exit 3', action: 'open the task stream' }),
+  Object.freeze({ exit: SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT, reason: 'reader-connect-timeout',
+    part: 'the database did not answer in time', action: 'dispatch the run again' }),
+  Object.freeze({ exit: SCHEMA_READER_CONFIGURATION_INVALID_EXIT, reason: 'reader-configuration-invalid',
+    part: "the task's database inputs are missing or malformed",
+    action: "correct the task's database inputs" }),
+  Object.freeze({ exit: SCHEMA_READER_SECRET_UNAVAILABLE_EXIT, reason: 'reader-secret-unavailable',
+    part: 'the database secret could not be read',
+    action: 'check the secret and the reader permission' }),
+  Object.freeze({ exit: SCHEMA_READER_IMAGE_JOURNAL_INVALID_EXIT, reason: 'reader-image-journal-invalid',
+    part: "the image's own drizzle/ migration journal is missing or malformed",
+    action: 'fix the release' }),
+  Object.freeze({ exit: SCHEMA_READER_CONNECTION_FAILED_EXIT, reason: 'reader-connection-failed',
+    part: 'the database session did not open or the read did not complete',
+    action: 'dispatch the run again' }),
+  Object.freeze({ exit: SCHEMA_READER_CREDENTIAL_REFUSED_EXIT, reason: 'reader-credential-refused',
+    part: 'the database server refused the login',
+    action: 'correct the username or password' }),
+  Object.freeze({ exit: SCHEMA_READER_PRIVILEGE_INSUFFICIENT_EXIT, reason: 'reader-privilege-insufficient',
+    part: 'the login succeeded and the read was denied',
+    action: 'restore the SELECT grants' }),
+  Object.freeze({ exit: SCHEMA_READER_APPLIED_JOURNAL_INVALID_EXIT, reason: 'reader-applied-journal-invalid',
+    part: 'the database answered with an invalid applied journal',
+    action: 'inspect the Beta database' }),
 ]);
 
 const APPLIED_SCHEMA_FIELDS = Object.freeze(['schema_version', 'record_type', 'applied_schema_version',
@@ -390,11 +454,12 @@ async function launchProbe({ io, probe, identity, readers }) {
   return { reader, result };
 }
 
-// The reader rule's one non-zero-exit refusal (#252). Exit 4 is the
-// `schema-journal` action's connect timeout: the database did not answer in
-// time, dispatching the run again is the answer, and it is not a schema-boundary
-// disagreement. Every other non-zero exit stays `reader-failed` exactly as
-// before: a hard refusal, never a fallback.
+// The reader rule's one named refusal per exit code (#252, #257). Exit 4 is the
+// `schema-journal` action's connect timeout and keeps its message byte-identical.
+// Exit 3 and every unrecognised code stay the residual `reader-failed`. Codes
+// 5-11 each name one class from the one exit table; every non-zero exit is a
+// hard refusal, never a fallback, and the code alone carries the class: no log is
+// read on this path.
 function refuseProbeExit(source, launched, readers) {
   const { reader } = launched;
   if (reader.exit_code === SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT) {
@@ -406,8 +471,21 @@ function refuseProbeExit(source, launched, readers) {
         `exit code ${SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT} / CONNECT_TIMEOUT`)],
       { reader, readers, applied_rows: [] });
   }
-  const detail = `the ${source} verify task exited ${reader.exit_code}`
-    + (source === 'selected-image' ? '; a non-zero exit is a hard refusal, never a fallback' : '');
+  const mapped = SCHEMA_READER_EXITS.find((entry) => entry.exit === reader.exit_code);
+  if (mapped && mapped.exit >= SCHEMA_READER_CONFIGURATION_INVALID_EXIT) {
+    const detail = `the ${source} verify task exited ${mapped.exit}: ${mapped.part}. `
+      + `Operator action: ${mapped.action}; nothing was synthesised or changed`
+      + (source === 'selected-image' ? '; a non-zero exit is a hard refusal, never a fallback' : '');
+    throw new SchemaBoundaryError(mapped.reason, detail,
+      [violation(mapped.reason, 'exit code 0 with one anywear_applied_schema record', `exit code ${mapped.exit}`)],
+      { reader, readers, applied_rows: [] });
+  }
+  const residual = mapped
+    ? mapped.part
+    : `exit ${reader.exit_code} is unassigned and the gate recognises no class for it`;
+  const detail = `the ${source} verify task exited ${reader.exit_code}: ${residual}; open the task stream`
+    + (source === 'selected-image' ? '; a non-zero exit is a hard refusal, never a fallback' : '')
+    + '; nothing was synthesised or changed';
   throw new SchemaBoundaryError('reader-failed', detail,
     [violation('reader-failed', 'exit code 0 with one anywear_applied_schema record',
       `exit code ${reader.exit_code}`)],

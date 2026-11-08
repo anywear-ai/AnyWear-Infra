@@ -17,6 +17,15 @@ import {
   SCHEMA_LOG_MAX_PAGES,
   SCHEMA_LOG_PAGE_LIMIT,
   SCHEMA_LOG_RETRY_MS,
+  SCHEMA_READER_APPLIED_JOURNAL_INVALID_EXIT,
+  SCHEMA_READER_CONFIGURATION_INVALID_EXIT,
+  SCHEMA_READER_CONNECTION_FAILED_EXIT,
+  SCHEMA_READER_CREDENTIAL_REFUSED_EXIT,
+  SCHEMA_READER_EXITS,
+  SCHEMA_READER_IMAGE_JOURNAL_INVALID_EXIT,
+  SCHEMA_READER_PRIVILEGE_INSUFFICIENT_EXIT,
+  SCHEMA_READER_REFUSAL_ACTIONS,
+  SCHEMA_READER_SECRET_UNAVAILABLE_EXIT,
   SCHEMA_READER_SOURCES,
   SCHEMA_VERIFY_COMMAND,
   SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT,
@@ -356,11 +365,16 @@ test('the reader rule reads the selected image first, falls back exactly once an
     probe: probeFor([taskOf(0), taskOf(0, deployedRevision.imageDigest)]), readLog: async () => null }),
   (error) => error.reason === 'reader-unavailable' && error.evidence.readers.length === 2);
   assert.equal(launches.length, 2);
-  // 6. The fallback exits non-zero: reader-failed with the fallback identity named.
+  // 6. The fallback exits on an unassigned code: the residual reader-failed with
+  // the fallback identity and the code. (Exit 9 now names
+  // reader-credential-refused, so the reader rule's residual case uses a code
+  // outside the assigned 3-11 contract.)
   await assert.rejects(readSchemaBoundaryEvidence({ io: {}, release, deployedRevision,
-    probe: probeFor([taskOf(0), taskOf(9, deployedRevision.imageDigest)]), readLog: async () => null }),
+    probe: probeFor([taskOf(0), taskOf(13, deployedRevision.imageDigest)]), readLog: async () => null }),
   (error) => error.reason === 'reader-failed' && error.evidence.reader.source === 'deployed-image'
-    && error.violations[0].observed === 'exit code 9');
+    && error.violations[0].observed === 'exit code 13'
+    && /the deployed-image verify task exited 13/.test(error.message)
+    && /no class/.test(error.message));
   // 7. A task that reports another image is not the revision the gate asked for.
   await assert.rejects(readSchemaBoundaryEvidence({ io: {}, release, deployedRevision,
     probe: async () => taskOf(0, `sha256:${'9'.repeat(64)}`), readLog: async () => live }),
@@ -446,6 +460,160 @@ test('the deployed-image fallback exiting 4 refuses as reader-connect-timeout wi
     [IMAGE_DIGEST, deployedRevision.imageDigest]);
   assert.equal(logReads.length, 1, 'the fallback task log is never read');
   assert.equal(logReads[0].taskArn, task.taskArn, 'the one read is the selected task');
+});
+
+// Issue #257: one process exit code per named reader reason, 5-11 beside #252's
+// exit 4 and the residual exit 3. The gate, these tests and the runbook contract
+// test iterate the one table, so no list is restated.
+async function selectedImageRefusal(exitCode, onLogRead = () => {}) {
+  const launches = [];
+  let raised;
+  await assert.rejects(readSchemaBoundaryEvidence({ io: {}, release, deployedRevision,
+    probe: async (io, revision) => { launches.push(revision); return taskOf(exitCode); },
+    readLog: async () => { onLogRead(); return live; } }),
+  (error) => { raised = error; return error instanceof SchemaBoundaryError; });
+  return { raised, launches };
+}
+
+test('the reader exit contract assigns exactly the seven new codes 5-11 beside 3 and 4', () => {
+  assert.deepEqual([
+    SCHEMA_READER_CONFIGURATION_INVALID_EXIT,
+    SCHEMA_READER_SECRET_UNAVAILABLE_EXIT,
+    SCHEMA_READER_IMAGE_JOURNAL_INVALID_EXIT,
+    SCHEMA_READER_CONNECTION_FAILED_EXIT,
+    SCHEMA_READER_CREDENTIAL_REFUSED_EXIT,
+    SCHEMA_READER_PRIVILEGE_INSUFFICIENT_EXIT,
+    SCHEMA_READER_APPLIED_JOURNAL_INVALID_EXIT,
+  ], [5, 6, 7, 8, 9, 10, 11]);
+  assert.equal(SCHEMA_VERIFY_CONNECT_TIMEOUT_EXIT, 4);
+  assert.deepEqual(SCHEMA_READER_EXITS.map((entry) => entry.exit), [3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.ok(Object.isFrozen(SCHEMA_READER_EXITS));
+  assert.ok(SCHEMA_READER_EXITS.every((entry) => Object.isFrozen(entry)));
+  assert.deepEqual(SCHEMA_READER_EXITS.map((entry) => entry.reason), [
+    'reader-failed', 'reader-connect-timeout', 'reader-configuration-invalid',
+    'reader-secret-unavailable', 'reader-image-journal-invalid', 'reader-connection-failed',
+    'reader-credential-refused', 'reader-privilege-insufficient', 'reader-applied-journal-invalid']);
+  for (const entry of SCHEMA_READER_EXITS) assert.ok(SCHEMA_BOUNDARY_REASONS.includes(entry.reason));
+});
+
+for (const refusal of SCHEMA_READER_EXITS.filter((entry) => entry.exit >= 5)) {
+  test(`the selected image exiting ${refusal.exit} refuses as ${refusal.reason} with one operator action`, async () => {
+    let logReads = 0;
+    const { raised, launches } = await selectedImageRefusal(refusal.exit, () => { logReads += 1; });
+    assert.equal(raised.reason, refusal.reason);
+    assert.equal(raised.evidence.reader.source, 'selected-image');
+    assert.equal(raised.evidence.reader.service_sha, SERVICE_SHA);
+    assert.equal(raised.evidence.reader.image_digest, IMAGE_DIGEST);
+    assert.equal(raised.evidence.reader.exit_code, refusal.exit);
+    assert.deepEqual(raised.evidence.applied_rows, []);
+    assert.equal(raised.evidence.readers.length, 1);
+    assert.equal(raised.violations.length, 1);
+    assert.equal(raised.violations[0].reason, refusal.reason);
+    assert.equal(raised.violations[0].expected, 'exit code 0 with one anywear_applied_schema record');
+    assert.equal(raised.violations[0].observed, `exit code ${refusal.exit}`);
+    assert.match(raised.message,
+      new RegExp(`^${refusal.reason}: the selected-image verify task exited ${refusal.exit}`));
+    assert.ok(raised.message.includes(refusal.part), `the failed part: ${refusal.part}`);
+    assert.ok(raised.message.includes('nothing was synthesised or changed'));
+    assert.ok(raised.message.includes('a non-zero exit is a hard refusal, never a fallback'));
+    // Exactly one action phrase from the closed list, counted across the list.
+    const occurrences = SCHEMA_READER_REFUSAL_ACTIONS
+      .map((phrase) => raised.message.split(phrase).length - 1)
+      .reduce((total, count) => total + count, 0);
+    assert.equal(occurrences, 1, 'exactly one action phrase from the closed list');
+    assert.equal(raised.message.split(refusal.action).length - 1, 1, refusal.action);
+    assert.equal(/timeout/i.test(raised.message), false, 'no named class claims a timeout');
+    assert.equal(launches.length, 1);
+    assert.equal(logReads, 0);
+  });
+}
+
+// Issue #257: the one deployed-image fallback carries a named class too, still
+// without reading the fallback's log.
+test('the deployed-image fallback exiting 6 refuses as reader-secret-unavailable with the fallback identity', async () => {
+  const launches = [];
+  const logReads = [];
+  await assert.rejects(readSchemaBoundaryEvidence({ io: {}, release, deployedRevision,
+    probe: async (io, revision) => {
+      launches.push(revision);
+      return launches.length === 1 ? taskOf(0)
+        : taskOf(SCHEMA_READER_SECRET_UNAVAILABLE_EXIT, deployedRevision.imageDigest);
+    },
+    readLog: async (io, taskArg) => { logReads.push(taskArg); return null; } }),
+  (error) => error instanceof SchemaBoundaryError
+    && error.reason === 'reader-secret-unavailable'
+    && error.evidence.reader.source === 'deployed-image'
+    && error.evidence.reader.service_sha === deployedRevision.serviceCommit
+    && error.evidence.reader.image_digest === deployedRevision.imageDigest
+    && error.evidence.reader.exit_code === SCHEMA_READER_SECRET_UNAVAILABLE_EXIT
+    && error.evidence.applied_rows.length === 0
+    && error.evidence.readers.length === 2
+    && error.violations[0].observed === `exit code ${SCHEMA_READER_SECRET_UNAVAILABLE_EXIT}`
+    && /the deployed-image verify task exited 6/.test(error.message)
+    && /the database secret could not be read/.test(error.message)
+    && /check the secret and the reader permission/.test(error.message)
+    && /nothing was synthesised or changed/.test(error.message));
+  assert.equal(launches.length, 2);
+  assert.deepEqual(launches.map((revision) => revision.digest),
+    [IMAGE_DIGEST, deployedRevision.imageDigest]);
+  assert.equal(logReads.length, 1, 'the fallback task log is never read');
+  assert.equal(logReads[0].taskArn, task.taskArn, 'the one read is the selected task');
+});
+
+// Issue #257: exit 3 is the residual (the image named no class) and an
+// unassigned code is the residual with the code printed. Neither admits, falls
+// back or retries.
+test('the residual reader-failed names no class for exit 3 and prints an unassigned code', async () => {
+  for (const [exitCode, expected] of [
+    [3, /the image named no class for exit 3/],
+    [13, /exit 13 is unassigned and the gate recognises no class for it/],
+  ]) {
+    let logReads = 0;
+    const { raised, launches } = await selectedImageRefusal(exitCode, () => { logReads += 1; });
+    assert.equal(raised.reason, 'reader-failed', `exit ${exitCode}`);
+    assert.equal(raised.evidence.reader.exit_code, exitCode);
+    assert.deepEqual(raised.evidence.applied_rows, []);
+    assert.equal(raised.violations.length, 1);
+    assert.equal(raised.violations[0].observed, `exit code ${exitCode}`);
+    assert.match(raised.message, expected);
+    assert.ok(raised.message.includes('a non-zero exit is a hard refusal, never a fallback'));
+    assert.ok(raised.message.includes('nothing was synthesised or changed'));
+    assert.equal(SCHEMA_READER_REFUSAL_ACTIONS.some((phrase) => raised.message.includes(phrase)), false,
+      'the residual carries no bound action phrase');
+    assert.equal(launches.length, 1);
+    assert.equal(logReads, 0);
+  }
+});
+
+// Issue #257: the class is carried by the exit code alone, so no refusal path
+// reads a CloudWatch stream.
+test('no refusal reads a task log: exits 3-11 and an unassigned code all decide before the read', async () => {
+  for (const exitCode of [3, 4, 5, 6, 7, 8, 9, 10, 11, 13]) {
+    let logReads = 0;
+    const { launches } = await selectedImageRefusal(exitCode, () => { logReads += 1; });
+    assert.equal(logReads, 0, `exit ${exitCode}`);
+    assert.equal(launches.length, 1, `exit ${exitCode}`);
+  }
+});
+
+test('the closed action list holds exactly seven phrases and no named class claims a timeout', async () => {
+  assert.ok(Object.isFrozen(SCHEMA_READER_REFUSAL_ACTIONS));
+  assert.equal(SCHEMA_READER_REFUSAL_ACTIONS.length, 7);
+  assert.equal(new Set(SCHEMA_READER_REFUSAL_ACTIONS).size, 7);
+  // Verbatim and sentence-lowercase: the message never capitalises the phrase.
+  for (const phrase of SCHEMA_READER_REFUSAL_ACTIONS) {
+    assert.equal(phrase, phrase.trim(), phrase);
+    assert.equal(phrase[0], phrase[0].toLowerCase(), phrase);
+  }
+  const named = SCHEMA_READER_EXITS.filter((entry) => entry.exit >= 5);
+  assert.equal(named.length, 7);
+  assert.deepEqual(named.map((entry) => entry.action), [...SCHEMA_READER_REFUSAL_ACTIONS]);
+  for (const refusal of named) {
+    const { raised } = await selectedImageRefusal(refusal.exit);
+    assert.equal(/timeout/i.test(raised.message), false, refusal.reason);
+  }
+  assert.deepEqual(SCHEMA_BOUNDARY_REASONS.filter((reason) => /timeout/i.test(reason)),
+    ['reader-connect-timeout']);
 });
 
 // ---------------------------------------------------------------------------
@@ -559,7 +727,29 @@ test('the predicate collects every violation in one refusal and records an ahead
     assert.equal(typeof entry.observed, 'string');
     assert.ok(entry.expected.length > 0 && entry.observed.length > 0, entry.reason);
   }
-  assert.equal(new Set(SCHEMA_BOUNDARY_REASONS).size, 10);
+  // Issue #257: the inventory is closed at seventeen — the ten on main at the
+  // branch point plus the seven named reader classes, none added, removed or
+  // renamed.
+  assert.equal(new Set(SCHEMA_BOUNDARY_REASONS).size, 17);
+  assert.deepEqual([...SCHEMA_BOUNDARY_REASONS], [
+    'asset-invalid',
+    'reader-unavailable',
+    'reader-failed',
+    'reader-connect-timeout',
+    'reader-configuration-invalid',
+    'reader-secret-unavailable',
+    'reader-image-journal-invalid',
+    'reader-connection-failed',
+    'reader-credential-refused',
+    'reader-privilege-insufficient',
+    'reader-applied-journal-invalid',
+    'reader-evidence-unavailable',
+    'live-version-unproven',
+    'below-minimum-version',
+    'journal-entry-differs',
+    'applied-beyond-release',
+    'below-minimum-migration-count',
+  ]);
   assert.ok(SCHEMA_BOUNDARY_REASONS.includes('reader-connect-timeout'));
 
   // A version ahead of the release with a contained journal is an observation:
@@ -680,4 +870,39 @@ test('run-one-shot-task.sh validates the verify action and appends it to the con
   assert.match(script, /if \$role == "verify" and \$action == "schema-journal" then \["schema-journal"\]/);
   assert.match(script, /if \$role == "verify" and \$api != "" and \$api != "schema-journal"/);
   assert.equal(canonicalJson([...SCHEMA_VERIFY_COMMAND]), canonicalJson(['node', 'dist/verify.js', 'schema-journal']));
+});
+
+// ---------------------------------------------------------------------------
+// The Beta runbook contract (#257)
+// ---------------------------------------------------------------------------
+test('the Beta runbook lists every boundary reason and the reader rule names all nine exit-coded reasons', () => {
+  const markdown = readFileSync(new URL('../../docs/runbooks/beta-infrastructure.md', import.meta.url), 'utf8');
+  const lines = markdown.split('\n');
+  // The operation row is found by its lead-in, never by a line number.
+  const operationRow = lines.find((line) => line.startsWith('| `deploy-runtime` / `stop-runtime` |'));
+  assert.ok(operationRow, 'the deploy-runtime / stop-runtime operation row');
+  for (const reason of SCHEMA_BOUNDARY_REASONS) {
+    assert.ok(operationRow.includes(`\`${reason}\``), `the reason list names ${reason}`);
+  }
+  // The reader rule is found by its lead-in and runs to the next bullet. Its
+  // range shifts as the section grows, so no line range appears here.
+  const start = lines.findIndex((line) => line.includes('**The reader rule.**'));
+  assert.ok(start >= 0, 'the reader rule bullet');
+  let end = start + 1;
+  while (end < lines.length && !lines[end].startsWith('- **')) end += 1;
+  const paragraph = lines.slice(start, end).join('\n');
+  for (const refusal of SCHEMA_READER_EXITS) {
+    assert.ok(paragraph.includes(`| ${refusal.exit} | \`${refusal.reason}\` |`),
+      `the reader rule names exit ${refusal.exit} as ${refusal.reason}`);
+  }
+  // The rule keeps its invariants: a non-zero exit is never retried on another
+  // image, exit 4 is the connect timeout, it is one bounded read under the
+  // existing verification-task role with no task-definition change, at most two
+  // launches happen, and the waiter's 600-second envelope stays.
+  assert.match(paragraph, /never retried on another image/);
+  assert.match(paragraph, /connect timeout/i);
+  assert.match(paragraph, /existing verification-task role/);
+  assert.match(paragraph, /no\s+task-definition change/);
+  assert.match(paragraph, /At most two one-shot launches/);
+  assert.match(paragraph, /600 seconds/);
 });

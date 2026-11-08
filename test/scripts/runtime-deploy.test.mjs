@@ -38,7 +38,7 @@ import {
 import { runOperation, validateOperationInputs } from '../../scripts/runtime-operation.mjs';
 import { sha256 } from '../../scripts/lib/json-contract.mjs';
 import { failedGate } from '../../scripts/lib/bake-gate.mjs';
-import { SchemaBoundaryError, runSchemaBoundaryGate } from '../../scripts/lib/schema-gate.mjs';
+import { SchemaBoundaryError, SCHEMA_READER_EXITS, runSchemaBoundaryGate } from '../../scripts/lib/schema-gate.mjs';
 import { gateBlock, IMAGE_DIGEST, SERVICE_SHA } from '../contracts/gate-fixture.mjs';
 
 // Credential-free tests for the `deploy-runtime` operation (#195, #194). The
@@ -571,6 +571,45 @@ test('a schema-journal connect timeout fails the run before synthesis, the chang
   assert.equal(logReads, 0, 'the exit code is judged before any journal read');
   assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false, 'no CDK change-set call');
   assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false);
+});
+
+// Issue #257 acceptance: every named reader class (exits 5-11) is a refusal at
+// the real gate, and it stops the run before synthesis, the change set and any
+// stack mutation. The class comes from the exit code alone, so no task log is
+// read. The mapping is the gate's own table, not a restated list.
+test('every named reader refusal (exits 5-11) fails the run before synthesis, the change set and the record', async () => {
+  const assetBytes = readFileSync('test/fixtures/schema-boundary/schema-asset.json');
+  const definitionArn = 'arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-verify:257';
+  for (const refusal of SCHEMA_READER_EXITS.filter((entry) => entry.exit >= 5)) {
+    const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
+    const task = { taskArn: `arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/${'a'.repeat(32)}`,
+      clusterArn: 'arn:aws:ecs:ap-east-1:650880818323:cluster/beta-anywear', lastStatus: 'STOPPED',
+      taskDefinitionArn: definitionArn,
+      containers: [{ name: 'OneShot', exitCode: refusal.exit, imageDigest: IMAGE_DIGEST }] };
+    const definition = { family: 'beta-anywear-verify', taskDefinitionArn: definitionArn };
+    let synthesized = 0;
+    let logReads = 0;
+    let observed;
+    await assert.rejects(deploy({ env: env(), release, io,
+      synthesize: async () => { synthesized += 1; return SYNTHESIZED; }, health: HEALTH, bake: BAKE,
+      schemaGate: (options) => runSchemaBoundaryGate({ ...options,
+        loadAsset: async () => ({ asset: JSON.parse(assetBytes.toString('utf8')), bytes: assetBytes,
+          sha256: sha256(assetBytes) }),
+        probe: async () => ({ task, definition }),
+        readLog: async () => { logReads += 1; return null; } }) }),
+    (error) => { observed = error; return error instanceof SchemaBoundaryError; });
+    assert.equal(observed.reason, refusal.reason, `exit ${refusal.exit}`);
+    assert.equal(observed.evidence.reader.exit_code, refusal.exit, refusal.reason);
+    assert.equal(observed.violations[0].observed, `exit code ${refusal.exit}`, refusal.reason);
+    assert.match(observed.message, new RegExp(`the selected-image verify task exited ${refusal.exit}`));
+    assert.equal(synthesized, 0, `${refusal.reason}: synthesis never runs after a refusal`);
+    assert.equal(logReads, 0, `${refusal.reason}: the exit code is judged before any journal read`);
+    assert.equal(calls.some((call) => call.key === 'cdk/deploy'), false,
+      `${refusal.reason}: no CDK change-set call`);
+    assert.equal(calls.some((call) => call.key === 'cloudformation/describe-change-set'), false,
+      `${refusal.reason}: no change-set describe`);
+  }
 });
 
 test('a converged stack records an empty change set, executes nothing and returns the deployed identity', async () => {
