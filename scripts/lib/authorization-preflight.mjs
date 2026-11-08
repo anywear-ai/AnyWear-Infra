@@ -84,7 +84,7 @@ export const SIMULATION_SKIPS = Object.freeze({
   'sts/get-caller-identity': 'No IAM permission is required; the call is allowed to every principal.',
   'ecr/batch-get-image': 'The reviewed mapping also needs ecr:BatchCheckLayerAvailability and ecr:GetDownloadUrlForLayer, which the restricted runtime role does not grant; the operation has no Infra call site (operator CLI only) and is not simulated.',
   'cloudfront/get-distribution': 'A conditional legacy fallback whose base grant the runtime role may deny by design; the session never adds grants and the fallback must surface through the deployment itself if it is ever taken.',
-  'ecr/describe-images': 'An operator-CLI read (scripts/ecr-retention.mjs); the deployed runtime session does not execute it and the preflight plan does not include operator-only reads.',
+  'ecr/describe-images': 'Executed under the runtime session by deploy-platform, deploy-runtime and restore-release to resolve the immutable release image digest (resolveServiceImageDigest); the repository ARN is reviewed in READ_RESOURCES and the operation\'s own pre-mutation read is the check, so the preflight plan skips this simulation.',
   'ecr/get-lifecycle-policy': 'An operator-CLI lifecycle read (scripts/ecr-retention.mjs); not executed by the deployed session.',
   'ecr/get-lifecycle-policy-preview': 'An operator-CLI lifecycle read (scripts/ecr-retention.mjs); not executed by the deployed session.',
   'ecr/start-lifecycle-policy-preview': 'An operator-CLI mutation (scripts/ecr-retention.mjs); the preflight covers reads only.',
