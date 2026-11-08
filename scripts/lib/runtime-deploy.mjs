@@ -32,6 +32,8 @@ export const RUNTIME_DEPLOY_PARAMETER_KEYS = Object.freeze([
 const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
 const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
+// The deploy step log's event name for the ECS identity proof's verdict (#221).
+export const ECS_IDENTITY_EVENT = 'beta-anywear-ecs-identity';
 // Issue #254: the Base stack's API-origin parameter and the DNS-name guard the
 // parameter itself carries. A value outside this pattern never reaches a write.
 const API_ORIGIN_PARAMETER = 'ApiOriginDomainName';
@@ -340,8 +342,7 @@ async function observeEcsIdentities(io, release, cluster) {
   }
   const observed = {};
   for (const service of services) {
-    const purpose = SERVICE_NAMES.includes(service.serviceName) ? service.serviceName.replace('beta-anywear-', '') : undefined;
-    if (!purpose || service.status !== 'ACTIVE' || typeof service.taskDefinition !== 'string') {
+    if (!SERVICE_NAMES.includes(service.serviceName) || service.status !== 'ACTIVE' || typeof service.taskDefinition !== 'string') {
       throw new Error(`The Runtime ECS service ${service.serviceName} is not usable`);
     }
     if (!Number.isSafeInteger(service.runningCount) || service.runningCount !== service.desiredCount || service.runningCount < 1) {
@@ -357,15 +358,16 @@ async function observeEcsIdentities(io, release, cluster) {
     if (typeof image !== 'string' || !image.includes(release.imageDigest)) {
       throw new Error(`The deploys task definition for ${service.serviceName} does not carry the deployed image digest`);
     }
-    observed[purpose] = {
+    observed[service.serviceName] = {
       service_arn: service.serviceArn,
       task_definition_arn: service.taskDefinition,
       task_definition_sha256: contentHash,
-      image_digest: release.imageDigest,
+      task_definition_image: image,
+      release_image_digest: release.imageDigest,
     };
   }
-  for (const purpose of ['api', 'worker']) {
-    if (!observed[purpose]) throw new Error(`The Runtime ECS ${purpose} identity is missing`);
+  for (const serviceName of SERVICE_NAMES) {
+    if (!observed[serviceName]) throw new Error(`The Runtime ECS ${serviceName} identity is missing`);
   }
   return observed;
 }
@@ -644,9 +646,13 @@ export async function deployRuntime({ io, env, release,
 
   // The two ECS service identities stay a fail-closed proof of the deployed
   // release: an ACTIVE service at its desired count, one COMPLETED rollout, and a
-  // task definition carrying the deployed image digest. The result is logged, not
-  // recorded (#207).
-  await observeEcsIdentities(io, release, cluster);
+  // task definition carrying the deployed image digest. The proof returns what it
+  // observed; the line below prints that verdict as `beta-anywear-ecs-identity`,
+  // before the edge repair, `/health` and the bake, so a later refusal still shows
+  // the platform side was coherent while a failed proof leaves no line. It is a
+  // log line, not a record (#207).
+  const ecs = await observeEcsIdentities(io, release, cluster);
+  process.stdout.write(JSON.stringify({ gate: ECS_IDENTITY_EVENT, result: 'proven', services: ecs }) + '\n');
   // Issue #254: the Runtime stack is terminal and its identities are proven, so
   // the edge repair runs here — before the `/health` read and the bake use the
   // public endpoint. A matching parameter writes nothing; a stale one writes the

@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
   DECLARED_DIAGNOSTIC_EXCLUSION,
   DECLARED_DIAGNOSTIC_RESOURCE_TYPES,
+  ECS_IDENTITY_EVENT,
   RUNTIME_DEPLOY_PARAMETER_KEYS,
   RUNTIME_STACK,
   acceptedLiveRuntimeHashes,
@@ -39,6 +40,7 @@ import { runOperation, validateOperationInputs } from '../../scripts/runtime-ope
 import { sha256 } from '../../scripts/lib/json-contract.mjs';
 import { failedGate } from '../../scripts/lib/bake-gate.mjs';
 import { SchemaBoundaryError, SCHEMA_READER_EXITS, runSchemaBoundaryGate } from '../../scripts/lib/schema-gate.mjs';
+import { taskDefinitionContentHash } from '../../lib/contracts.mjs';
 import { gateBlock, IMAGE_DIGEST, SERVICE_SHA } from '../contracts/gate-fixture.mjs';
 
 // Credential-free tests for the `deploy-runtime` operation (#195, #194). The
@@ -147,10 +149,29 @@ function baseAbsenceError(stackName) {
   return Object.assign(new Error(stderr), { stderr });
 }
 
+// Issue #221: the ECS identity proof's fixtures. They are named so each test can
+// assert the emitted identity against the exact definition the fake returned, and
+// `fakeIo` clones them, so a per-test seam never leaks into another test.
+function taskDefinitionFixture(purpose) {
+  return { family: `beta-anywear-${purpose}`, taskRoleArn: `arn:aws:iam::650880818323:role/beta-anywear-${purpose}-task`,
+    executionRoleArn: `arn:aws:iam::650880818323:role/beta-anywear-${purpose}-execution`, networkMode: 'awsvpc', cpu: '512', memory: '1024',
+    containerDefinitions: [{ name: `${purpose}`, image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@${IMAGE_DIGEST}`,
+      command: ['node', 'dist/index.js'], environment: [] }] };
+}
+const TASK_DEFINITIONS = Object.freeze({ api: taskDefinitionFixture('api'), worker: taskDefinitionFixture('worker') });
+const ecsServiceFixture = (purpose) => ({
+  serviceName: `beta-anywear-${purpose}`, status: 'ACTIVE',
+  serviceArn: `arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}`,
+  taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:7`,
+  runningCount: 1, desiredCount: 1, deployments: [{ rolloutState: 'COMPLETED' }],
+});
+const ECS_SERVICES = Object.freeze(['api', 'worker'].map(ecsServiceFixture));
+
 function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = undefined,
   executeError = undefined, postExecuteRuntime = undefined, updateError = undefined,
   updateDelays = 0, updateStaleReads = 0, updateRollback = false,
-  pollReadError = undefined, pollAbsent = false } = {}) {
+  pollReadError = undefined, pollAbsent = false,
+  ecsServices = ECS_SERVICES, taskDefinitions = TASK_DEFINITIONS } = {}) {
   const calls = [];
   // The changed-stack set the failed-run summary publishes. It starts as the
   // fake's own array and `runOperation` re-binds it to the array it owns.
@@ -219,20 +240,12 @@ function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = 
         return { Parameter: { Name: name, Version: 3, Value: stageValue(name) } };
       }
       if (key === 'ecs/describe-services') {
-        return { services: ['api', 'worker'].map((purpose) => ({
-          serviceName: `beta-anywear-${purpose}`, status: 'ACTIVE',
-          serviceArn: `arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}`,
-          taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:7`,
-          runningCount: 1, desiredCount: 1, deployments: [{ rolloutState: 'COMPLETED' }],
-        })) };
+        return { services: structuredClone(ecsServices) };
       }
       if (key === 'ecs/describe-task-definition') {
         const arn = args[args.indexOf('--task-definition') + 1];
         const purpose = arn.includes('worker') ? 'worker' : 'api';
-        return { taskDefinition: { family: `beta-anywear-${purpose}`, taskRoleArn: `arn:aws:iam::650880818323:role/beta-anywear-${purpose}-task`,
-          executionRoleArn: `arn:aws:iam::650880818323:role/beta-anywear-${purpose}-execution`, networkMode: 'awsvpc', cpu: '512', memory: '1024',
-          containerDefinitions: [{ name: `${purpose}`, image: `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@${IMAGE_DIGEST}`,
-            command: ['node', 'dist/index.js'], environment: [] }] } };
+        return { taskDefinition: structuredClone(taskDefinitions[purpose]) };
       }
       throw new Error(`unexpected runtime read ${key}`);
     },
@@ -976,10 +989,10 @@ test('the executed change set is recorded as changed before the stack read-back 
 // nothing and logs nothing; a failed write ends the run red naming the edge and
 // reads no `/health`; a Base template without the parameter is refused by name
 // before any Base mutation.
-async function captureStdout(run) {
+async function captureStdout(run, onWrite) {
   const chunks = [];
   const original = process.stdout.write;
-  process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+  process.stdout.write = (chunk) => { const text = String(chunk); chunks.push(text); onWrite?.(text); return true; };
   try { return { value: await run(), stdout: chunks.join('') }; }
   finally { process.stdout.write = original; }
 }
@@ -1143,5 +1156,234 @@ test('a /health refusal after the Base origin write names both changed stacks', 
     const lines = (await readFile(summary, 'utf8')).trim().split('\n');
     assert.equal(lines.length, 1, 'exactly one summary line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta, AnyWearPlatformStack-beta and did not complete/);
+  });
+});
+
+// Issue #221: the ECS identity proof's verdict. A passed proof writes one JSON
+// line to the deploy step log, before the edge repair, `/health` and the bake; a
+// refused proof or an earlier refusal writes none, and a later gate's refusal
+// keeps the line because it states what the proof proved, not that the run
+// succeeded.
+const IDENTITY_FIELDS = ['service_arn', 'task_definition_arn', 'task_definition_sha256',
+  'task_definition_image', 'release_image_digest'];
+// The emitted object starts with this prefix. The test runner writes its own
+// serialized report chunks through `process.stdout` too, so a captured stream is
+// not guaranteed to be cleanly line-separated; each object is extracted from its
+// prefix to the end of its newline-terminated line instead.
+const IDENTITY_PREFIX = `{"gate":"${ECS_IDENTITY_EVENT}"`;
+function identityLines(stdout) {
+  const found = [];
+  let index = stdout.indexOf(IDENTITY_PREFIX);
+  while (index !== -1) {
+    const end = stdout.indexOf('\n', index);
+    assert.notEqual(end, -1, 'the identity line is newline-terminated');
+    found.push(JSON.parse(stdout.slice(index, end)));
+    index = stdout.indexOf(IDENTITY_PREFIX, end + 1);
+  }
+  return found;
+}
+
+function identityLine(stdout) {
+  const lines = identityLines(stdout);
+  assert.equal(lines.length, 1, 'exactly one beta-anywear-ecs-identity line');
+  return lines[0];
+}
+
+test('a passed ECS identity proof writes one beta-anywear-ecs-identity line with the exact five fields per service', async () => {
+  const { io, calls } = fakeIo();
+  const captured = await captureStdout(() => deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }));
+  const line = identityLine(captured.stdout);
+  assert.deepEqual(Object.keys(line), ['gate', 'result', 'services']);
+  assert.equal(line.gate, ECS_IDENTITY_EVENT);
+  assert.equal(line.gate, 'beta-anywear-ecs-identity');
+  assert.equal(line.result, 'proven');
+  assert.deepEqual(Object.keys(line.services).sort(), ['beta-anywear-api', 'beta-anywear-worker']);
+  for (const purpose of ['api', 'worker']) {
+    const name = `beta-anywear-${purpose}`;
+    const service = ecsServiceFixture(purpose);
+    const definition = TASK_DEFINITIONS[purpose];
+    const entry = line.services[name];
+    assert.deepEqual(Object.keys(entry), IDENTITY_FIELDS);
+    assert.equal(entry.service_arn, service.serviceArn);
+    assert.equal(entry.task_definition_arn, service.taskDefinition);
+    assert.match(entry.task_definition_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(entry.task_definition_sha256, taskDefinitionContentHash(definition));
+    assert.equal(entry.task_definition_image, definition.containerDefinitions[0].image);
+    assert.ok(entry.task_definition_image.endsWith(`@${IMAGE_DIGEST}`));
+    assert.equal(entry.release_image_digest, IMAGE_DIGEST);
+  }
+  // Built only from the proof's existing reads: one describe-services, then one
+  // describe-task-definition per service.
+  assert.equal(calls.filter((call) => call.key === 'ecs/describe-services').length, 1);
+  assert.equal(calls.filter((call) => call.key === 'ecs/describe-task-definition').length, 2);
+  // The verdict is printed at the proof, before the bake's own line.
+  assert.ok(captured.stdout.indexOf(IDENTITY_PREFIX) < captured.stdout.indexOf('beta-anywear-deployment-bake'));
+});
+
+// A refused proof is reached and throws: the line is absent, and neither `/health`
+// nor the bake runs afterwards. The ECS call being present is what separates
+// "reached the proof and refused" from "never reached the proof".
+async function refuseProof({ label, expectation, ...fixtures }) {
+  const { io, calls } = fakeIo(fixtures);
+  let healthReads = 0;
+  let bakeReads = 0;
+  const captured = await captureStdout(() => assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED,
+    health: async () => { healthReads += 1; return 0; },
+    bake: async () => { bakeReads += 1; return gateBlock(); } }), expectation, label));
+  assert.ok(calls.some((call) => call.key === 'ecs/describe-services'), `${label}: the proof was reached`);
+  assert.equal(identityLines(captured.stdout).length, 0, `${label}: a refused proof writes no line`);
+  assert.equal(healthReads, 0, `${label}: /health never runs`);
+  assert.equal(bakeReads, 0, `${label}: the bake never runs`);
+}
+
+test('a service that is not ACTIVE or not at its desired count refuses with today\'s message and writes no identity line', async () => {
+  await refuseProof({ label: 'not ACTIVE',
+    expectation: /The Runtime ECS service beta-anywear-api is not usable/,
+    ecsServices: [{ ...ecsServiceFixture('api'), status: 'DRAINING' }, ecsServiceFixture('worker')] });
+  await refuseProof({ label: 'not at its desired count',
+    expectation: /The Runtime ECS service beta-anywear-api is not at its desired count/,
+    ecsServices: [{ ...ecsServiceFixture('api'), runningCount: 0 }, ecsServiceFixture('worker')] });
+});
+
+test('a service that has not completed its rollout refuses with today\'s message and writes no identity line', async () => {
+  await refuseProof({ label: 'rollout in progress',
+    expectation: /The Runtime ECS service beta-anywear-api has not completed its rollout/,
+    ecsServices: [{ ...ecsServiceFixture('api'), deployments: [{ rolloutState: 'IN_PROGRESS' }] },
+      ecsServiceFixture('worker')] });
+});
+
+test('a task definition without the release image digest refuses with today\'s message and writes no identity line', async () => {
+  const withoutReleaseDigest = `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@sha256:${'0'.repeat(64)}`;
+  await refuseProof({ label: 'image lacks the release digest',
+    expectation: /The deploys task definition for beta-anywear-api does not carry the deployed image digest/,
+    taskDefinitions: { ...TASK_DEFINITIONS, api: { ...TASK_DEFINITIONS.api,
+      containerDefinitions: [{ ...TASK_DEFINITIONS.api.containerDefinitions[0], image: withoutReleaseDigest }] } } });
+});
+
+test('a malformed or missing ECS service refuses with today\'s message and writes no identity line', async () => {
+  await refuseProof({ label: 'wrong service count',
+    expectation: /The Runtime ECS services are not both deployed/,
+    ecsServices: [ecsServiceFixture('api')] });
+  await refuseProof({ label: 'duplicate service names',
+    expectation: /The Runtime ECS beta-anywear-worker identity is missing/,
+    ecsServices: [ecsServiceFixture('api'), ecsServiceFixture('api')] });
+});
+
+// The real `runOperation` under `withSummary`, with its stdout captured. The
+// observer records whether the step summary existed when the identity line was
+// written: `runOperation` appends the completed-operation or changed-but-unqualified
+// line only after `deployRuntime` resolves, so an absent file at that moment is the
+// ordering assertion across the two surfaces.
+async function runCapturedOperation(summary, { fixtures, dependencies, rejects }) {
+  const { io, calls } = fixtures();
+  const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+  let summaryExistsAtIdentityLine = true;
+  const captured = await captureStdout(async () => {
+    const run = runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }),
+      { createIo, deployRuntimeDependencies: dependencies });
+    if (rejects) await assert.rejects(run, rejects);
+    else await run;
+  }, (chunk) => { if (chunk.includes(ECS_IDENTITY_EVENT)) summaryExistsAtIdentityLine = existsSync(summary); });
+  return { io, calls, stdout: captured.stdout, summaryExistsAtIdentityLine,
+    summaryText: existsSync(summary) ? await readFile(summary, 'utf8') : '' };
+}
+
+test('a /health refusal after the proof keeps the identity line, ends red and appends one changed-but-unqualified summary line', async () => {
+  await withSummary(async (summary) => {
+    const result = await runCapturedOperation(summary, {
+      fixtures: () => staleOriginSurface({ updateDelays: 1 }),
+      dependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED,
+        health: async () => { throw new Error('The deployed /health did not identify the release'); },
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, bake: BAKE },
+      rejects: /did not identify the release/,
+    });
+    assert.ok(result.calls.some((call) => call.key === 'ecs/describe-services'), 'the proof ran');
+    assert.equal(identityLine(result.stdout).result, 'proven');
+    assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
+    const lines = result.summaryText.trim().split('\n');
+    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta, AnyWearPlatformStack-beta and did not complete/);
+    assert.ok(result.stdout.indexOf(IDENTITY_PREFIX) < result.stdout.indexOf('api_origin_repointed'),
+      'the identity line is written before the edge repair');
+  });
+});
+
+test('an edge-repair refusal after the proof keeps the identity line, ends red and appends one changed-but-unqualified summary line', async () => {
+  await withSummary(async (summary) => {
+    const result = await runCapturedOperation(summary, {
+      fixtures: () => staleOriginSurface({ updateError: Object.assign(
+        new Error('An error occurred (AccessDenied) when calling the UpdateStack operation'),
+        { stderr: 'An error occurred (AccessDenied)' }) }),
+      dependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, bake: BAKE },
+      rejects: /Beta edge origin was not written: cloudformation update-stack failed on AnyWearPlatformStack-beta \(ApiOriginDomainName\); \/health was not read/,
+    });
+    assert.equal(identityLine(result.stdout).result, 'proven');
+    assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
+    const lines = result.summaryText.trim().split('\n');
+    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
+    assert.equal(lines[0].includes(BASE_STACK), false, 'the refused Base write is not a changed stack');
+  });
+});
+
+test('a 300-second bake refusal after the proof keeps the identity line, ends red and appends one changed-but-unqualified summary line', async () => {
+  await withSummary(async (summary) => {
+    const result = await runCapturedOperation(summary, {
+      fixtures: () => fakeIo({ runtime: liveStack({ identityUnchanged: false }), changeSet: DELTA_CHANGE_SET }),
+      dependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE,
+        bake: async () => failedGate({ stage: 'beta', cluster: 'beta-anywear', logGroup: '/anywear/beta/worker',
+          serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST }) },
+      rejects: /The 300-second bake failed/,
+    });
+    assert.equal(identityLine(result.stdout).result, 'proven');
+    assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
+    const lines = result.summaryText.trim().split('\n');
+    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
+  });
+});
+
+test('a schema-gate refusal before the proof calls no ECS API and leaves no identity line and no summary', async () => {
+  await withSummary(async (summary) => {
+    const { io, calls } = fakeIo();
+    const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
+    let synthesized = 0;
+    const captured = await captureStdout(async () => {
+      await assert.rejects(runOperation(operationEnv({ GITHUB_STEP_SUMMARY: summary }), {
+        createIo,
+        deployRuntimeDependencies: { synthesize: async () => { synthesized += 1; return SYNTHESIZED; },
+          health: HEALTH, bake: BAKE,
+          schemaGate: async () => { throw new SchemaBoundaryError('asset-invalid', 'the sealed schema asset is not valid'); } },
+      }), (error) => error instanceof SchemaBoundaryError && error.reason === 'asset-invalid');
+    });
+    assert.equal(calls.some((call) => call.key === 'ecs/describe-services'), false, 'the proof never ran');
+    assert.equal(identityLines(captured.stdout).length, 0, 'no identity line');
+    assert.equal(synthesized, 0, 'nothing after the gate ran');
+    assert.deepEqual(io.changedStacks, [], 'nothing mutated');
+    assert.equal(existsSync(summary), false, 'no summary line when nothing mutated');
+  });
+});
+
+test('a converged deploy-runtime writes the identity line before the completed-operation summary line', async () => {
+  await withSummary(async (summary) => {
+    const result = await runCapturedOperation(summary, {
+      fixtures: () => fakeIo({ changeSet: { Status: 'FAILED',
+        StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } }),
+      dependencies: { schemaGate: SCHEMA_GATE, synthesize: async () => SYNTHESIZED, health: HEALTH,
+        acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, bake: BAKE },
+    });
+    assert.equal(result.calls.some((call) => call.args?.includes('execute-change-set')), false,
+      'a converged no-op executes nothing');
+    assert.equal(identityLine(result.stdout).result, 'proven');
+    assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
+    const lines = result.summaryText.trim().split('\n');
+    assert.equal(lines.length, 1, 'only the completed-operation line');
+    assert.match(lines[0], /Infra operation deploy-runtime; source a{40}\./);
+    assert.equal(lines[0].includes('already changed'), false);
+    assert.deepEqual(result.io.changedStacks, [], 'a converged no-op records no changed stack');
   });
 });
