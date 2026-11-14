@@ -90,9 +90,11 @@ test('only the #217 cleanup S3 and E2E CloudTrail statements are allowed on the 
         Version: '2012-10-17',
         Statement: [
           { Action: 's3:DeleteObject', Effect: 'Allow',
-            Resource: [wardrobeObject('wearable-items/*'), wardrobeObject('base-photos/*')] },
+            Resource: [wardrobeObject('wearable-items/*'), wardrobeObject('base-photos/*'),
+              wardrobeObject('outfit-generations/*'), wardrobeObject('task-attempts/vto/*')] },
           { Action: 's3:ListBucket', Effect: 'Allow', Resource: wardrobeArn,
-            Condition: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*'] } } },
+            Condition: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*',
+              'outfit-generations/*', 'task-attempts/vto/*'] } } },
         ],
       },
     },
@@ -137,7 +139,8 @@ test('only the #217 cleanup S3 and E2E CloudTrail statements are allowed on the 
   // regional statement. Both are the same reviewed grant, not a wider one.
   const minimized = granted();
   minimized.Resources.CleanupTaskRoleDefaultPolicyABCD1234.Properties.PolicyDocument.Statement[0]
-    .Resource = [wardrobeObject('base-photos/*'), wardrobeObject('wearable-items/*')];
+    .Resource = [wardrobeObject('base-photos/*'), wardrobeObject('outfit-generations/*'),
+      wardrobeObject('task-attempts/vto/*'), wardrobeObject('wearable-items/*')];
   minimized.Resources.E2EQualificationRoleDedicatedPolicyABCD1234.Properties.PolicyDocument.Statement = [{
     Action: ['cloudtrail:LookupEvents', 'ecs:DeregisterTaskDefinition', 'ecs:DescribeTaskDefinition'],
     Effect: 'Allow', Resource: '*', Condition: { StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } },
@@ -161,19 +164,43 @@ test('only the #217 cleanup S3 and E2E CloudTrail statements are allowed on the 
   };
   const CLEANUP = 'CleanupTaskRoleDefaultPolicyABCD1234';
   const E2E = 'E2EQualificationRoleDedicatedPolicyABCD1234';
-  // A delete on the bucket or another prefix is not the reviewed object scope.
+  // A delete on the bucket or on a prefix outside the four is not the reviewed
+  // object scope.
   rejectedWith((after) => {
     after.Resources[CLEANUP].Properties.PolicyDocument.Statement[0].Resource[0] = wardrobeArn;
   }, CLEANUP);
   rejectedWith((after) => {
     after.Resources[CLEANUP].Properties.PolicyDocument.Statement[0].Resource[0] = wardrobeObject('task-attempts/*');
   }, CLEANUP);
-  // The list grant needs both prefixes and nothing broader.
+  // A fifth resource widens the delete scope even when the four prefixes remain.
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[0].Resource.push(wardrobeObject('avatar-renders/*'));
+  }, CLEANUP);
+  // The action is pinned: a versioned or family delete is a different grant.
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[0].Action = 's3:DeleteObjectVersion';
+  }, CLEANUP);
+  // The list grant needs the four prefixes and nothing broader.
   rejectedWith((after) => {
     after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['s3:prefix'] = ['wearable-items/*'];
   }, CLEANUP);
   rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['s3:prefix'] = ['wearable-items/*', 'base-photos/*', 'outfit-generations/*'];
+  }, CLEANUP);
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['s3:prefix'] = ['wearable-items/*', 'base-photos/*',
+      'outfit-generations/*', 'task-attempts/legacy/*'];
+  }, CLEANUP);
+  rejectedWith((after) => {
     after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['s3:prefix'] = ['*'];
+  }, CLEANUP);
+  // The condition shape is pinned: another operator or an extra key is not this grant.
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition = {
+      StringEquals: { 's3:prefix': ['wearable-items/*', 'base-photos/*', 'outfit-generations/*', 'task-attempts/vto/*'] } };
+  }, CLEANUP);
+  rejectedWith((after) => {
+    after.Resources[CLEANUP].Properties.PolicyDocument.Statement[1].Condition.StringLike['aws:RequestedRegion'] = 'ap-east-1';
   }, CLEANUP);
   // A second S3 statement or a second CloudTrail action is not this grant.
   rejectedWith((after) => {

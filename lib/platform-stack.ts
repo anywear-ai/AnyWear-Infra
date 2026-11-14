@@ -441,22 +441,28 @@ export class PlatformStack extends cdk.Stack {
           // deletes each captured user's objects under `wearable-items/<sub>/`
           // and `base-photos/<sub>/` before it removes their rows; the task
           // definition already passes `S3_BUCKET_NAME` as the wardrobe bucket.
-          // The statement stays split: delete is scoped to the two per-user
-          // prefixes, while `ListBucket` sits on the bucket ARN under an
-          // `s3:prefix` condition, so a `ListObjectsV2` for either
-          // `wearable-items/<sub>/` or `base-photos/<sub>/` is admitted and a
-          // listing outside those two prefixes is not.
+          // Issue #311 extends the same run-level cleanup to the VTO result
+          // objects under `outfit-generations/<sub>/` and the VTO staging
+          // objects under `task-attempts/vto/<vto_id>/`, so the grant names the
+          // four prefix patterns `wearable-items/*`, `base-photos/*`,
+          // `outfit-generations/*` and `task-attempts/vto/*`. The statement stays
+          // split: delete is scoped to those four prefixes, while `ListBucket`
+          // sits on the bucket ARN under an `s3:prefix` condition, so a
+          // `ListObjectsV2` for any of the four prefixes is admitted and a
+          // listing outside them is not.
           this.cleanupTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
             actions: ['s3:DeleteObject'],
             resources: [
               this.wardrobeBucket.arnForObjects('wearable-items/*'),
               this.wardrobeBucket.arnForObjects('base-photos/*'),
+              this.wardrobeBucket.arnForObjects('outfit-generations/*'),
+              this.wardrobeBucket.arnForObjects('task-attempts/vto/*'),
             ],
           }));
           this.cleanupTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
             actions: ['s3:ListBucket'],
             resources: [this.wardrobeBucket.bucketArn],
-            conditions: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*'] } },
+            conditions: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*', 'outfit-generations/*', 'task-attempts/vto/*'] } },
           }));
           new cdk.CfnOutput(this, 'CleanupTaskRoleArn', { value: this.cleanupTaskRole.roleArn });
         }

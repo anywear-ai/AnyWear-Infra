@@ -69,12 +69,15 @@ const RUNTIME_CLEANUP_ALLOWANCE = Object.freeze({
 // Issue #217 grants on two dedicated Beta identities. Both policies are new
 // relative to the recorded legacy baseline, so the reviewed dedicated-identity
 // allowances admit the whole policy. These predicates pin the permission surface
-// those policies add to exactly the statements reviewed for #217, so a different
-// action, resource, prefix or condition fails the comparison instead of riding
-// the resource-level allowance. The cleanup role carries no other S3 statement
-// and the E2E qualification policy no other CloudTrail statement.
+// those policies add to exactly the statements reviewed for #217 (the cleanup S3
+// grant widened by #311 to the four cleaned prefixes), so a different action,
+// resource, prefix or condition fails the comparison instead of riding the
+// resource-level allowance. The cleanup role carries no other S3 statement and
+// the E2E qualification policy no other CloudTrail statement.
 const WARDROBE_BUCKET = /^AnyWearWardrobeBucket[A-F0-9]{8}$/;
-const CLEANED_PREFIXES = Object.freeze(['wearable-items/*', 'base-photos/*']);
+const CLEANED_PREFIXES = Object.freeze([
+  'wearable-items/*', 'base-photos/*', 'outfit-generations/*', 'task-attempts/vto/*',
+]);
 const statementActions = (statement) => [statement.Action].flat();
 const statementKeys = (value, keys) => value !== null && typeof value === 'object'
   && JSON.stringify(Object.keys(value).sort()) === JSON.stringify(keys);
@@ -89,10 +92,12 @@ function wardrobeObjectPrefixArn(value, prefix) {
 function wardrobeBucketArn(value) {
   return WARDROBE_BUCKET.test(value?.['Fn::GetAtt']?.[0] ?? '') && value['Fn::GetAtt'][1] === 'Arn';
 }
-// Exactly the two #217 statements: `s3:DeleteObject` on the two per-user prefix
-// object ARNs and `s3:ListBucket` on the bucket ARN under the two-prefix
-// `s3:prefix` condition. Anything else that touches S3 on this role returns
-// `undefined` and stays a rejected difference.
+// Exactly the two #217 statements, widened by #311 to the four cleaned prefixes:
+// `s3:DeleteObject` on the `wearable-items/*`, `base-photos/*`,
+// `outfit-generations/*` and `task-attempts/vto/*` object ARNs, and
+// `s3:ListBucket` on the bucket ARN under the four-prefix `s3:prefix` condition.
+// Anything else that touches S3 on this role returns `undefined` and stays a
+// rejected difference.
 function cleanupTaskRoleS3Grants(policy) {
   const statements = policy.Properties?.PolicyDocument?.Statement;
   if (!Array.isArray(statements)) return undefined;
@@ -102,7 +107,7 @@ function cleanupTaskRoleS3Grants(policy) {
   const remove = s3.find((statement) => same(statementActions(statement), ['s3:DeleteObject']));
   const list = s3.find((statement) => same(statementActions(statement), ['s3:ListBucket']));
   if (!remove || !list) return undefined;
-  // `minimizePolicies` sorts a statement's resource array, so compare the two
+  // `minimizePolicies` sorts a statement's resource array, so compare the four
   // prefix ARNs as the exact set rather than in source order.
   if (!statementKeys(remove, ['Action', 'Effect', 'Resource']) || remove.Effect !== 'Allow'
     || !Array.isArray(remove.Resource) || remove.Resource.length !== CLEANED_PREFIXES.length
