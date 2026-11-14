@@ -28,6 +28,9 @@ import {
   deploymentQueueNames,
   runtimeStageFromStack,
 } from '../../lib/contracts.mjs';
+// Issue #316: the deployment half of the shared ECS verdict. The bake judges that
+// half only — the count half stays on this gate's own `max_gap_seconds` rule.
+import { ecsServiceObservation, rolloutVerdict } from './ecs-rollout.mjs';
 
 export const PROBE_PATH = '/readyz';
 export const PROBE_TIMEOUT_MS = 5_000;
@@ -169,15 +172,16 @@ async function readEcs(runAws, cluster, stage, at) {
     if (!service || !Array.isArray(service.deployments) || service.deployments.length === 0) {
       fail(`ECS service ${serviceName} has no deployment observation`);
     }
-    const deployment = service.deployments[0];
-    const rolloutState = typeof deployment.rolloutState === 'string' && deployment.rolloutState !== ''
-      ? deployment.rolloutState : fail(`ECS service ${serviceName} has no rollout state`);
-    return {
-      running_count: service.runningCount ?? fail(`ECS service ${serviceName} has no runningCount`),
-      desired_count: service.desiredCount ?? fail(`ECS service ${serviceName} has no desiredCount`),
-      deployment_count: service.deployments.length,
-      rollout_state: rolloutState,
-    };
+    if (typeof service.deployments[0].rolloutState !== 'string' || service.deployments[0].rolloutState === '') {
+      fail(`ECS service ${serviceName} has no rollout state`);
+    }
+    if (service.runningCount === undefined) fail(`ECS service ${serviceName} has no runningCount`);
+    if (service.desiredCount === undefined) fail(`ECS service ${serviceName} has no desiredCount`);
+    // Issue #316: keep the deployment rows the response already carries — id,
+    // status, `rolloutState`, its reason and both timestamps — so the shared
+    // verdict can judge this sample against the ids the proof settled on, and so a
+    // breaching sample names the deployment it saw beside the one it expected.
+    return ecsServiceObservation(service);
   };
   return {
     at,
@@ -405,6 +409,7 @@ export function evaluateBake({
     const samples = ecs?.samples ?? [];
     const reads = [{ source: 'ecs', cluster, services: [`${stage}-anywear-api`, `${stage}-anywear-worker`],
       samples: samples.length }];
+    const baseline = ecs?.baselineDeploymentIds;
     if (!ecs || ecs.error) {
       signals.push(failSignal('ecs_running_not_desired', ecs?.error ?? 'ECS services were not read', null, reads));
     } else if (samples.length < MIN_ECS_SAMPLES) {
@@ -417,10 +422,29 @@ export function evaluateBake({
       let longestGap = 0;
       let mismatchSince = null;
       let badDeployment = false;
+      const unexpectedDeployments = [];
+      const verdicts = [];
       for (const sample of samples) {
-        if (sample.api.deployment_count !== 1 || sample.worker.deployment_count !== 1
-          || sample.api.rollout_state !== 'COMPLETED' || sample.worker.rollout_state !== 'COMPLETED') {
-          badDeployment = true;
+        // Issue #316: the deployment half of the shared verdict, judged on every
+        // sample with no tolerance and against the ids the deploy proof settled on.
+        // The count half is deliberately not read from the verdict here: the
+        // `longest_gap_seconds` rule below is this gate's own recorded tolerance.
+        for (const purpose of ['api', 'worker']) {
+          const settledId = baseline?.[purpose];
+          const verdict = rolloutVerdict(sample[purpose], { nowMs: sample.at,
+            baselineDeploymentIds: typeof settledId === 'string' && settledId !== '' ? [settledId] : undefined });
+          verdicts.push({ at: sample.at, service: sample[purpose].service_name, verdict: verdict.verdict,
+            primary_deployment_id: verdict.deployment.primary_deployment_id,
+            rollout_state: verdict.deployment.rollout_state });
+          if (!verdict.deployment.settled) {
+            badDeployment = true;
+            unexpectedDeployments.push({ at: sample.at, service: sample[purpose].service_name,
+              condition: verdict.deployment.condition,
+              primary_deployment_id: verdict.deployment.primary_deployment_id,
+              baseline_deployment_id: baseline?.[purpose] ?? null,
+              rollout_state: verdict.deployment.rollout_state,
+              observed_deployment_ids: verdict.observed_deployment_ids });
+          }
         }
         const mismatch = sample.api.running_count !== sample.api.desired_count
           || sample.worker.running_count !== sample.worker.desired_count;
@@ -437,6 +461,9 @@ export function evaluateBake({
         max_sample_gap_seconds: maxSampleGap / 1000,
         samples: samples.length,
         services: { api: last.api, worker: last.worker },
+        baseline_deployment_ids: { api: baseline?.api ?? null, worker: baseline?.worker ?? null },
+        unexpected_deployments: unexpectedDeployments,
+        verdicts,
       };
       if (maxSampleGap > DEPLOYMENT_GATE_THRESHOLDS.ecs_running_not_desired.max_gap_seconds * 1000) {
         signals.push(failSignal('ecs_running_not_desired', `ECS sampling gap ${maxSampleGap / 1000}s exceeds 120s`, value, reads));
@@ -637,6 +664,10 @@ export function failedGate(options, message = 'The bake could not be evaluated')
 export async function runBakeGate(options) {
   const {
     stage, stack, apiBaseUrl, cluster, queueUrls, logGroup, serviceSha, imageDigest,
+    // Issue #316: the deployment ids the `deploy-runtime` proof settled on. Every
+    // sample's deployment half is judged against them, so a deployment that starts
+    // during the bake cannot pass as this run's rollout.
+    baselineDeploymentIds,
     now = () => Date.now(), sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     fetchImpl = globalThis.fetch, runAws = defaultRunAws,
   } = options;
@@ -734,7 +765,7 @@ export async function runBakeGate(options) {
     cluster, logGroup, queueNames: deploymentQueueNames(stage),
     observations: {
       alb, p95, outbox, alarms: alarmObservation,
-      ecs: { samples: ecsSamples, ...(ecsError === undefined ? {} : { error: ecsError }) },
+      ecs: { samples: ecsSamples, baselineDeploymentIds, ...(ecsError === undefined ? {} : { error: ecsError }) },
       sqs: { samples: sqsSamples, ages: sqsAges, ...(sqsError === undefined ? {} : { error: sqsError }) },
       probes: { sent: probesSent, failed: probesFailed },
     },

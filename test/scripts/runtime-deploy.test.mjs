@@ -8,6 +8,7 @@ import {
   DECLARED_DIAGNOSTIC_EXCLUSION,
   DECLARED_DIAGNOSTIC_RESOURCE_TYPES,
   ECS_IDENTITY_EVENT,
+  ECS_STEADY_STATE_EVENT,
   RUNTIME_DEPLOY_PARAMETER_KEYS,
   RUNTIME_STACK,
   acceptedLiveRuntimeHashes,
@@ -159,24 +160,41 @@ function taskDefinitionFixture(purpose) {
       command: ['node', 'dist/index.js'], environment: [] }] };
 }
 const TASK_DEFINITIONS = Object.freeze({ api: taskDefinitionFixture('api'), worker: taskDefinitionFixture('worker') });
-const ecsServiceFixture = (purpose) => ({
+// Issue #316: the worker deployment was created 14:53:12Z and the failing gate read
+// once at 14:56:59Z (run 43606836697); ECS wrote `COMPLETED` at 14:57:22.051Z.
+const ECS_CREATED_AT = '2026-11-15T14:53:12.000Z';
+const ECS_FIRST_READ_MS = Date.parse('2026-11-15T14:56:59.000Z');
+const ECS_POLL_MS = 15_000;
+const ecsDeploymentFixture = (purpose, rolloutState = 'COMPLETED') => ({ id: `ecs-svc/${purpose}`,
+  status: 'PRIMARY', rolloutState, rolloutStateReason: null, createdAt: ECS_CREATED_AT, updatedAt: ECS_CREATED_AT,
+  taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:7`,
+  runningCount: 1, desiredCount: 1, pendingCount: 0, failedTasks: 0 });
+const ecsServiceFixture = (purpose, { rolloutState = 'COMPLETED', runningCount = 1 } = {}) => ({
   serviceName: `beta-anywear-${purpose}`, status: 'ACTIVE',
   serviceArn: `arn:aws:ecs:ap-east-1:650880818323:service/beta-anywear/beta-anywear-${purpose}`,
   taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:7`,
-  runningCount: 1, desiredCount: 1, deployments: [{ rolloutState: 'COMPLETED' }],
+  runningCount, desiredCount: 1, deployments: [ecsDeploymentFixture(purpose, rolloutState)],
 });
-const ECS_SERVICES = Object.freeze(['api', 'worker'].map(ecsServiceFixture));
+const ECS_SERVICES = Object.freeze(['api', 'worker'].map((purpose) => ecsServiceFixture(purpose)));
 
 function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = undefined,
   executeError = undefined, postExecuteRuntime = undefined, updateError = undefined,
   updateDelays = 0, updateStaleReads = 0, updateRollback = false,
   pollReadError = undefined, pollAbsent = false,
-  ecsServices = ECS_SERVICES, taskDefinitions = TASK_DEFINITIONS } = {}) {
+  ecsServices = ECS_SERVICES, ecsReads = undefined, ecsTasks = [], describeServicesError = undefined,
+  taskDefinitions = TASK_DEFINITIONS, clock = undefined } = {}) {
   const calls = [];
   // The changed-stack set the failed-run summary publishes. It starts as the
   // fake's own array and `runOperation` re-binds it to the array it owns.
   const changedStacks = [];
   let runtimeObserved = runtime;
+  // Issue #316: the proof polls on the injected clock, so a test whose rollout
+  // changes between reads supplies `ecsReads` (one snapshot per read) and an
+  // advancing `clock`. The default is a fixed clock at the incident's read instant
+  // and a no-op sleep, which is enough for an already-settled service.
+  const now = clock?.now ?? (() => ECS_FIRST_READ_MS);
+  const sleep = clock?.sleep ?? (async () => {});
+  let ecsReadCount = 0;
   // A deleted change set can no longer be described. The fail-closed path deletes
   // the set, so a post-delete describe is a test failure: the operation must not
   // depend on re-reading a deleted set.
@@ -193,7 +211,7 @@ function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = 
   let pollAbsences = 0;
   let preUpdateBase;
   const io = {
-    calls, changedStacks, now: () => 0, sleep: async () => {},
+    calls, changedStacks, now, sleep,
     // The one changed-stack mechanism: the fake proves the operation records a
     // landed mutation through `io.markChanged`, not by reaching into its own state.
     markChanged(stack) { io.changedStacks.push(stack); },
@@ -240,7 +258,20 @@ function fakeIo({ base = baseStackFixture(), runtime = liveStack(), changeSet = 
         return { Parameter: { Name: name, Version: 3, Value: stageValue(name) } };
       }
       if (key === 'ecs/describe-services') {
-        return { services: structuredClone(ecsServices) };
+        if (describeServicesError) throw describeServicesError;
+        // The snapshot for this read: `ecsReads` models a rollout that changes
+        // between polls, and the last snapshot repeats once the list runs out.
+        const snapshot = ecsReads === undefined ? ecsServices
+          : ecsReads[Math.min(ecsReadCount, ecsReads.length - 1)];
+        ecsReadCount += 1;
+        return { services: structuredClone(snapshot) };
+      }
+      if (key === 'ecs/list-tasks') {
+        const desiredStatus = args[args.indexOf('--desired-status') + 1];
+        return { taskArns: desiredStatus === 'RUNNING' ? ecsTasks.map((task) => task.taskArn) : [] };
+      }
+      if (key === 'ecs/describe-tasks') {
+        return { tasks: structuredClone(ecsTasks) };
       }
       if (key === 'ecs/describe-task-definition') {
         const arn = args[args.indexOf('--task-definition') + 1];
@@ -932,7 +963,7 @@ async function withSummary(run) {
   }
 }
 
-test('a bake refusal after the change set executed appends exactly one summary line naming the Runtime stack', async () => {
+test('a bake refusal after the change set executed appends the changed-stack line and the owed-full line', async () => {
   await withSummary(async (summary) => {
     const { io, calls } = fakeIo({ runtime: liveStack({ identityUnchanged: false }), changeSet: DELTA_CHANGE_SET });
     const createIo = async (_environment, { changedStacks }) => { io.changedStacks = changedStacks; return io; };
@@ -947,10 +978,14 @@ test('a bake refusal after the change set executed appends exactly one summary l
     }), /The 300-second bake failed/);
     assert.ok(calls.some((call) => call.args?.includes('execute-change-set')), 'the change set executed first');
     const lines = (await readFile(summary, 'utf8')).trim().split('\n');
-    assert.equal(lines.length, 1, 'exactly one summary line');
+    // Issue #316: the landed-change line stays first, and the owed-`full` line
+    // follows it in the same job.
+    assert.equal(lines.length, 2, 'the changed-stack line and the owed-full line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
     assert.equal((lines[0].match(/AnyWearRuntimeStack-beta/g) ?? []).length, 1,
       'the Runtime stack is named exactly once');
+    assert.match(lines[1], /No qualification was dispatched/);
+    assert.match(lines[1], /still owes a `full`/);
     assert.deepEqual(io.changedStacks, [RUNTIME_STACK], 'the landed mutation is recorded once');
   });
 });
@@ -1154,8 +1189,10 @@ test('a /health refusal after the Base origin write names both changed stacks', 
         acceptedLiveHashes: FIXTURE_ACCEPTED_LIVE, bake: BAKE },
     }), /did not identify the release/);
     const lines = (await readFile(summary, 'utf8')).trim().split('\n');
-    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.equal(lines.length, 2, 'the changed-stack line and the owed-full line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta, AnyWearPlatformStack-beta and did not complete/);
+    assert.match(lines[1], /No qualification was dispatched/,
+      'the Runtime stack changed, so the commit owes the qualification line');
   });
 });
 
@@ -1189,15 +1226,65 @@ function identityLine(stdout) {
   return lines[0];
 }
 
-test('a passed ECS identity proof writes one beta-anywear-ecs-identity line with the exact five fields per service', async () => {
+// Issue #316: an unmet steady-state proof writes one structured line before it
+// throws. The prefix is the event name, so a refusal and a success are separable in
+// the same captured stream.
+const UNMET_PREFIX = `{"gate":"${ECS_STEADY_STATE_EVENT}"`;
+function unmetLines(stdout) {
+  const found = [];
+  let index = stdout.indexOf(UNMET_PREFIX);
+  while (index !== -1) {
+    const end = stdout.indexOf('\n', index);
+    assert.notEqual(end, -1, 'the unmet line is newline-terminated');
+    found.push(JSON.parse(stdout.slice(index, end)));
+    index = stdout.indexOf(UNMET_PREFIX, end + 1);
+  }
+  return found;
+}
+
+// A clock the proof advances through `io.sleep`, so a rollout can be observed at
+// the incident's own timings.
+function advancingClock(startMs, stepMs = ECS_POLL_MS) {
+  let time = startMs;
+  return { now: () => time, sleep: async () => { time += stepMs; } };
+}
+
+// The incident's timeline: `IN_PROGRESS` until ECS writes `COMPLETED` at
+// 14:57:22.051Z, then `COMPLETED`. The reads are 15 s apart from 14:56:59Z, so the
+// third read is the first one that sees the finished rollout.
+const COMPLETED_MS = Date.parse('2026-11-15T14:57:22.051Z');
+const incidentTimeline = () => {
+  const settleAt = COMPLETED_MS;
+  const snapshot = (rolloutState) => [ecsServiceFixture('api', { rolloutState }),
+    ecsServiceFixture('worker', { rolloutState })];
+  return { settleAt, reads: [snapshot('IN_PROGRESS'), snapshot('IN_PROGRESS'), snapshot('IN_PROGRESS')] };
+};
+function timelineReads(startMs, settleAtMs, { settledState = 'COMPLETED', count = 60 } = {}) {
+  return Array.from({ length: count }, (_, index) => {
+    const at = startMs + index * ECS_POLL_MS;
+    const state = at >= settleAtMs ? settledState : 'IN_PROGRESS';
+    return [ecsServiceFixture('api', { rolloutState: state }), ecsServiceFixture('worker', { rolloutState: state })];
+  });
+}
+
+test('a passed ECS identity proof writes one beta-anywear-ecs-identity line with the exact five fields per service and the settle facts', async () => {
   const { io, calls } = fakeIo();
   const captured = await captureStdout(() => deploy({ env: env(), release, io,
     synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }));
   const line = identityLine(captured.stdout);
-  assert.deepEqual(Object.keys(line), ['gate', 'result', 'services']);
+  assert.deepEqual(Object.keys(line), ['gate', 'result', 'services', 'settle']);
   assert.equal(line.gate, ECS_IDENTITY_EVENT);
   assert.equal(line.gate, 'beta-anywear-ecs-identity');
   assert.equal(line.result, 'proven');
+  // Issue #316: the success line states the window it settled inside and how many
+  // reads it took, so the operator can tell "settled at once" from "settled late".
+  assert.deepEqual(Object.keys(line.settle), ['window_seconds', 'poll_seconds', 'reads',
+    'first_read_at', 'settled_at', 'waited_seconds']);
+  assert.equal(line.settle.window_seconds, 600);
+  assert.equal(line.settle.poll_seconds, 15);
+  assert.equal(line.settle.reads, 1);
+  assert.equal(line.settle.first_read_at, '2026-11-15T14:56:59.000Z');
+  assert.equal(line.settle.waited_seconds, 0);
   assert.deepEqual(Object.keys(line.services).sort(), ['beta-anywear-api', 'beta-anywear-worker']);
   for (const purpose of ['api', 'worker']) {
     const name = `beta-anywear-${purpose}`;
@@ -1213,17 +1300,50 @@ test('a passed ECS identity proof writes one beta-anywear-ecs-identity line with
     assert.ok(entry.task_definition_image.endsWith(`@${IMAGE_DIGEST}`));
     assert.equal(entry.release_image_digest, IMAGE_DIGEST);
   }
-  // Built only from the proof's existing reads: one describe-services, then one
-  // describe-task-definition per service.
+  // Built only from the proof's reads: one describe-services (the services were
+  // already settled), then one describe-task-definition per service.
   assert.equal(calls.filter((call) => call.key === 'ecs/describe-services').length, 1);
   assert.equal(calls.filter((call) => call.key === 'ecs/describe-task-definition').length, 2);
   // The verdict is printed at the proof, before the bake's own line.
   assert.ok(captured.stdout.indexOf(IDENTITY_PREFIX) < captured.stdout.indexOf('beta-anywear-deployment-bake'));
 });
 
-// A refused proof is reached and throws: the line is absent, and neither `/health`
-// nor the bake runs afterwards. The ECS call being present is what separates
-// "reached the proof and refused" from "never reached the proof".
+test('the proof hands the settled deployment ids to the bake as its baseline', async () => {
+  // The bake's per-sample deployment half compares against these ids, so a
+  // deployment that starts during the bake cannot pass as this run's rollout.
+  const { io } = fakeIo();
+  const { baked, bake } = capturingBake();
+  await deploy({ env: env(), release, io, synthesize: async () => SYNTHESIZED, health: HEALTH, bake });
+  assert.equal(baked.length, 1, 'one bake per deploy');
+  assert.deepEqual(baked[0].baselineDeploymentIds, { api: 'ecs-svc/api', worker: 'ecs-svc/worker' });
+  // The declared bake inputs the gate already took are unchanged by the addition.
+  assert.equal(baked[0].cluster, 'beta-anywear');
+  assert.equal(baked[0].logGroup, '/anywear/beta/worker');
+});
+
+test('the incident\'s own timings settle on read 3 instead of refusing', async () => {
+  // Run 43606836697 read the worker once at 14:56:59Z and threw; ECS wrote
+  // `COMPLETED` at 14:57:22.051Z. With the 15-second poll the third read is the
+  // first one after that instant, so the proof now passes instead of failing a
+  // healthy rollout.
+  const clock = advancingClock(ECS_FIRST_READ_MS);
+  const { io, calls } = fakeIo({ clock, ecsReads: timelineReads(ECS_FIRST_READ_MS, COMPLETED_MS) });
+  const captured = await captureStdout(() => deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }));
+  const line = identityLine(captured.stdout);
+  assert.equal(line.result, 'proven');
+  assert.equal(line.settle.reads, 3);
+  assert.equal(line.settle.first_read_at, '2026-11-15T14:56:59.000Z');
+  assert.equal(line.settle.settled_at, '2026-11-15T14:57:29.000Z');
+  assert.equal(line.settle.waited_seconds, 30);
+  assert.equal(calls.filter((call) => call.key === 'ecs/describe-services').length, 3);
+  assert.equal(unmetLines(captured.stdout).length, 0, 'a settled proof writes no unmet line');
+});
+
+// A refused proof is reached and throws: it writes exactly one unmet line, no
+// identity line, and neither `/health` nor the bake runs afterwards. The ECS call
+// being present is what separates "reached the proof and refused" from "never
+// reached the proof".
 async function refuseProof({ label, expectation, ...fixtures }) {
   const { io, calls } = fakeIo(fixtures);
   let healthReads = 0;
@@ -1233,42 +1353,139 @@ async function refuseProof({ label, expectation, ...fixtures }) {
     health: async () => { healthReads += 1; return 0; },
     bake: async () => { bakeReads += 1; return gateBlock(); } }), expectation, label));
   assert.ok(calls.some((call) => call.key === 'ecs/describe-services'), `${label}: the proof was reached`);
-  assert.equal(identityLines(captured.stdout).length, 0, `${label}: a refused proof writes no line`);
+  assert.equal(identityLines(captured.stdout).length, 0, `${label}: a refused proof writes no identity line`);
   assert.equal(healthReads, 0, `${label}: /health never runs`);
   assert.equal(bakeReads, 0, `${label}: the bake never runs`);
+  const unmet = unmetLines(captured.stdout);
+  assert.equal(unmet.length, 1, `${label}: the unmet line is the only line`);
+  return unmet[0];
 }
 
-test('a service that is not ACTIVE or not at its desired count refuses with today\'s message and writes no identity line', async () => {
-  await refuseProof({ label: 'not ACTIVE',
-    expectation: /The Runtime ECS service beta-anywear-api is not usable/,
+test('a service that is not ACTIVE refuses at once as service-not-active', async () => {
+  const unmet = await refuseProof({ label: 'not ACTIVE',
+    expectation: /The Runtime ECS service beta-anywear-api is not usable; condition service-not-active/,
     ecsServices: [{ ...ecsServiceFixture('api'), status: 'DRAINING' }, ecsServiceFixture('worker')] });
-  await refuseProof({ label: 'not at its desired count',
-    expectation: /The Runtime ECS service beta-anywear-api is not at its desired count/,
+  assert.equal(unmet.condition, 'service-not-active');
+  assert.equal(unmet.service, 'beta-anywear-api');
+  assert.equal(unmet.poll_count, 1);
+  assert.equal(unmet.window_seconds, 600);
+  assert.equal(unmet.read_at, '2026-11-15T14:56:59.000Z');
+  assert.equal(unmet.result, 'unmet');
+});
+
+test('a settled rollout below its desired count refuses at once as running-not-desired', async () => {
+  const unmet = await refuseProof({ label: 'not at its desired count',
+    expectation: /The Runtime ECS service beta-anywear-api is not at its desired count; condition running-not-desired/,
     ecsServices: [{ ...ecsServiceFixture('api'), runningCount: 0 }, ecsServiceFixture('worker')] });
+  assert.equal(unmet.condition, 'running-not-desired');
+  assert.equal(unmet.deployments[0].id, 'ecs-svc/api');
+  assert.equal(unmet.deployments[0].rollout_state, 'COMPLETED');
+  assert.equal(unmet.poll_count, 1, 'a completed deployment with a short count is not waited for');
 });
 
-test('a service that has not completed its rollout refuses with today\'s message and writes no identity line', async () => {
-  await refuseProof({ label: 'rollout in progress',
-    expectation: /The Runtime ECS service beta-anywear-api has not completed its rollout/,
-    ecsServices: [{ ...ecsServiceFixture('api'), deployments: [{ rolloutState: 'IN_PROGRESS' }] },
-      ecsServiceFixture('worker')] });
+test('a FAILED rollout refuses on the first read and carries the tasks\' exit codes', async () => {
+  // ECS refuses a failed deployment at any age, so the proof does not wait for the
+  // window: it writes the stopped task's own reason and exit code.
+  const tasks = [
+    { taskArn: 'arn:aws:ecs:ap-east-1:650880818323:task/beta-anywear/failed', lastStatus: 'STOPPED',
+      healthStatus: 'UNKNOWN', desiredStatus: 'STOPPED', stoppedReason: 'Essential container in task exited',
+      stoppedAt: '2026-11-15T14:54:30.000Z',
+      containers: [{ name: 'worker', exitCode: 137, reason: 'OutOfMemoryError' }] },
+  ];
+  const unmet = await refuseProof({ label: 'failed rollout',
+    expectation: /The Runtime ECS service beta-anywear-worker has a failed rollout; condition rollout-failed/,
+    ecsServices: [ecsServiceFixture('api'),
+      { ...ecsServiceFixture('worker'), deployments: [{ ...ecsDeploymentFixture('worker', 'FAILED'),
+        rolloutStateReason: 'ECS deployment circuit breaker: tasks failed to start.' }] }],
+    ecsTasks: tasks });
+  assert.equal(unmet.condition, 'rollout-failed');
+  assert.equal(unmet.deployments[0].id, 'ecs-svc/worker');
+  assert.equal(unmet.deployments[0].rollout_state, 'FAILED');
+  assert.equal(unmet.deployments[0].rollout_state_reason, 'ECS deployment circuit breaker: tasks failed to start.');
+  assert.equal(unmet.tasks.length, 1);
+  assert.equal(unmet.tasks[0].last_status, 'STOPPED');
+  assert.equal(unmet.tasks[0].stopped_reason, 'Essential container in task exited');
+  assert.deepEqual(unmet.tasks[0].containers, [{ name: 'worker', exit_code: 137, reason: 'OutOfMemoryError' }]);
+  assert.equal(unmet.read_sequence.length, 1);
+  assert.deepEqual(unmet.read_sequence[0].rollout_states,
+    { 'beta-anywear-api': 'COMPLETED', 'beta-anywear-worker': 'FAILED' });
 });
 
-test('a task definition without the release image digest refuses with today\'s message and writes no identity line', async () => {
+test('a rollout that never completes refuses as stalled past the window, naming its age', async () => {
+  // The deployment was created at 14:53:12Z and the first read is at 14:56:59Z, so
+  // the window closes at 15:03:12Z and the 26th read is the first one past it.
+  const clock = advancingClock(ECS_FIRST_READ_MS);
+  const unmet = await refuseProof({ label: 'stalled rollout',
+    expectation: /The Runtime ECS service beta-anywear-api has not completed its rollout; condition rollout-stalled/,
+    clock,
+    ecsServices: [ecsServiceFixture('api', { rolloutState: 'IN_PROGRESS' }),
+      ecsServiceFixture('worker', { rolloutState: 'IN_PROGRESS' })] });
+  assert.equal(unmet.condition, 'rollout-stalled');
+  assert.equal(unmet.poll_count, 26);
+  assert.equal(unmet.rollout_age_seconds, 602);
+  assert.equal(unmet.deployments[0].rollout_state, 'IN_PROGRESS');
+  assert.ok(unmet.read_sequence.length <= 10, 'the read sequence keeps the last ten reads');
+  assert.equal(unmet.read_sequence.at(-1).verdict, 'stalled');
+});
+
+test('a rollout that starts unsettled at its creation instant stops at the 41-read bound', async () => {
+  // The first read is the deployment's own creation instant, so the 41st read lands
+  // exactly on `createdAt + 600 s`: 41 reads, then the proof refuses as stalled.
+  const created = new Date(ECS_FIRST_READ_MS).toISOString();
+  const clock = advancingClock(ECS_FIRST_READ_MS);
+  const unmet = await refuseProof({ label: 'window exhausted',
+    expectation: /condition rollout-stalled/,
+    clock,
+    ecsServices: [{ ...ecsServiceFixture('api', { rolloutState: 'IN_PROGRESS' }),
+      deployments: [{ ...ecsDeploymentFixture('api', 'IN_PROGRESS'), createdAt: created }] },
+    { ...ecsServiceFixture('worker', { rolloutState: 'IN_PROGRESS' }),
+      deployments: [{ ...ecsDeploymentFixture('worker', 'IN_PROGRESS'), createdAt: created }] }] });
+  assert.equal(unmet.poll_count, 41);
+  assert.equal(unmet.rollout_age_seconds, 600);
+  assert.equal(unmet.read_at, '2026-11-15T15:06:59.000Z');
+});
+
+test('a DescribeServices error mid-poll fails closed and names the reads it took', async () => {
+  const clock = advancingClock(ECS_FIRST_READ_MS);
+  const reads = timelineReads(ECS_FIRST_READ_MS, COMPLETED_MS);
+  const { io } = fakeIo({ clock, ecsReads: reads });
+  // The first read succeeds, the second faults: the proof must not report a verdict
+  // from a read it did not get.
+  let calls = 0;
+  const aws = io.aws;
+  io.aws = async (args) => {
+    if (args[1] === 'describe-services') {
+      calls += 1;
+      if (calls === 2) throw new Error('An error occurred (Throttling) when calling the DescribeServices operation');
+    }
+    return aws(args);
+  };
+  await assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+  /The Runtime ECS steady-state read failed after 2 reads: An error occurred \(Throttling\)/);
+});
+
+test('a task definition without the release image digest refuses with the digest sentence and no unmet line', async () => {
+  // The identity check runs after the services settle, so the window never covers
+  // image identity: this refusal is reached with no ECS steady-state refusal line.
   const withoutReleaseDigest = `650880818323.dkr.ecr.ap-east-1.amazonaws.com/beta-anywear-service@sha256:${'0'.repeat(64)}`;
-  await refuseProof({ label: 'image lacks the release digest',
-    expectation: /The deploys task definition for beta-anywear-api does not carry the deployed image digest/,
-    taskDefinitions: { ...TASK_DEFINITIONS, api: { ...TASK_DEFINITIONS.api,
-      containerDefinitions: [{ ...TASK_DEFINITIONS.api.containerDefinitions[0], image: withoutReleaseDigest }] } } });
+  const { io } = fakeIo({ taskDefinitions: { ...TASK_DEFINITIONS, api: { ...TASK_DEFINITIONS.api,
+    containerDefinitions: [{ ...TASK_DEFINITIONS.api.containerDefinitions[0], image: withoutReleaseDigest }] } } });
+  const captured = await captureStdout(async () => assert.rejects(deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+  /The deploys task definition for beta-anywear-api does not carry the deployed image digest/));
+  assert.equal(unmetLines(captured.stdout).length, 0);
+  assert.equal(identityLines(captured.stdout).length, 0);
 });
 
-test('a malformed or missing ECS service refuses with today\'s message and writes no identity line', async () => {
-  await refuseProof({ label: 'wrong service count',
-    expectation: /The Runtime ECS services are not both deployed/,
-    ecsServices: [ecsServiceFixture('api')] });
-  await refuseProof({ label: 'duplicate service names',
-    expectation: /The Runtime ECS beta-anywear-worker identity is missing/,
-    ecsServices: [ecsServiceFixture('api'), ecsServiceFixture('api')] });
+test('a malformed or missing ECS service refuses with today\'s message and writes no line', async () => {
+  await assert.rejects(deploy({ env: env(), release, io: fakeIo({ ecsServices: [ecsServiceFixture('api')] }).io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+  /The Runtime ECS services are not both deployed/);
+  await assert.rejects(deploy({ env: env(), release,
+    io: fakeIo({ ecsServices: [ecsServiceFixture('api'), ecsServiceFixture('api')] }).io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }),
+  /The Runtime ECS beta-anywear-worker identity is missing/);
 });
 
 // The real `runOperation` under `withSummary`, with its stdout captured. The
@@ -1303,8 +1520,9 @@ test('a /health refusal after the proof keeps the identity line, ends red and ap
     assert.equal(identityLine(result.stdout).result, 'proven');
     assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
     const lines = result.summaryText.trim().split('\n');
-    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.equal(lines.length, 2, 'the changed-stack line and the owed-full line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta, AnyWearPlatformStack-beta and did not complete/);
+    assert.match(lines[1], /No qualification was dispatched/);
     assert.ok(result.stdout.indexOf(IDENTITY_PREFIX) < result.stdout.indexOf('api_origin_repointed'),
       'the identity line is written before the edge repair');
   });
@@ -1323,9 +1541,10 @@ test('an edge-repair refusal after the proof keeps the identity line, ends red a
     assert.equal(identityLine(result.stdout).result, 'proven');
     assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
     const lines = result.summaryText.trim().split('\n');
-    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.equal(lines.length, 2, 'the changed-stack line and the owed-full line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
     assert.equal(lines[0].includes(BASE_STACK), false, 'the refused Base write is not a changed stack');
+    assert.match(lines[1], /No qualification was dispatched/);
   });
 });
 
@@ -1342,8 +1561,9 @@ test('a 300-second bake refusal after the proof keeps the identity line, ends re
     assert.equal(identityLine(result.stdout).result, 'proven');
     assert.equal(result.summaryExistsAtIdentityLine, false, 'the identity line is written before the summary');
     const lines = result.summaryText.trim().split('\n');
-    assert.equal(lines.length, 1, 'exactly one summary line');
+    assert.equal(lines.length, 2, 'the changed-stack line and the owed-full line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
+    assert.match(lines[1], /still owes a `full`/);
   });
 });
 

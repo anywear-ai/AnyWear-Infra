@@ -56,8 +56,26 @@ function modeAbsentIo() {
       }
       if (args[0] === 'ssm') {
         const name = args[args.indexOf('--name') + 1];
-        assert.equal(name, '/anywear/beta/tester_allowlist', 'only the tester allowlist may be read');
+        // #316: `state` also reads the ECS cluster name from the stage contract, so
+        // it can classify the two Runtime services without a guessed literal.
+        if (name === '/anywear/beta/ecs_cluster_name') return { Parameter: { Name: name, Value: 'beta-anywear' } };
+        assert.equal(name, '/anywear/beta/tester_allowlist', 'only the tester allowlist and the cluster name may be read');
         return { Parameter: { Name: name, Value: JSON.stringify(allowlist) } };
+      }
+      if (args[0] === 'ecs') {
+        // #316: the read-only ECS block. Both services are settled, so no task
+        // attribution read follows.
+        if (args[1] === 'describe-services') {
+          return { services: ['api', 'worker'].map(purpose => ({
+            serviceName: `beta-anywear-${purpose}`, status: 'ACTIVE',
+            taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:7`,
+            runningCount: 1, desiredCount: 1,
+            deployments: [{ id: `ecs-svc/${purpose}`, status: 'PRIMARY', rolloutState: 'COMPLETED',
+              createdAt: '2026-11-15T14:53:12.000Z', updatedAt: '2026-11-15T14:57:22.051Z',
+              runningCount: 1, desiredCount: 1 }],
+          })) };
+        }
+        throw new Error(`Unexpected ECS call ${args.join(' ')}`);
       }
       if (args[0] === 'cloudfront') {
         return { Distribution: { Id: 'E2ABCDEFGHIJKL', DomainName: 'd111111abcdef8.cloudfront.net', Status: 'Deployed' } };

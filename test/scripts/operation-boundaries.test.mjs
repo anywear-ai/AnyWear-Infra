@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workflowOperations, operationFamilies, operationBoundary, operationRoles, families, assertOneShotAllowed,
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
-  verifyActions } from '../../scripts/lib/operation-boundaries.mjs';
+  stateReads, verifyActions } from '../../scripts/lib/operation-boundaries.mjs';
 import { SIMULATE_ACTIONS } from '../../scripts/lib/authorization-preflight.mjs';
 import { apiOriginUpdateArguments } from '../../scripts/lib/runtime-deploy.mjs';
 
@@ -113,6 +113,20 @@ test('AWS allow-list keeps reads, one-shots and retention updates scoped', () =>
   assertAwsAllowed(env('migrate'), ['cloudformation', 'describe-stacks']);
   assertAwsAllowed(env('deploy-platform'), ['ssm', 'get-parameters']);
   assert.throws(() => assertAwsAllowed(env('state'), ['ssm', 'get-parameters']), /forbidden/);
+  // Issue #316: the read-only `state` entry reads the three ECS facts the deploy
+  // proof reads, and nothing that could wait on, register or stop a task. Its
+  // reviewed read set is exactly the four original reads plus those three.
+  assert.deepEqual([...stateReads], ['sts/get-caller-identity', 'cloudformation/describe-stacks',
+    'cloudformation/get-template', 'ssm/get-parameter', 'ecs/describe-services', 'ecs/list-tasks',
+    'ecs/describe-tasks']);
+  for (const pair of [['ecs', 'describe-services'], ['ecs', 'list-tasks'], ['ecs', 'describe-tasks']]) {
+    assertAwsAllowed(env('state'), pair);
+  }
+  for (const forbidden of [['ecs', 'run-task'], ['ecs', 'register-task-definition', '--cli-input-json', '{}'],
+    ['ecs', 'deregister-task-definition'], ['ecs', 'wait', 'services-stable'],
+    ['ssm', 'get-parameters', '--names', '/anywear/beta/ecs_cluster_name']]) {
+    assert.throws(() => assertAwsAllowed(env('state'), forbidden), /forbidden/, forbidden.join(' '));
+  }
   assert.throws(() => assertAwsAllowed(env('migrate'), ['ssm', 'get-parameter', '--name', '/x', '--with-decryption']), /decryption is forbidden/);
   assert.throws(() => assertAwsAllowed(env('deploy-platform'), ['ecs', 'run-task']), /forbidden/);
   const lifecycle = { family: 'beta-anywear-lifecycle', taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
@@ -153,6 +167,13 @@ test('session policies carry only the operation\'s own families', () => {
   const state = sessionPolicy('runtime', env('state'));
   assert.match(state, /ssm:GetParameter/);
   assert.doesNotMatch(state, /ecs:RegisterTaskDefinition/);
+  // Issue #316: the state session carries exactly the seven reviewed read actions —
+  // every one already held by `beta-infra-runtime-role` — and stays inside the
+  // 2048-byte inline limit. No simulate action, no task action, no write.
+  const stateActions = JSON.parse(state).Statement.flatMap((statement) => [statement.Action].flat());
+  assert.deepEqual(stateActions.sort(), ['cloudformation:DescribeStacks', 'cloudformation:GetTemplate',
+    'ecs:DescribeServices', 'ecs:DescribeTasks', 'ecs:ListTasks', 'ssm:GetParameter', 'sts:GetCallerIdentity']);
+  assert.ok(state.length < 2048, `the state session policy is ${state.length} bytes`);
   assert.doesNotMatch(sessionPolicy('runtime', env('deploy-platform')), /ecs:RegisterTaskDefinition/);
   // Issue #194: `deploy-runtime` adds the verify family's register/run/PassRole
   // statements under the existing verification-task role, and the generated
@@ -205,8 +226,9 @@ test('the runtime read set is scoped to the operation that performs the read', (
   assert.match(runtime, /cloudwatch:DescribeAlarms/);
   assert.match(runtime, /logs:FilterLogEvents/);
   // The read-only state session keeps its own narrower set and never gains a bake read.
-  const state = sessionPolicy('runtime', env('state'));
-  assert.doesNotMatch(state, /cloudwatch|logs:FilterLogEvents/);
+  const stateOnly = sessionPolicy('runtime', env('state'));
+  assert.doesNotMatch(stateOnly, /cloudwatch|logs:FilterLogEvents|iam:Simulate/);
+  assert.match(stateOnly, /ecs:DescribeServices/);
 });
 
 // Issue #254: `deploy-runtime` may issue exactly one Base-stack parameter update

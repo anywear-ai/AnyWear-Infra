@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { createRuntimeIo, validateOperationInputs, cdkDeploymentArguments, deleteOperationStack,
   resolveServiceImageDigest, runOperation, serviceImageTag } from '../../scripts/runtime-operation.mjs';
 import { runtimeStack } from '../../scripts/lib/one-writer.mjs';
@@ -423,10 +427,106 @@ test('a failed migrate launch still names the task it started', async () => {
   const surface = migrateOneShotSurface({ failing: true });
   const io = await surface.io();
   const captured = await captureStreams(() => assert.rejects(io.oneShot('migrate', revision),
-    /^Error: One-shot execution failed; preserve task resources and inspect redacted run evidence$/));
+    /^Error: One-shot execution failed: preserve task resources and inspect redacted run evidence$|^Error: One-shot execution failed; preserve task resources and inspect redacted run evidence$/));
   // The identity the script printed before it waited reaches the step log.
   assert.equal(captured.stdout.split('Task ARN:').length - 1, 1);
   assert.match(captured.stdout, new RegExp(`Task ARN: ${migrateTaskArn}`));
   assert.match(captured.stdout, new RegExp(`Task definition: ${migrateDefinitionArn}`));
   assert.match(captured.stderr, /One-shot task failed with exit code 3/);
+});
+
+// Issue #316: the read-only `state` entry. It prints the ECS block through the real
+// `runOperation` and adds each service's verdict and counts to the `Beta state:`
+// summary line, so an operator reading only the summary still learns whether
+// Beta's two services settled.
+const stateEnv = (overrides = {}) => ({
+  ...env, INFRA_OPERATION: 'state', ENABLE_BETA_MUTATION: 'false',
+  GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-Infra/.github/workflows/runtime.yml@refs/heads/main', ...overrides,
+});
+
+function stateSurface() {
+  const calls = [];
+  const deployments = (purpose, rolloutState = 'COMPLETED') => [{ id: `ecs-svc/${purpose}`, status: 'PRIMARY',
+    rolloutState, createdAt: '2026-11-15T14:53:12.000Z', updatedAt: '2026-11-15T14:57:22.051Z',
+    runningCount: 1, desiredCount: 1 }];
+  return { calls, io: {
+    now: () => Date.parse('2026-11-15T15:00:00.000Z'),
+    async aws(args) {
+      calls.push([...args]);
+      if (args[0] === 'sts') return { Account: '650880818323' };
+      if (args[0] === 'cloudformation') {
+        const name = args[args.indexOf('--stack-name') + 1];
+        if (name === runtimeStack) {
+          return { Stacks: [{ StackName: runtimeStack, StackStatus: 'UPDATE_COMPLETE',
+            Parameters: [{ ParameterKey: 'BetaApiSizingProfile', ParameterValue: 's1' }] }] };
+        }
+        return { Stacks: [{ StackName: baseStack, StackStatus: 'UPDATE_COMPLETE' }] };
+      }
+      if (args[0] === 'ssm') {
+        const name = args[args.indexOf('--name') + 1];
+        if (name === '/anywear/beta/ecs_cluster_name') return { Parameter: { Name: name, Value: 'beta-anywear' } };
+        return { Parameter: { Name: name, Value: '[]' } };
+      }
+      if (args[0] === 'ecs' && args[1] === 'describe-services') {
+        return { services: ['api', 'worker'].map((purpose) => ({ serviceName: `beta-anywear-${purpose}`,
+          status: 'ACTIVE', taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/beta-anywear-${purpose}:7`,
+          runningCount: 1, desiredCount: 1,
+          deployments: purpose === 'worker' ? deployments(purpose, 'IN_PROGRESS') : deployments(purpose) })) };
+      }
+      if (args[0] === 'ecs' && args[1] === 'list-tasks') return { taskArns: [] };
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    },
+  } };
+}
+
+async function summaryFile() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'infra-state-summary-'));
+  return path.join(directory, 'summary.md');
+}
+
+test('state prints the ECS block and adds each service\'s verdict and counts to the summary line', async () => {
+  const summary = await summaryFile();
+  const surface = stateSurface();
+  const captured = await captureStreams(() => runOperation(stateEnv({ GITHUB_STEP_SUMMARY: summary }),
+    { createIo: async () => surface.io }));
+  const state = JSON.parse(captured.stdout.trim());
+  assert.equal(state.ecs.cluster, 'beta-anywear');
+  assert.deepEqual(state.ecs.services.map((row) => [row.service_name, row.verdict]),
+    [['beta-anywear-api', 'settled'], ['beta-anywear-worker', 'settling']]);
+  // The summary line states each verdict and its counts, and the read exits zero:
+  // a merely-settling service does not fail `state`.
+  const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^Beta state: AnyWearPlatformStack-beta=UPDATE_COMPLETE; AnyWearRuntimeStack-beta=UPDATE_COMPLETE;/);
+  assert.match(lines[0], /ecs beta-anywear-api=settled 1\/1; beta-anywear-worker=settling 1\/1$/);
+  assert.equal(surface.calls.some((args) => args[1] === 'wait'), false, 'state never waits');
+});
+
+test('an operation other than deploy-runtime never appends the owed-full line', async () => {
+  // `deploy-platform` changes a stack and then fails: it appends only the
+  // changed-but-unqualified line, because the owed-`full` line belongs to
+  // `deploy-runtime`'s qualification hop.
+  const summary = await summaryFile();
+  const io = {
+    async aws(args) {
+      if (args[0] === 'sts') return { Account: '650880818323' };
+      if (args[0] === 'ecr') return { imageDetails: [{ imageDigest, imageTags: [`service-artifacts-${serviceCommit}`] }] };
+      if (args[0] === 'cloudformation') {
+        const name = args[args.indexOf('--stack-name') + 1];
+        if (name === runtimeStack) throw stackAbsence(name);
+        return { Stacks: [{ StackName: baseStack, StackStatus: 'UPDATE_COMPLETE' }] };
+      }
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    },
+    markChanged(stack) { if (this.bindings) this.bindings.changedStacks.push(stack); },
+    async deploy(stack) { this.markChanged(stack); throw new Error('The Base deploy failed'); },
+  };
+  const captured = await captureStreams(() => assert.rejects(runOperation(
+    { ...env, INFRA_OPERATION: 'deploy-platform', GITHUB_STEP_SUMMARY: summary,
+      SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`, SERVICE_COMMIT: serviceCommit },
+    { createIo: async (_environment, bindings) => { io.bindings = bindings; return io; } }), /The Base deploy failed/));
+  assert.match(captured.stderr, /already changed AnyWearPlatformStack-beta before failing/);
+  const lines = (await readFile(summary, 'utf8')).trim().split('\n');
+  assert.equal(lines.length, 1, 'only the changed-but-unqualified line');
+  assert.equal(lines[0].includes('No qualification was dispatched'), false);
 });

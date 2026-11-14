@@ -500,8 +500,14 @@ export async function runOperation(env = process.env, {
     const state = await observeBetaState(io);
     process.stdout.write(`${JSON.stringify(state)}\n`);
     if (env.GITHUB_STEP_SUMMARY) {
+      // Issue #316: the summary line states the ECS steady state beside the stacks,
+      // so an operator reading only the summary still learns whether Beta's two
+      // services settled. A stopped Beta has no ECS block and adds no clause.
+      const ecs = state.ecs === undefined ? ''
+        : `; ecs ${state.ecs.services.map(service => `${service.service_name}=${service.verdict}`
+          + ` ${service.running_count ?? '?'}/${service.desired_count ?? '?'}`).join('; ')}`;
       await appendFile(env.GITHUB_STEP_SUMMARY,
-        `Beta state: ${state.stacks.map(stack => `${stack.stack_name}=${stack.status}`).join('; ')}\n`);
+        `Beta state: ${state.stacks.map(stack => `${stack.stack_name}=${stack.status}`).join('; ')}${ecs}\n`);
     }
     return;
   }
@@ -576,6 +582,19 @@ export async function runOperation(env = process.env, {
         await appendFile(env.GITHUB_STEP_SUMMARY,
           `Infra operation ${operation} already changed ${names} and did not complete: the run is failed and the change is unqualified. Follow the Beta runbook's decision procedure.\n`);
       }
+    }
+    // Issue #316: a `deploy-runtime` that changed the Runtime stack and then failed
+    // never reached `qualify-hook`, so this run dispatched no qualification. The
+    // incident's retry was a new manual dispatch, which produces only `smoke` — not
+    // the `full` the commit still owes — and nothing in the run said so. One line,
+    // with both remedies, in the job that already reports the landed change. No new
+    // job, input or environment variable: re-running all jobs of this run keeps
+    // `delivery_trigger=deploy`, and the converged change set executes nothing
+    // because the release is already live.
+    if (operation === 'deploy-runtime' && changedStacks.includes(runtimeStack) && env.GITHUB_STEP_SUMMARY) {
+      const commit = inputs.service_release?.serviceCommit ?? '<service commit>';
+      await appendFile(env.GITHUB_STEP_SUMMARY,
+        `No qualification was dispatched: this run changed ${runtimeStack} and did not complete, so Service commit ${commit} still owes a \`full\`. Produce it by re-running all jobs of this run (keeps delivery_trigger=deploy; the converged change set executes nothing and the hook dispatches \`full · deploy-qualify · ${commit}\`), or by dispatching AnyWear-E2E \`beta-qualification.yml\` with operation=full, trigger=release-qualify, expected_service_commit=${commit}, worker_slot_offset=0, dispatched_by=${env.GITHUB_SERVER_URL ?? 'https://github.com'}/${env.GITHUB_REPOSITORY ?? 'anywear-ai/AnyWear-Infra'}/actions/runs/${env.GITHUB_RUN_ID ?? '<run id>'}. A new manual deploy-runtime dispatch produces only \`smoke\`, which is not a qualification record.\n`);
     }
     throw error;
   }
