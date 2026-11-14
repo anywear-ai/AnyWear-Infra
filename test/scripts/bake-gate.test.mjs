@@ -13,6 +13,7 @@ import {
   failedGate,
   runBakeGate,
 } from '../../scripts/lib/bake-gate.mjs';
+import { ecsServiceObservation } from '../../scripts/lib/ecs-rollout.mjs';
 
 // The 300-second six-signal bake's contract tests (#162), moved from
 // `AnyWear-Service/infra/test/bake-gate.test.mjs` when #195 moved the Runtime stack
@@ -39,8 +40,25 @@ const QUEUE_URLS = Object.freeze({
 });
 const ALARM_NAMES = DEPLOYMENT_GATE_SIGNAL_NAMES.flatMap((name) => deploymentAlarmName(STAGE, name));
 const ECS_START = Date.UTC(2026, 9, 18, 0, 5, 0);
-
-const healthyService = () => ({ running_count: 1, desired_count: 1, deployment_count: 1, rollout_state: 'COMPLETED' });
+// Issue #316: a sample is the service observation the shared verdict reads, built
+// from the same `DescribeServices` rows `readEcs` keeps — one `PRIMARY`, `COMPLETED`
+// deployment created before the bake window, at its desired count.
+const OPENED_AT = new Date(ECS_START - 300_000).toISOString();
+// The deployment ids the deploy proof settled on, the bake's baseline.
+const DEPLOYMENT_IDS = Object.freeze({ api: 'ecs-svc/0691474722825612207', worker: 'ecs-svc/1164516558847022624' });
+// A sample is one `at` instant carrying both services' observations.
+const ecsSamples = () => Array.from({ length: 10 }, (_, index) => ({
+  at: ECS_START + index * 30_000,
+  api: healthyService('api'),
+  worker: healthyService('worker'),
+}));
+const healthyService = (purpose = 'api') => ecsServiceObservation({
+  serviceName: `${STAGE}-anywear-${purpose}`, status: 'ACTIVE',
+  taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/${STAGE}-anywear-${purpose}:7`,
+  runningCount: 1, desiredCount: 1,
+  deployments: [{ id: DEPLOYMENT_IDS[purpose], status: 'PRIMARY', rolloutState: 'COMPLETED', createdAt: OPENED_AT,
+    updatedAt: OPENED_AT, runningCount: 1, desiredCount: 1 }],
+});
 // The live GetQueueAttributes surface: only these three names are valid depth
 // attributes. The oldest-message age is a separate AWS/SQS CloudWatch metric.
 const idleQueue = () => ({
@@ -60,11 +78,10 @@ function baseObservations() {
     },
     p95: { seconds: [0.12] },
     ecs: {
-      samples: Array.from({ length: 10 }, (_, index) => ({
-        at: ECS_START + index * 30_000,
-        api: healthyService(),
-        worker: healthyService(),
-      })),
+      samples: ecsSamples(),
+      // The ids the deploy proof settled on. A test that omits this proves the
+      // no-baseline path (shape and rollout state only).
+      baselineDeploymentIds: { ...DEPLOYMENT_IDS },
     },
     sqs: {
       // One 300-second period per work queue: the whole-window read the gate
@@ -211,25 +228,67 @@ test('a missing TargetResponseTime period is insufficient', () => {
   assertFailedWith(evaluate(p95), 'alb_p95_latency', 'insufficient');
 });
 
+// Issue #316: a sample's deployment half — exactly one listed `COMPLETED`
+// deployment, and that `PRIMARY` id is a baseline id — is breaching with no
+// tolerance. A second deployment, a non-COMPLETED rollout and a foreign id are the
+// three shapes ECS can present, and each names the ids it saw beside the id the
+// deploy proof settled.
 test('an ECS rollout with two deployments or a non-COMPLETED rollout fails', () => {
   const two = baseObservations();
+  two.ecs.samples[5].api.deployments.push({ id: 'ecs-svc/concurrent', status: 'ACTIVE', rollout_state: 'COMPLETED',
+    created_at: OPENED_AT, updated_at: OPENED_AT, running_count: 1, desired_count: 1 });
   two.ecs.samples[5].api.deployment_count = 2;
-  assertFailedWith(evaluate(two), 'ecs_running_not_desired', 'breaching');
+  const twoGate = evaluate(two);
+  assertFailedWith(twoGate, 'ecs_running_not_desired', 'breaching');
+  assert.deepEqual(signalOf(twoGate, 'ecs_running_not_desired').value.unexpected_deployments
+    .map((row) => row.observed_deployment_ids), [[DEPLOYMENT_IDS.api, 'ecs-svc/concurrent']]);
   const inProgress = baseObservations();
+  inProgress.ecs.samples[0].worker.deployments[0].rollout_state = 'IN_PROGRESS';
   inProgress.ecs.samples[0].worker.rollout_state = 'IN_PROGRESS';
   assertFailedWith(evaluate(inProgress), 'ecs_running_not_desired', 'breaching');
   const failed = baseObservations();
+  failed.ecs.samples[3].api.deployments[0].rollout_state = 'FAILED';
   failed.ecs.samples[3].api.rollout_state = 'FAILED';
   assertFailedWith(evaluate(failed), 'ecs_running_not_desired', 'breaching');
 });
 
+test('a sample whose PRIMARY id is not the settled id is breaching and names both ids', () => {
+  const foreign = baseObservations();
+  foreign.ecs.samples[7].worker.deployments[0].id = 'ecs-svc/1164516558847022624x';
+  foreign.ecs.samples[7].worker.primary_deployment_id = 'ecs-svc/1164516558847022624x';
+  const gate = evaluate(foreign);
+  assertFailedWith(gate, 'ecs_running_not_desired', 'breaching');
+  const signal = signalOf(gate, 'ecs_running_not_desired');
+  assert.deepEqual(signal.value.baseline_deployment_ids, { ...DEPLOYMENT_IDS });
+  assert.deepEqual(signal.value.unexpected_deployments, [{
+    at: ECS_START + 7 * 30_000, service: `${STAGE}-anywear-worker`, condition: 'deployment-shape',
+    primary_deployment_id: 'ecs-svc/1164516558847022624x', baseline_deployment_id: DEPLOYMENT_IDS.worker,
+    rollout_state: 'COMPLETED', observed_deployment_ids: ['ecs-svc/1164516558847022624x'],
+  }]);
+  // The verdict rows state what every sample was judged as, so a passing bake shows
+  // that all ten samples carried the settled deployment.
+  assert.equal(signal.value.verdicts.length, 20);
+  assert.deepEqual(signal.value.verdicts[0], { at: ECS_START, service: `${STAGE}-anywear-api`,
+    verdict: 'settled', primary_deployment_id: DEPLOYMENT_IDS.api, rollout_state: 'COMPLETED' });
+  // Without a baseline the id comparison is not made; the shape and rollout state
+  // still are, which is the no-baseline contract `failedGate` relies on.
+  const noBaseline = baseObservations();
+  delete noBaseline.ecs.baselineDeploymentIds;
+  noBaseline.ecs.samples[7].worker.deployments[0].id = 'ecs-svc/other';
+  assert.equal(evaluate(noBaseline).result, 'passed');
+});
+
 test('a running/desired mismatch is tolerated below 120s and fails at 120s', () => {
+  // The count half is deliberately NOT judged through the shared verdict: this rule
+  // is the gate's own recorded tolerance, and it is unchanged by #316.
   const jitter = baseObservations();
   for (let index = 0; index < 3; index += 1) jitter.ecs.samples[index].api.running_count = 0; // 60s
   assert.equal(evaluate(jitter).result, 'passed');
+  assert.equal(signalOf(evaluate(jitter), 'ecs_running_not_desired').state, 'not-breaching');
   const mismatch = baseObservations();
   for (let index = 0; index < 5; index += 1) mismatch.ecs.samples[index].worker.running_count = 0; // 120s
   assertFailedWith(evaluate(mismatch), 'ecs_running_not_desired', 'breaching');
+  assert.equal(signalOf(evaluate(mismatch), 'ecs_running_not_desired').value.longest_gap_seconds, 120);
 });
 
 test('nine ECS samples and nine SQS samples are insufficient', () => {
@@ -523,15 +582,20 @@ function fixtureRunAws({ observations = baseObservations(), onMetric } = {}) {
         .map(([name, state]) => ({ AlarmName: name, StateValue: state })) });
     }
     if (args[0] === 'ecs') {
+      // The live `DescribeServices` row the runner keeps: the sample's own
+      // deployment rows, verbatim, in the AWS field names.
       const sample = observations.ecs.samples[observations.ecs.samples.length - 1];
-      return JSON.stringify({ services: [
-        { serviceName: `${STAGE}-anywear-api`, runningCount: sample.api.running_count,
-          desiredCount: sample.api.desired_count, deployments: Array.from({ length: sample.api.deployment_count },
-            () => ({ rolloutState: sample.api.rollout_state })) },
-        { serviceName: `${STAGE}-anywear-worker`, runningCount: sample.worker.running_count,
-          desiredCount: sample.worker.desired_count, deployments: Array.from({ length: sample.worker.deployment_count },
-            () => ({ rolloutState: sample.worker.rollout_state })) },
-      ] });
+      const service = (purpose) => ({
+        serviceName: `${STAGE}-anywear-${purpose}`, status: 'ACTIVE',
+        taskDefinition: `arn:aws:ecs:ap-east-1:650880818323:task-definition/${STAGE}-anywear-${purpose}:7`,
+        runningCount: sample[purpose].running_count,
+        desiredCount: sample[purpose].desired_count,
+        deployments: sample[purpose].deployments.map((row) => ({ id: row.id, status: row.status,
+          rolloutState: row.rollout_state, rolloutStateReason: row.rollout_state_reason,
+          createdAt: row.created_at, updatedAt: row.updated_at,
+          runningCount: row.running_count, desiredCount: row.desired_count })),
+      });
+      return JSON.stringify({ services: [service('api'), service('worker')] });
     }
     if (args[0] === 'sqs') {
       const url = args[args.indexOf('--queue-url') + 1];
@@ -561,6 +625,7 @@ test('the live runner reads all six signals from the injected AWS surface', asyn
     apiBaseUrl: 'https://d111111abcdef8.cloudfront.net', cluster: CLUSTER,
     queueUrls: QUEUE_URLS,
     logGroup: LOG_GROUP, serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST,
+    baselineDeploymentIds: { ...DEPLOYMENT_IDS },
     now: clock.now, sleep: clock.sleep,
     fetchImpl: async () => new Response('{"status":"ok"}', { status: 200 }),
     runAws: fixtureRunAws(),
@@ -570,6 +635,11 @@ test('the live runner reads all six signals from the injected AWS surface', asyn
   assert.equal(signalOf(gate, 'ecs_running_not_desired').reads[0].samples, 10);
   assert.equal(signalOf(gate, 'sqs_dlq_depth').reads[0].samples, 10);
   assert.equal(signalOf(gate, 'outbox_oldest_age').reads[0].samples, 5);
+  // The runner passes the proof's settled ids into the evaluation, and every sample
+  // kept the deployment rows it read.
+  assert.deepEqual(signalOf(gate, 'ecs_running_not_desired').value.baseline_deployment_ids, { ...DEPLOYMENT_IDS });
+  assert.deepEqual(signalOf(gate, 'ecs_running_not_desired').value.unexpected_deployments, []);
+  assert.equal(signalOf(gate, 'ecs_running_not_desired').value.verdicts.length, 20);
 });
 
 test('the live runner fails the gate on a seeded DLQ message and keeps the others healthy', async () => {

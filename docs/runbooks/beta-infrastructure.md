@@ -349,7 +349,7 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `deploy-billing` | Reconcile existing Billing in `us-east-1` |
 | `deploy-platform` | Deploy the persistent Platform stack from one reviewed Service artifact identity (`service_artifact_tag` + `service_commit`): the verify job reads the release and its tag ref over REST with a read-only token, requires the two Lambda bundles and the runtime policy to be present, uploaded and digest-valid (extras such as the retired legacy manifest are ignored) and downloads only those three; the deploy job proves the travelled bytes against those published digests before any credential and resolves the release tag, Service commit and ECR image digest. A Platform deploy requires the Runtime slice to be terminal when present (one writer) and reads its `ApiLoadBalancerDnsName` as the distribution origin. `deploy-runtime` sets this same origin parameter as a start's edge repair when the recorded value differs from its new load balancer, so `deploy-platform` is not a start step. The Environment deployment, the stack's events and the step log are the deployment's record |
 | `deploy-egress` / `delete-egress` | Create or delete only `AnyWearEgressStack-beta`, the disposable NAT/EIP/default-route/S3-endpoint edge. It imports the Platform VPC, NAT-placement subnet and private route-table ids from the Platform CloudFormation exports and creates only the 0.0.0.0/0 routes in those tables (no route table, no association). `delete-egress` refuses unless the Runtime stack is absent, so the stop order is Runtime then Egress. Include these inputs only for their own operation |
-| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service artifact identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed artifact's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-connect-timeout`, `reader-configuration-invalid`, `reader-secret-unavailable`, `reader-image-journal-invalid`, `reader-connection-failed`, `reader-credential-refused`, `reader-privilege-insufficient`, `reader-applied-journal-invalid`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different artifact identity executes as before. Once the Runtime stack is terminal it proves both ECS service identities and prints the `beta-anywear-ecs-identity` line, then repairs the Beta edge: it compares the Platform stack `AnyWearPlatformStack-beta`'s `ApiOriginDomainName` parameter with the same run's `ApiLoadBalancerDnsName`, sets that one parameter when they differ (before `/health` and the bake, and with no write when they are equal) and prints `api_origin_repointed <old> -> <new>`. It then reads `/health` and bakes the unchanged 300-second six-signal gate under the read-only runtime session, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
+| `deploy-runtime` / `stop-runtime` | Deploy or delete only `AnyWearRuntimeStack-beta`, the disposable release slice. `deploy-runtime` takes the sealed Service artifact identity, downloads and strictly validates `service-schema.json`, resolves the ECR image digest, synthesises the Runtime stack from this repository and asserts the recorded `roles-added` hash before mutation, and — **before synthesis and any stack mutation** — runs the [schema-boundary gate](#schema-boundary-gate-and-applied-evidence): one bounded read-only `schema-journal` task from the existing `verify` family under the existing verification-task role compares the sealed artifact's declaration with the live applied Drizzle journal. A refusal (`asset-invalid`, `reader-unavailable`, `reader-failed`, `reader-connect-timeout`, `reader-configuration-invalid`, `reader-secret-unavailable`, `reader-image-journal-invalid`, `reader-connection-failed`, `reader-credential-refused`, `reader-privilege-insufficient`, `reader-applied-journal-invalid`, `reader-evidence-unavailable`, `live-version-unproven`, `below-minimum-version`, `journal-entry-differs`, `applied-beyond-release`, `below-minimum-migration-count`) stops the run with the stack's `LastUpdatedTime`, template and parameters unchanged and no change set. A compatible boundary is logged, then the operation judges the change set: a converged set is deleted and nothing executes; when the live stack already carries the dispatched release, a reviewed `Add`/`Modify` delta with `Replacement: False` is admitted and executes, while any `Remove` or any replacement is deleted and refused with the named delta (issue #220); an absent stack stays Add-only, and a different artifact identity executes as before. Once the Runtime stack is terminal it proves both ECS service identities inside the recorded 600-second settle window and prints the `beta-anywear-ecs-identity` line with its `settle` facts — or writes the one `beta-anywear-ecs-steady-state-unmet` line and fails ([steady state, the settle window and the worker's contract](#steady-state-the-settle-window-and-the-workers-contract)) — then repairs the Beta edge: it compares the Platform stack `AnyWearPlatformStack-beta`'s `ApiOriginDomainName` parameter with the same run's `ApiLoadBalancerDnsName`, sets that one parameter when they differ (before `/health` and the bake, and with no write when they are equal) and prints `api_origin_repointed <old> -> <new>`. It then reads `/health` and bakes the unchanged 300-second six-signal gate under the read-only runtime session, compares the deployed template hash and the five parameters with the requested deployment, and prints the bake result and the `/health` floor. `stop-runtime` deletes only that stack; an absent stack is the accepted no-op. Both require `identity_phase=roles-added` |
 | `restore-release` | Reconcile only `AnyWearPlatformStack-beta`; require retired identity, protected retention and an existing terminal Runtime ("start first") before and after; never deploy, verify or recover the Runtime slice, and read no admission state |
 | ~~`deploy-workload`~~ | Historical: removed in #158 step C, renamed to Runtime in #166; since #195 the slice is deployed by this repository's `deploy-runtime` operation, not by AnyWear-Service |
 | `migrate` | Run the sealed Service artifact's forward migration on Beta as one one-shot task, with no application deployment. It takes the reviewed Service artifact identity (`service_artifact_tag` + `service_commit`), consumes exactly `service-schema.json` and deploys nothing: the verify job downloads that one asset, the deploy job proves and strictly loads it before any credential, and the operation resolves the immutable ECR tag to exactly one image and launches one `beta-anywear-migrate` task with the command `["node","dist/migrate.js"]` at `<ServiceRepositoryUri>@<digest>`. It reads Beta's stacks to refuse a stopped or racing environment by name, before the task is registered — `migrate requires the explicit Service release tag`, `migrate requires a terminal AnyWearPlatformStack-beta`, `migrate requires AnyWearEgressStack-beta; Beta is stopped, run its start sequence`, `migrate requires a terminal AnyWearEgressStack-beta` and `migrate requires a terminal AnyWearRuntimeStack-beta` — and needs no Runtime stack: an absent one proceeds. Beta's Egress and Runtime stacks are on by default, and this operation creates, starts or deletes neither. The order is publication (a precondition outside the launcher), then `migrate`, then a later `deploy-runtime` as a separate authorization. The wait is the ECS `TasksStopped` waiter's shipped 100 attempts of 6 seconds (about 600 seconds); a run that reaches that ceiling fails, leaves the task running and names the task it left. The run is complete when its log stream `beta-anywear-migrate/OneShot/<task-id>` under `/anywear/beta/one-shot` carries `Reset the legacy domain and work rows before applying migration 0027` with its per-table `rowsRemoved` counts and then `Database migrations completed` with `schemaVersion: 24`, and the stopped task reports exit code 0 with a container image digest equal to the resolved digest |
@@ -783,11 +783,124 @@ failed or partial run still ends visibly failed.
    two service names, `beta-anywear-api` and `beta-anywear-worker`, each entry
    names the service ARN, the task-definition ARN, the task definition's content
    hash (bare 64 hex), the image reference that task definition carried (ending
-   `@sha256:<64 hex>`) and the release image digest it was compared with. A
-   refused proof writes no line and fails the run.
+   `@sha256:<64 hex>`) and the release image digest it was compared with. Since
+   issue #316 the line also carries the `settle` block — `window_seconds`,
+   `poll_seconds`, `reads`, `first_read_at`, `settled_at` and `waited_seconds` — so
+   an operator can tell "settled on the first read" from "settled after twenty".
+   A refused proof writes the `beta-anywear-ecs-steady-state-unmet` line instead
+   (see [steady state, the settle window and the worker's contract](#steady-state-the-settle-window-and-the-workers-contract))
+   and fails the run.
 7. The deployed endpoints: `/health` (`service_commit`, `image_digest`,
    `minimum_client_version`, `status`) and `/readyz`, which is the bake gate's
    probe path.
+
+### Steady state, the settle window and the worker's contract
+
+The ECS identity proof waits inside a stated window instead of deciding from one
+read, and the number is a calibrated tolerance, not an SLA.
+
+`deploy-runtime` polls `ecs:DescribeServices` for `beta-anywear-api` and
+`beta-anywear-worker` every 15 seconds
+(`DEPLOYMENT_SETTLE_POLL_SECONDS`) and passes the steady-state check as soon as
+both services are settled. The window is **600 seconds**
+(`DEPLOYMENT_SETTLE_SECONDS`), measured from the unsettled deployment's own
+`createdAt`, and one proof takes at most **41 reads** — the read at
+`createdAt + 600 s` is inclusive. Both constants live in
+`scripts/lib/ecs-rollout.mjs`, the one module the proof, the bake and the
+read-only `state` entry all classify through.
+
+**Why 600 and not 300.** Two consecutive healthy worker rollouts were refused 23
+and 24 seconds before ECS wrote `COMPLETED` (Infra runs 43606836697 and
+43616072349), and they had settled 250.1 s and 246.9 s after their deployment was
+created; the one older reference point, the 2026-11-10 stack create, settled at
+about 174 s. A 300-second window would have passed both by roughly 50 s — 17 % of
+the budget — and the variable part of the settle is the first ~100 s (image pull,
+cold placement, task start), where one slow pull spends that margin and reproduces
+the defect. 600 s is about 2.4× the worst measured settle. The wider window costs
+only this: a rollout that neither fails nor completes refuses about five minutes
+later. A `FAILED` rollout is refused at any age, and the whole path stays inside
+the `deploy` job's 120-minute timeout.
+
+**The verdict has two halves, and the two readers judge different ones.** One
+`rolloutVerdict` reports `deployment` (exactly one listed deployment, that
+deployment `PRIMARY` and `COMPLETED`) and `count` (`runningCount` against
+`desiredCount`), and a composite verdict of `settled`, `settling`, `stalled`,
+`failed`, `foreign` or `unusable`.
+
+- The proof polls until the composite is `settled`, so it waits for **both**
+  halves. That is what absorbs the rolling replacement overlap, where ECS runs the
+  old and the new task together and `runningCount` is above `desiredCount` while
+  the deployment shape is unsettled. It refuses `failed` or `unusable` at any age,
+  tolerates `settling` until `createdAt + 600 s`, and refuses `stalled` after it.
+- The bake judges only the **deployment half**, per sample, against the deployment
+  ids the proof settled on: a sample that does not list exactly one `COMPLETED`
+  deployment, or whose `PRIMARY` id is not one of those ids, is `breaching` and
+  names both ids. It does **not** judge the count half through the verdict: that
+  half keeps the signal's existing `max_gap_seconds = 120` continuous rule, so a
+  single count dip under 120 seconds still passes.
+
+**The worker's steady state is one `COMPLETED` `PRIMARY` deployment at
+`runningCount == desiredCount`.** No container health check was added to the
+worker, and that is a recorded decision rather than an omission. The worker
+container definition carries no health check and its service has no target group,
+so `describe-tasks` reports the worker's `healthStatus` as `UNKNOWN`; the API's
+health check and target group probe `/readyz` and are unchanged. A worker
+health check would prove process presence only, which `runningCount` already
+states, and an `AWS::ECS::TaskDefinition` health check is a CloudFormation
+replacement — refused under an unchanged release and otherwise forcing a full
+identity re-record. The cost of the decision is that a crash loop and a slow start
+are indistinguishable *inside* the window; the window ends in a refusal that
+names the stopped tasks' `stoppedReason` and exit codes, the settled predicate
+checks `runningCount == desiredCount`, and the bake's
+`"Durable task outbox metrics"` floor judges worker behaviour afterwards.
+
+**A refusal is evidence.** One refused proof writes exactly one
+`beta-anywear-ecs-steady-state-unmet` line before it throws, and the thrown
+sentence repeats the decidable part — the condition, the service and every
+deployment id with its `rolloutState`. The line carries `read_at`,
+`window_seconds`, `poll_count`, the failing `service`, the `condition`, the
+`rollout_age_seconds`, every deployment of that service (`id`, `status`,
+`rollout_state`, `rollout_state_reason`, `created_at`, `updated_at`,
+`running_count`, `desired_count`, `pending_count`, `failed_tasks`), the last
+service `events`, the failing service's `tasks` (`last_status`, `health_status`,
+`desired_status`, `stopped_reason`, `stopped_at` and each container's `exit_code`
+and `reason`), and up to ten `read_sequence` rows naming what each read saw. Its
+bounds are part of the design: at most 10 events, at most 10 `RUNNING` plus 10
+`STOPPED` tasks, at most 41 reads, and 8 KiB serialized. The `condition` is one of
+`deployment-in-progress`, `rollout-stalled`, `rollout-failed`,
+`deployment-shape`, `running-not-desired`, `service-not-active`, `no-deployment`
+or `deployment-age-unknown`.
+
+**Reading the same facts without mutating.** `runtime.yml` `state` prints the
+stacks, the Runtime existence, the admission count/hash and now an `ecs` block:
+the cluster, and per service its `verdict`, `condition`, `PRIMARY` deployment id,
+`running_count`, `desired_count`, `rollout_age_seconds` and deployments, plus the
+same bounded task evidence when the service is not settled. It never waits and
+never fails on a merely-settling service, and the `Beta state:` summary line states
+each service's verdict and counts. A stopped Beta (no Runtime stack) prints no
+`ecs` block and reads no ECS.
+
+**A deploy that needed a retry still owes its qualification.** `qualify-hook` runs
+only after a successful `deploy`, so a `deploy-runtime` run that changed
+`AnyWearRuntimeStack-beta` and then failed dispatched no qualification: the
+Service commit still owes a `full`. The failed run's summary states that in one
+line, with both remedies:
+
+- **Re-run all jobs of the failed run.** This keeps `delivery_trigger=deploy`, so
+  the hook dispatches `full · deploy-qualify · <commit>`. Re-run **all** jobs, not
+  only the failed jobs: `qualify-hook` is `skipped` in the failed attempt, so a
+  failed-jobs-only re-run never runs it and produces no record. The retry needs no
+  change-set rename: the CDK deploy step deletes a previous attempt's same-named
+  change set before creating its own, and because the release is already live the
+  converged change set executes nothing.
+- **Dispatch `AnyWear-E2E` `beta-qualification.yml`** with `operation=full`,
+  `trigger=release-qualify`, `expected_service_commit=<commit>`,
+  `worker_slot_offset=0` and `dispatched_by=<run URL>`. This is the fallback when
+  a re-run is unavailable.
+
+A new manual `deploy-runtime` dispatch is **not** a remedy: it carries
+`delivery_trigger=manual`, and `scripts/qualification-dispatch.mjs` maps `manual`
+to `smoke`, which is not a qualification record.
 
 **The four controls and why they stay**
 
@@ -795,7 +908,7 @@ failed or partial run still ends visibly failed.
 | --- | --- | --- |
 | Deployment authorization and credential boundaries | `scripts/lib/authorization-preflight.mjs`, `scripts/lib/operation-boundaries.mjs`, `scripts/lib/operation-stacks.mjs`, `scripts/lib/one-writer.mjs` | A dispatch must not touch a stack, role, one-shot family or AWS action its operation was not reviewed for, and the job that may read the private Service release must never be the job that may change the account. |
 | Schema boundary gate | `scripts/lib/schema-gate.mjs`, `scripts/lib/schema-asset.mjs` | A deployment must not replace a runtime whose database the release image cannot read; the refusal names the release's expectation and the database's state before CloudFormation changes anything. |
-| 300-second six-signal bake | `scripts/lib/bake-gate.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. |
+| 300-second six-signal bake | `scripts/lib/bake-gate.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs`, the shared ECS verdict from `scripts/lib/ecs-rollout.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. Since #316 its `ecs_running_not_desired` signal judges the deployment half on every sample — one `COMPLETED` deployment whose `PRIMARY` id is one the deploy proof settled — while the running-count half stays on its own 120-second continuous tolerance. |
 | Pre-credential byte and identity check | `scripts/lib/release-inputs.mjs` + `scripts/prove-release-bytes.mjs` | The bytes about to be deployed must be the bytes the reviewed release published, and that must be true before an AWS credential exists. |
 
 **The deployed age alarms' calibration (issue #220)**

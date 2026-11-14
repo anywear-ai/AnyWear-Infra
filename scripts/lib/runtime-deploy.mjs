@@ -14,6 +14,11 @@ import { describeStack, runtimeExists, runtimeStack, terminalStackStatuses } fro
 import { synthStage } from './recovery-contract.mjs';
 import { readRuntimeDeployValues, readRuntimeStageContract, runtimeBakeQueueUrls, runtimeEcsClusterName } from './runtime-stage-inputs.mjs';
 import { runBakeGate } from './bake-gate.mjs';
+import {
+  boundedServiceEvents, DEPLOYMENT_READ_SEQUENCE_LIMIT, DEPLOYMENT_SETTLE_MAX_READS,
+  DEPLOYMENT_SETTLE_POLL_SECONDS, DEPLOYMENT_SETTLE_SECONDS, ecsServiceObservation, isRefusal,
+  observedAt, readServiceTasks, refusalEvidence, refusalLine, rolloutRefusalMessage, rolloutVerdict,
+} from './ecs-rollout.mjs';
 import { SELECTED_RELEASE_DIRECTORY } from './release-inputs.mjs';
 import { BASE_STACK } from './deployment-contract.mjs';
 import { runSchemaBoundaryGate } from './schema-gate.mjs';
@@ -31,9 +36,18 @@ export const RUNTIME_DEPLOY_PARAMETER_KEYS = Object.freeze([
 ]);
 const SIZING_PROFILES = Object.freeze(['s1', 's2-api']);
 const CHANGE_SET_NAME = /^[A-Za-z][-A-Za-z0-9]{0,127}$/;
-const SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
+// The two ECS services the Runtime stack runs. Exported because the read-only
+// `state` entry observes the same two, and a second copy of the list there would
+// be a silent way for the two surfaces to disagree (#316).
+export const RUNTIME_SERVICE_NAMES = Object.freeze(['beta-anywear-api', 'beta-anywear-worker']);
+const SERVICE_NAMES = RUNTIME_SERVICE_NAMES;
 // The deploy step log's event name for the ECS identity proof's verdict (#221).
 export const ECS_IDENTITY_EVENT = 'beta-anywear-ecs-identity';
+// Issue #316: the event name of the one structured line a refused steady-state
+// proof writes before it throws. A success writes the identity line above; a
+// refusal writes this one, so "no line" no longer means both "refused" and "never
+// reached".
+export const ECS_STEADY_STATE_EVENT = 'beta-anywear-ecs-steady-state-unmet';
 // Issue #254: the Base stack's API-origin parameter and the DNS-name guard the
 // parameter itself carries. A value outside this pattern never reaches a write.
 const API_ORIGIN_PARAMETER = 'ApiOriginDomainName';
@@ -334,42 +348,143 @@ export async function synthesizeRuntimeTemplate(env) {
   }
 }
 
-async function observeEcsIdentities(io, release, cluster) {
-  const response = await io.aws(['ecs', 'describe-services', '--cluster', cluster, '--services', ...SERVICE_NAMES]);
-  const services = response.services;
-  if (!Array.isArray(services) || services.length !== SERVICE_NAMES.length) {
-    throw new Error('The Runtime ECS services are not both deployed');
+/**
+ * Write the one refusal line and throw the one sentence a refused steady-state
+ * proof leaves behind (#316). The line carries the platform facts the separate
+ * read-only investigation had to assemble an hour after the two incidents; the
+ * sentence repeats only the decidable part. Both are step-log lines, not a record
+ * (#207, ADR-0030 §1).
+ *
+ * The task attribution is best effort: it needs `list-tasks` and `describe-tasks`,
+ * which this operation's runtime session already performs, but a failure there
+ * must not mask the refusal it was gathered for. An unreadable attribution leaves
+ * `tasks` empty; the condition, the deployments and the read times still ship.
+ */
+async function refuseEcsSteadyState(io, cluster, { serviceName, verdict, observation, rawService,
+  readAt, windowSeconds, pollCount, readSequence }) {
+  let tasks = [];
+  try {
+    tasks = await readServiceTasks((args) => io.aws(args), cluster, serviceName);
+  } catch {
+    tasks = [];
   }
+  const evidence = refusalEvidence({
+    serviceName, condition: verdict.condition, verdict, readAtMs: readAt, windowSeconds, pollCount,
+    deployments: observation.deployments, events: boundedServiceEvents(rawService), tasks, readSequence,
+  });
+  process.stdout.write(`${refusalLine(evidence)}\n`);
+  throw new Error(rolloutRefusalMessage({ serviceName, condition: verdict.condition,
+    deployments: evidence.deployments, readAtMs: readAt, ageSeconds: verdict.deployment.age_seconds }));
+}
+
+/**
+ * The ECS steady-state proof (#316). It polls `DescribeServices` for both Runtime
+ * services on the injected clock until the shared verdict reports `settled`, and it
+ * refuses as soon as a service is `failed`, `stalled`, `foreign` or `unusable`.
+ *
+ * The settle window is measured from the unsettled deployment's own `createdAt`, so
+ * a rollout that ECS is still writing is waited for instead of failed, and a
+ * rollout that never completes is refused at the same stated age. The proof waits
+ * on the composite verdict — the deployment half *and* the count half — which is
+ * what absorbs the rolling replacement overlap where ECS runs the old and the new
+ * task together; the bake judges only the deployment half afterwards.
+ *
+ * Reads are bounded by `DEPLOYMENT_SETTLE_MAX_READS`, so a poll that starts late in
+ * a deployment's life still ends; a mid-poll AWS error fails closed with the number
+ * of reads it had taken. The task-definition identity checks run only after the
+ * services settle, exactly as before: the window never covers image identity.
+ */
+async function observeEcsIdentities(io, release, cluster, {
+  windowSeconds = DEPLOYMENT_SETTLE_SECONDS, pollSeconds = DEPLOYMENT_SETTLE_POLL_SECONDS } = {}) {
+  const firstReadAt = io.now();
+  const readSequence = [];
+  let pollCount = 0;
+  let rows = new Map();
+  let observations = [];
+  let verdicts = [];
+  for (;;) {
+    const readAt = io.now();
+    pollCount += 1;
+    let response;
+    try {
+      response = await io.aws(['ecs', 'describe-services', '--cluster', cluster, '--services', ...SERVICE_NAMES]);
+    } catch (error) {
+      throw new Error(`The Runtime ECS steady-state read failed after ${pollCount} read${pollCount === 1 ? '' : 's'}: ${error?.message ?? 'unknown error'}`, { cause: error });
+    }
+    const services = response.services;
+    if (!Array.isArray(services) || services.length !== SERVICE_NAMES.length) {
+      throw new Error('The Runtime ECS services are not both deployed');
+    }
+    rows = new Map();
+    for (const service of services) {
+      if (SERVICE_NAMES.includes(service?.serviceName)) rows.set(service.serviceName, service);
+    }
+    for (const serviceName of SERVICE_NAMES) {
+      if (!rows.has(serviceName)) throw new Error(`The Runtime ECS ${serviceName} identity is missing`);
+    }
+    observations = SERVICE_NAMES.map((serviceName) => ecsServiceObservation(rows.get(serviceName)));
+    verdicts = observations.map((observation) => rolloutVerdict(observation, { nowMs: readAt, windowSeconds }));
+    const unsettled = verdicts.find((verdict) => verdict.verdict !== 'settled') ?? null;
+    readSequence.push({ read_at: observedAt(readAt), verdict: unsettled?.verdict ?? 'settled',
+      primary_deployment_id: unsettled?.deployment?.primary_deployment_id ?? null,
+      rollout_states: Object.fromEntries(verdicts.map((verdict) => [verdict.service_name, verdict.deployment.rollout_state])) });
+    while (readSequence.length > DEPLOYMENT_READ_SEQUENCE_LIMIT) readSequence.shift();
+    const refusal = verdicts.find(isRefusal);
+    if (refusal) {
+      await refuseEcsSteadyState(io, cluster, { serviceName: refusal.service_name, verdict: refusal,
+        observation: observations[verdicts.indexOf(refusal)], rawService: rows.get(refusal.service_name),
+        readAt, windowSeconds, pollCount, readSequence });
+    }
+    if (unsettled === null) break;
+    if (pollCount >= DEPLOYMENT_SETTLE_MAX_READS) {
+      // The window's last read is inclusive: a rollout still unsettled here has had
+      // all the time the recorded window allows, so the refusal names it stalled.
+      const stalled = { ...unsettled, verdict: 'stalled', condition: 'rollout-stalled',
+        deployment: { ...unsettled.deployment, condition: 'rollout-stalled' } };
+      await refuseEcsSteadyState(io, cluster, { serviceName: stalled.service_name, verdict: stalled,
+        observation: observations[verdicts.indexOf(unsettled)], rawService: rows.get(stalled.service_name),
+        readAt, windowSeconds, pollCount, readSequence });
+    }
+    await io.sleep(pollSeconds * 1000);
+  }
+
+  const settledAt = io.now();
   const observed = {};
-  for (const service of services) {
-    if (!SERVICE_NAMES.includes(service.serviceName) || service.status !== 'ACTIVE' || typeof service.taskDefinition !== 'string') {
-      throw new Error(`The Runtime ECS service ${service.serviceName} is not usable`);
-    }
-    if (!Number.isSafeInteger(service.runningCount) || service.runningCount !== service.desiredCount || service.runningCount < 1) {
-      throw new Error(`The Runtime ECS service ${service.serviceName} is not at its desired count`);
-    }
-    if (!Array.isArray(service.deployments) || service.deployments.length !== 1
-      || service.deployments[0].rolloutState !== 'COMPLETED') {
-      throw new Error(`The Runtime ECS service ${service.serviceName} has not completed its rollout`);
-    }
-    const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', service.taskDefinition])).taskDefinition;
+  for (const observation of observations) {
+    const service = rows.get(observation.service_name);
+    const definition = (await io.aws(['ecs', 'describe-task-definition', '--task-definition', observation.task_definition])).taskDefinition;
     const contentHash = taskDefinitionContentHash(definition);
     const image = stableTaskDefinition(definition).container.image;
     if (typeof image !== 'string' || !image.includes(release.imageDigest)) {
-      throw new Error(`The deploys task definition for ${service.serviceName} does not carry the deployed image digest`);
+      throw new Error(`The deploys task definition for ${observation.service_name} does not carry the deployed image digest`);
     }
-    observed[service.serviceName] = {
+    observed[observation.service_name] = {
       service_arn: service.serviceArn,
-      task_definition_arn: service.taskDefinition,
+      task_definition_arn: observation.task_definition,
       task_definition_sha256: contentHash,
       task_definition_image: image,
       release_image_digest: release.imageDigest,
     };
   }
-  for (const serviceName of SERVICE_NAMES) {
-    if (!observed[serviceName]) throw new Error(`The Runtime ECS ${serviceName} identity is missing`);
+  // The bake keys its samples by purpose (`api`/`worker`), so the settled deployment
+  // ids are published under those keys rather than by the service names; the purpose
+  // is the service name's own suffix.
+  const primaryDeploymentIds = {};
+  for (const verdict of verdicts) {
+    primaryDeploymentIds[verdict.service_name.split('-').at(-1)] = verdict.deployment.primary_deployment_id;
   }
-  return observed;
+  return {
+    services: observed,
+    primaryDeploymentIds: Object.freeze(primaryDeploymentIds),
+    settle: Object.freeze({
+      window_seconds: windowSeconds,
+      poll_seconds: pollSeconds,
+      reads: pollCount,
+      first_read_at: observedAt(firstReadAt),
+      settled_at: observedAt(settledAt),
+      waited_seconds: Math.max(0, Math.round((settledAt - firstReadAt) / 1000)),
+    }),
+  };
 }
 
 /**
@@ -646,13 +761,16 @@ export async function deployRuntime({ io, env, release,
 
   // The two ECS service identities stay a fail-closed proof of the deployed
   // release: an ACTIVE service at its desired count, one COMPLETED rollout, and a
-  // task definition carrying the deployed image digest. The proof returns what it
-  // observed; the line below prints that verdict as `beta-anywear-ecs-identity`,
-  // before the edge repair, `/health` and the bake, so a later refusal still shows
-  // the platform side was coherent while a failed proof leaves no line. It is a
-  // log line, not a record (#207).
+  // task definition carrying the deployed image digest. Issue #316: the rollout is
+  // now observed inside the recorded settle window instead of from one read, and a
+  // refusal writes `beta-anywear-ecs-steady-state-unmet` with the facts behind it
+  // before it throws. The success line prints the proof as
+  // `beta-anywear-ecs-identity` with the settle facts, before the edge repair,
+  // `/health` and the bake, so a later refusal still shows the platform side was
+  // coherent. Both are log lines, not records (#207).
   const ecs = await observeEcsIdentities(io, release, cluster);
-  process.stdout.write(JSON.stringify({ gate: ECS_IDENTITY_EVENT, result: 'proven', services: ecs }) + '\n');
+  process.stdout.write(JSON.stringify({ gate: ECS_IDENTITY_EVENT, result: 'proven', services: ecs.services,
+    settle: ecs.settle }) + '\n');
   // Issue #254: the Runtime stack is terminal and its identities are proven, so
   // the edge repair runs here — before the `/health` read and the bake use the
   // public endpoint. A matching parameter writes nothing; a stale one writes the
@@ -662,9 +780,13 @@ export async function deployRuntime({ io, env, release,
     ? (await io.aws(['ssm', 'get-parameter', '--name', '/anywear/beta/api_base_url'])).Parameter?.Value : undefined;
   if (typeof apiBaseUrl !== 'string' || !/^https:\/\//.test(apiBaseUrl)) throw new Error('The stage contract api_base_url is unavailable');
   const minimumClientVersion = await health(apiBaseUrl, release, { sleep: io.sleep });
+  // Issue #316: the bake inherits the deployment ids the proof settled on, so a
+  // sample can only pass on this run's own deployment. The count half keeps its own
+  // `max_gap_seconds` rule inside `evaluateBake`; it is not judged here.
   const gate = await bake({ stage: 'beta', stack: RUNTIME_STACK, apiBaseUrl, cluster,
     queueUrls, logGroup: '/anywear/beta/worker',
     serviceSha: release.serviceCommit, imageDigest: release.imageDigest,
+    baselineDeploymentIds: ecs.primaryDeploymentIds,
     now: io.now, sleep: io.sleep, fetchImpl: fetch, runAws: await io.runtimeAwsRunner() });
   if (gate.result !== 'passed') {
     const failures = gate.signals.filter((signal) => signal.state !== 'not-breaching')

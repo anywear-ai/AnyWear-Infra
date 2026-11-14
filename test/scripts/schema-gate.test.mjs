@@ -906,3 +906,57 @@ test('the Beta runbook lists every boundary reason and the reader rule names all
   assert.match(paragraph, /At most two one-shot launches/);
   assert.match(paragraph, /600 seconds/);
 });
+
+// Issue #316: the settle window's value and its measured basis ship together. The
+// subsection is a real `###` heading (the runbook's two links resolve to its
+// anchor), so it is found as a heading and runs to the next heading or bold
+// paragraph; the numbers it must carry are the ones the analysis measured.
+test('the Beta runbook states the settle window, its measured basis and the retry qualification', () => {
+  const markdown = readFileSync(new URL('../../docs/runbooks/beta-infrastructure.md', import.meta.url), 'utf8');
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((line) => line.startsWith('### Steady state, the settle window and the worker'));
+  assert.ok(start >= 0, 'the steady-state subsection heading');
+  // The subsection runs to the next heading of any level, or to the next bold
+  // paragraph the section follows it with.
+  let end = start + 1;
+  while (end < lines.length && !lines[end].startsWith('## ') && !lines[end].startsWith('### ')
+    && !lines[end].startsWith('**The four controls')) end += 1;
+  const section = lines.slice(start, end).join('\n');
+  // The value, where it lives, and the poll and read bounds that follow from it.
+  assert.match(section, /600 seconds/);
+  assert.match(section, /`DEPLOYMENT_SETTLE_SECONDS`/);
+  assert.match(section, /`scripts\/lib\/ecs-rollout\.mjs`/);
+  assert.match(section, /every 15 seconds/);
+  assert.match(section, /at most \*\*41 reads\*\*/);
+  // The measured basis: both incidents' settles and the older reference point, and
+  // why 300 seconds would have been too little.
+  assert.match(section, /250\.1 s/);
+  assert.match(section, /246\.9 s/);
+  assert.match(section, /about 174 s/);
+  assert.match(section, /roughly 50 s/);
+  assert.match(section, /not an SLA/);
+  // The two halves and the worker's recorded contract. The health-check sentence is
+  // matched across whatever line wrapping the paragraph happens to have.
+  assert.match(section, /deployment half/);
+  assert.match(section, /max_gap_seconds = 120/);
+  assert.match(section, /No container health check was added to the\s+worker/);
+  // Both links into this subsection resolve to the heading's GitHub anchor.
+  const anchor = lines[start].replace(/^#+\s+/, '').toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+  assert.equal(anchor, 'steady-state-the-settle-window-and-the-workers-contract');
+  const links = markdown.match(/\(#steady-state-the-settle-window-and-the-workers-contract\)/g) ?? [];
+  assert.equal(links.length, 2, 'the operation row and "What to read, in order" link here');
+  // The refusal line's fields, its caps and the condition vocabulary.
+  assert.match(section, /beta-anywear-ecs-steady-state-unmet/);
+  assert.match(section, /at most 10 events/);
+  assert.match(section, /8 KiB/);
+  for (const condition of ['deployment-in-progress', 'rollout-stalled', 'rollout-failed', 'deployment-shape',
+    'running-not-desired', 'service-not-active', 'no-deployment', 'deployment-age-unknown']) {
+    assert.ok(section.includes(`\`${condition}\``), `the condition vocabulary names ${condition}`);
+  }
+  // The retry decision: both remedies and the fact that a manual dispatch is not one.
+  assert.match(section, /Re-run \*\*all\*\* jobs, not/);
+  assert.match(section, /release-qualify/);
+  assert.match(section, /expected_service_commit/);
+  assert.match(section, /`smoke`, which is not a qualification record/);
+  assert.match(section, /deletes a previous attempt's same-named\n  change set/);
+});

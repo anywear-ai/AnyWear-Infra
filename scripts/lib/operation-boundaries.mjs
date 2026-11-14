@@ -119,7 +119,14 @@ export function operationReads(env) {
   const operation = env?.INFRA_OPERATION;
   return Object.keys(reads).filter((pair) => !(pair in readOperations) || readOperations[pair].includes(operation));
 }
-export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter'];
+// Issue #316: the read-only `state` entry reads the same ECS steady-state facts the
+// `deploy-runtime` proof does — the two services' deployments, and the bounded task
+// attribution for a service that is not settled. All three actions are already held
+// by `beta-infra-runtime-role` (`lib/beta-role-grants.ts`), so this adds a read to
+// the operation's reviewed session, not an IAM grant. `state` performs no `ecs wait`,
+// registers no task, runs none and writes nothing.
+export const stateReads = ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'cloudformation/get-template', 'ssm/get-parameter',
+  'ecs/describe-services', 'ecs/list-tasks', 'ecs/describe-tasks'];
 // One frozen one-shot role allow-list per operation. Each entry is exactly the
 // set of one-shot task families the operation's own session may invoke, so an
 // operation cannot touch a family it was not reviewed for. Every operation in
