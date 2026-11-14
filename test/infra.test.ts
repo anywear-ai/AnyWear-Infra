@@ -1404,15 +1404,19 @@ describe('Explicit infrastructure identity cutover', () => {
       'Fn::Join': ['', [{ 'Fn::GetAtt': [bucketId, 'Arn'] }, `/${prefix}`]],
     });
     // Issue #217: the versioned cleanup operation's `cleanupTesterRecords` deletes
-    // each captured user's objects under the two prefixes and lists only those
-    // two prefixes. The statements stay split: delete on the object ARNs, list on
-    // the bucket ARN under the `s3:prefix` condition.
+    // each captured user's objects under the four cleaned prefixes and lists only
+    // those prefixes. Issue #311 adds the VTO result objects under
+    // `outfit-generations/<sub>/` and the VTO staging objects under
+    // `task-attempts/vto/<vto_id>/`. The statements stay split: delete on the
+    // object ARNs, list on the bucket ARN under the `s3:prefix` condition.
     const s3Statements = statements.filter((statement: any) => JSON.stringify(statement.Action).includes('"s3:'));
     expect(s3Statements).toEqual([
       { Action: 's3:DeleteObject', Effect: 'Allow',
-        Resource: [objectArn('wearable-items/*'), objectArn('base-photos/*')] },
+        Resource: [objectArn('wearable-items/*'), objectArn('base-photos/*'),
+          objectArn('outfit-generations/*'), objectArn('task-attempts/vto/*')] },
       { Action: 's3:ListBucket', Effect: 'Allow', Resource: { 'Fn::GetAtt': [bucketId, 'Arn'] },
-        Condition: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*'] } } },
+        Condition: { StringLike: { 's3:prefix': ['wearable-items/*', 'base-photos/*',
+          'outfit-generations/*', 'task-attempts/vto/*'] } } },
     ]);
     // The pre-#217 grants are retained ahead of the two S3 statements: the
     // database-secret read and the two-dead-letter-queue statement.

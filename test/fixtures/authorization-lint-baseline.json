@@ -110,12 +110,22 @@
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/wearable-items/*",
-      "reason": "Issue #217: the Beta tester-cleanup task role deletes a captured user's `wearable-items/<sub>/` objects before their rows are removed. The wildcard is the per-user object key under that fixed prefix; the bucket ARN is the CDK GetAtt of the retained Base-owned wardrobe bucket, and the role's only other S3 statement is the matching `base-photos/` delete plus the two-prefix ListBucket. No other bucket or prefix is granted."
+      "reason": "Issue #217: the Beta tester-cleanup task role deletes a captured user's `wearable-items/<sub>/` objects before their rows are removed. The wildcard is the per-user object key under that fixed prefix; the bucket ARN is the CDK GetAtt of the retained Base-owned wardrobe bucket, and the role's only other S3 statement is the matching delete on `base-photos/`, `outfit-generations/` and `task-attempts/vto/` plus the four-prefix ListBucket (#311). No other bucket or prefix is granted."
     },
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/base-photos/*",
-      "reason": "Issue #217: the same Beta tester-cleanup task role deletes a captured user's `base-photos/<sub>/` objects. The wildcard is the per-user object key under that fixed prefix and the bucket ARN is the same retained Base-owned wardrobe bucket GetAtt, so the delete scope is exactly the two per-user prefixes the cleanup operation reads from `S3_BUCKET_NAME`."
+      "reason": "Issue #217: the same Beta tester-cleanup task role deletes a captured user's `base-photos/<sub>/` objects. The wildcard is the per-user object key under that fixed prefix and the bucket ARN is the same retained Base-owned wardrobe bucket GetAtt, so the delete scope is exactly the four cleaned prefixes the `S3_BUCKET_NAME` wardrobe bucket holds (#311 adds `outfit-generations/` and `task-attempts/vto/`)."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/outfit-generations/*",
+      "reason": "Issue #311: the same Beta tester-cleanup task role deletes the run's VTO result objects under `outfit-generations/<sub>/`. The wildcard is the per-user object key under that fixed prefix; the bucket ARN is the CDK GetAtt of the same retained Base-owned wardrobe bucket, and the four-prefix ListBucket condition admits listings only under the four cleaned prefixes. No other bucket or prefix is granted."
+    },
+    {
+      "stack": "AnyWearPlatformStack-beta",
+      "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/task-attempts/vto/*",
+      "reason": "Issue #311: the same Beta tester-cleanup task role deletes the run's VTO staging objects under `task-attempts/vto/<vto_id>/`; the wildcard is the object key under that fixed prefix, where `vto_id` is the run's exact staging identifier. The bucket ARN is the same retained Base-owned wardrobe bucket GetAtt, and the role grants no other bucket, action or prefix."
     },
     {
       "stack": "AnyWearPlatformStack-beta",
