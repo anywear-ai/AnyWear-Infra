@@ -794,7 +794,7 @@ failed or partial run still ends visibly failed.
    `minimum_client_version`, `status`) and `/readyz`, which is the bake gate's
    probe path.
 
-**Steady state, the settle window and the worker's contract**
+### Steady state, the settle window and the worker's contract
 
 The ECS identity proof waits inside a stated window instead of deciding from one
 read, and the number is a calibrated tolerance, not an SLA.

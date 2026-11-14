@@ -908,16 +908,19 @@ test('the Beta runbook lists every boundary reason and the reader rule names all
 });
 
 // Issue #316: the settle window's value and its measured basis ship together. The
-// subsection is found by its heading, so the assertion does not move with the
-// section's length; the numbers it must carry are the ones the analysis measured.
+// subsection is a real `###` heading (the runbook's two links resolve to its
+// anchor), so it is found as a heading and runs to the next heading or bold
+// paragraph; the numbers it must carry are the ones the analysis measured.
 test('the Beta runbook states the settle window, its measured basis and the retry qualification', () => {
   const markdown = readFileSync(new URL('../../docs/runbooks/beta-infrastructure.md', import.meta.url), 'utf8');
   const lines = markdown.split('\n');
-  const start = lines.findIndex((line) => line.includes('**Steady state, the settle window and the worker'));
-  assert.ok(start >= 0, 'the steady-state subsection');
-  // The subsection runs to the next bold section heading.
+  const start = lines.findIndex((line) => line.startsWith('### Steady state, the settle window and the worker'));
+  assert.ok(start >= 0, 'the steady-state subsection heading');
+  // The subsection runs to the next heading of any level, or to the next bold
+  // paragraph the section follows it with.
   let end = start + 1;
-  while (end < lines.length && !lines[end].startsWith('**The four controls')) end += 1;
+  while (end < lines.length && !lines[end].startsWith('## ') && !lines[end].startsWith('### ')
+    && !lines[end].startsWith('**The four controls')) end += 1;
   const section = lines.slice(start, end).join('\n');
   // The value, where it lives, and the poll and read bounds that follow from it.
   assert.match(section, /600 seconds/);
@@ -932,10 +935,16 @@ test('the Beta runbook states the settle window, its measured basis and the retr
   assert.match(section, /about 174 s/);
   assert.match(section, /roughly 50 s/);
   assert.match(section, /not an SLA/);
-  // The two halves and the worker's recorded contract.
+  // The two halves and the worker's recorded contract. The health-check sentence is
+  // matched across whatever line wrapping the paragraph happens to have.
   assert.match(section, /deployment half/);
   assert.match(section, /max_gap_seconds = 120/);
-  assert.match(section, /No container health check was added to the\nworker/);
+  assert.match(section, /No container health check was added to the\s+worker/);
+  // Both links into this subsection resolve to the heading's GitHub anchor.
+  const anchor = lines[start].replace(/^#+\s+/, '').toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+  assert.equal(anchor, 'steady-state-the-settle-window-and-the-workers-contract');
+  const links = markdown.match(/\(#steady-state-the-settle-window-and-the-workers-contract\)/g) ?? [];
+  assert.equal(links.length, 2, 'the operation row and "What to read, in order" link here');
   // The refusal line's fields, its caps and the condition vocabulary.
   assert.match(section, /beta-anywear-ecs-steady-state-unmet/);
   assert.match(section, /at most 10 events/);

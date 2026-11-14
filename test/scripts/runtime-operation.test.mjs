@@ -427,7 +427,7 @@ test('a failed migrate launch still names the task it started', async () => {
   const surface = migrateOneShotSurface({ failing: true });
   const io = await surface.io();
   const captured = await captureStreams(() => assert.rejects(io.oneShot('migrate', revision),
-    /^Error: One-shot execution failed: preserve task resources and inspect redacted run evidence$|^Error: One-shot execution failed; preserve task resources and inspect redacted run evidence$/));
+    /^Error: One-shot execution failed; preserve task resources and inspect redacted run evidence$/));
   // The identity the script printed before it waited reaches the step log.
   assert.equal(captured.stdout.split('Task ARN:').length - 1, 1);
   assert.match(captured.stdout, new RegExp(`Task ARN: ${migrateTaskArn}`));
