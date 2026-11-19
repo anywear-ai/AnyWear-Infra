@@ -317,7 +317,7 @@ the time it appears. The dispatch calls the workflow-dispatch REST endpoint with
 `return_run_details: true` through `gh api` (`gh workflow run` does not expose the
 flag) and prints the created run's URL from the response. When the response carries
 a positive `workflow_run_id`, the hook reads
-`repos/git-malu/AnyWear-E2E/actions/runs/<id>` once and accepts the run when the
+`repos/anywear-ai/AnyWear-E2E/actions/runs/<id>` once and accepts the run when the
 returned `id` equals that id; it does not read `display_title`, so a run whose
 title has not propagated yet is not a failure. Only when the response carries no
 run id does the hook poll the target's active runs for this run's URL in their
@@ -474,7 +474,7 @@ change set.
 A dispatch uses explicit inputs, for example:
 
 ```sh
-gh workflow run mutate.yml --repo git-malu/AnyWear-Infra --ref main \
+gh workflow run mutate.yml --repo anywear-ai/AnyWear-Infra --ref main \
   -f operation=deploy-platform \
   -f service_artifact_tag="$SERVICE_ARTIFACT_TAG" -f service_commit="$SERVICE_COMMIT"
 ```
@@ -1006,7 +1006,7 @@ task-runner failure is not task cessation. Evidence for that inspection is the E
 task/definition and CloudWatch logs, not a record.
 
 **Historical exception.** AnyWear-E2E's
-[`scripts/beta-cleanup-diagnostic.mjs`](https://github.com/git-malu/AnyWear-E2E/blob/main/scripts/beta-cleanup-diagnostic.mjs)
+[`scripts/beta-cleanup-diagnostic.mjs`](https://github.com/anywear-ai/AnyWear-E2E/blob/main/scripts/beta-cleanup-diagnostic.mjs)
 replays one pinned historical run's artifacts (Infra run `38899879395`, artifacts
 `infra-deployment-38899879395-1` and `infra-operation-38899879395-1`). It reads no
 new run, it is frozen, and it is the single labelled exception to this retirement.

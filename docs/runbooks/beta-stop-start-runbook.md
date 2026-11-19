@@ -9,10 +9,10 @@ This procedure is the **extended-idle** case, not Beta's normal state. Beta norm
 ## Stop (~8 min)
 
 ```sh
-gh workflow run mutate.yml -R git-malu/AnyWear-Infra --ref main \
+gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main \
   -f operation=stop-runtime -f identity_phase=roles-added
 # wait for green, then
-gh workflow run mutate.yml -R git-malu/AnyWear-Infra --ref main -f operation=delete-egress
+gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main -f operation=delete-egress
 ```
 
 ## Start (order matters)
@@ -27,12 +27,12 @@ SERVICE_ARTIFACT_TAG="service-artifacts-<commit>"
 SERVICE_COMMIT="<commit>"
 
 # 1. egress, reusing the retained EIP
-gh workflow run mutate.yml -R git-malu/AnyWear-Infra --ref main \
+gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main \
   -f operation=deploy-egress -f nat_eip_allocation_id="$(aws ec2 describe-addresses \
       --region ap-east-1 --query 'Addresses[0].AllocationId' --output text)"
 
 # 2. runtime — creates the stack, repoints the edge, bakes for 5 minutes, ends green
-gh workflow run mutate.yml -R git-malu/AnyWear-Infra --ref main \
+gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main \
   -f operation=deploy-runtime -f identity_phase=roles-added \
   -f service_artifact_tag="$SERVICE_ARTIFACT_TAG" -f service_commit="$SERVICE_COMMIT"
 ```
@@ -72,8 +72,8 @@ accumulates and nothing is charged — it is dashboard noise only. Silence it if
 lasts more than a day:
 
 ```sh
-gh workflow disable reconcile-schedule.yml -R git-malu/AnyWear-E2E   # after stopping
-gh workflow enable  reconcile-schedule.yml -R git-malu/AnyWear-E2E   # after a green reconcile
+gh workflow disable reconcile-schedule.yml -R anywear-ai/AnyWear-E2E   # after stopping
+gh workflow enable  reconcile-schedule.yml -R anywear-ai/AnyWear-E2E   # after a green reconcile
 ```
 
 ## Check
@@ -97,5 +97,5 @@ dispatching `deploy-runtime` again — it sets the parameter and re-reads `/heal
   failure of the start.
 - The EIP must survive the stop; without it the next start gets a new outbound address.
 
-Stacks, gates and evidence: [Beta infrastructure runbook](https://github.com/git-malu/AnyWear-Infra/blob/main/docs/runbooks/beta-infrastructure.md).
-Costs: [Beta cost controls](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/finOps/beta-cost-controls.md).
+Stacks, gates and evidence: [Beta infrastructure runbook](https://github.com/anywear-ai/AnyWear-Infra/blob/main/docs/runbooks/beta-infrastructure.md).
+Costs: [Beta cost controls](https://github.com/anywear-ai/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/finOps/beta-cost-controls.md).
