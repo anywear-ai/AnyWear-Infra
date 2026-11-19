@@ -107,7 +107,7 @@ Linux network namespace; the fixed environment must preserve strict clean source
 A direct invocation uses the same reviewed inputs through the workflow:
 
 ```sh
-gh workflow run mutate.yml --repo git-malu/AnyWear-Infra \
+gh workflow run mutate.yml --repo anywear-ai/AnyWear-Infra \
   -f operation=deploy-platform \
   -f service_artifact_tag="$SERVICE_ARTIFACT_TAG" -f service_commit="$SERVICE_COMMIT"
 ```

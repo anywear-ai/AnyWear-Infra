@@ -9,7 +9,7 @@ Infra the sole operational Beta deployment queue. AnyWear-Service remains the
 application, migration, verification and immutable artifact publisher; source
 delivery alone does not establish AWS deployment or runtime acceptance.
 
-The accepted [ownership ADR](https://github.com/git-malu/AnyWear-Meta/blob/main/architecture/ADR/0021-shared-infrastructure-repository.md)
+The accepted [ownership ADR](https://github.com/anywear-ai/AnyWear-Meta/blob/main/architecture/ADR/0021-shared-infrastructure-repository.md)
 assigns shared infrastructure to Infra, immutable application artifacts to Service,
 independent web publishing to Client, and authenticated system qualification to E2E.
 
