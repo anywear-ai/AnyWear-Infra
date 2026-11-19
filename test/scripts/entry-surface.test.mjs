@@ -30,7 +30,7 @@ const credentialJobs = workflow => Object.entries(workflow.jobs ?? {})
 
 const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', 'deploy-platform',
   'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-  'admission-status', 'add-testers', 'set-testers']);
+  'admission-status', 'add-testers', 'set-testers', 'rearm-object-deletion']);
 
 test('the workflow directory is exactly the three Beta entries plus the callable', async () => {
   // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,
@@ -140,6 +140,25 @@ test('mutate.yml keeps one preflight → verify → deploy → qualify-hook chai
   assert.match(natEipInput.description, /eipalloc-/);
   assert.equal(Object.hasOwn(natEipInput, 'pattern'), false);
   assert.equal(mutate.env.NAT_EIP_ALLOCATION_ID, '${{ inputs.nat_eip_allocation_id }}');
+  // Issue #321: the abandoned-manifest re-arm carries exactly two dispatch inputs.
+  // They are optional strings whose per-operation scope is enforced in the
+  // credential-free preflight, exactly like the tester payload and the EIP
+  // allocation above; the workflow itself admits them on every operation.
+  const manifestIdInput = mutate.on.workflow_dispatch.inputs.object_deletion_manifest_id;
+  assert.equal(manifestIdInput.type, 'string');
+  assert.equal(manifestIdInput.default, '');
+  assert.match(manifestIdInput.description, /rearm-object-deletion/);
+  assert.match(manifestIdInput.description, /empty on every other operation/);
+  assert.equal(Object.hasOwn(manifestIdInput, 'pattern'), false);
+  const expectedGenerationInput = mutate.on.workflow_dispatch.inputs.object_deletion_expected_generation;
+  assert.equal(expectedGenerationInput.type, 'string');
+  assert.equal(expectedGenerationInput.default, '');
+  assert.match(expectedGenerationInput.description, /rearm-object-deletion/);
+  assert.match(expectedGenerationInput.description, /positive integer/);
+  assert.equal(Object.hasOwn(expectedGenerationInput, 'pattern'), false);
+  assert.equal(mutate.env.OBJECT_DELETION_MANIFEST_ID, '${{ inputs.object_deletion_manifest_id }}');
+  assert.equal(mutate.env.OBJECT_DELETION_EXPECTED_GENERATION, '${{ inputs.object_deletion_expected_generation }}');
+  assert.equal(mutate.on.workflow_dispatch.inputs.operation.options.includes('rearm-object-deletion'), true);
   // #158 step C: the retired Service release-slice deploy chain is not an Infra
   // operation. No operation, input or step may reintroduce it here.
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.options.includes('deploy-workload'), false);

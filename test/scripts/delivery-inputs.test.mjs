@@ -66,7 +66,7 @@ test('deploy-runtime requires a run URL for deploy and none for manual', () => {
   assert.throws(() => validateDeliveryInput(env({ DELIVERY_TRIGGER: '' })), /requires an explicit delivery trigger/);
 });
 
-test('the other eleven operations refuse a delivery trigger and a dispatching run', () => {
+test('the other twelve operations refuse a delivery trigger and a dispatching run', () => {
   const others = mutateOperations.filter(operation => operation !== 'deploy-runtime');
   assert.equal(others.length, 11);
   for (const operation of others) {

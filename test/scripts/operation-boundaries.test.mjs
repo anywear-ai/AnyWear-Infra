@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workflowOperations, operationFamilies, operationBoundary, operationRoles, families, assertOneShotAllowed,
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
-  stateReads, verifyActions } from '../../scripts/lib/operation-boundaries.mjs';
+  stateReads, verifyActions, lifecycleActions } from '../../scripts/lib/operation-boundaries.mjs';
+import { REARM_COMMAND } from '../../scripts/lib/object-deletion-rearm.mjs';
 import { SIMULATE_ACTIONS } from '../../scripts/lib/authorization-preflight.mjs';
 import { apiOriginUpdateArguments } from '../../scripts/lib/runtime-deploy.mjs';
 
@@ -27,7 +28,7 @@ test('the workflow map and family derivation cover every operation', () => {
   // `deploy-billing` remains.
   assert.deepEqual(workflowOperations['.github/workflows/mutate.yml'], ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-    'admission-status', 'add-testers', 'set-testers']);
+    'admission-status', 'add-testers', 'set-testers', 'rearm-object-deletion']);
   assert.ok(!workflowOperations['.github/workflows/mutate.yml'].includes('deploy-workload'));
   for (const operation of Object.values(workflowOperations).flat()) {
     const boundary = operationBoundary(env(operation));
@@ -94,6 +95,71 @@ test('one-shot guards admit only the reviewed role/action pairs', () => {
     assert.throws(() => assertOneShotAllowed(env('set-testers'), 'lifecycle', action), /forbidden/, action);
   }
   assert.throws(() => assertOneShotAllowed(env('admission-status'), 'lifecycle', 'set-testers', '[]'), /forbidden/);
+});
+
+// Issue #321: the abandoned-manifest re-arm is one operator repair on the existing
+// lifecycle task role. Its operation family, role allow-list, single lifecycle
+// action, exact composed payload and exact registration command are pinned here;
+// every other operation refuses the action, the payload and the command.
+test('the re-arm operation is admitted only as one fenced lifecycle one-shot', () => {
+  // The re-arm has `migrate`'s shape (one-shot runtime data operation from the
+  // immutable release image under an existing task role), so it reuses the schema
+  // family rather than introducing a fifth operation family.
+  assert.equal(operationFamilies['rearm-object-deletion'], 'beta-schema');
+  assert.equal(operationFamilies['rearm-object-deletion'], operationFamilies.migrate);
+  assert.deepEqual([...new Set(Object.values(operationFamilies))].sort(),
+    ['beta-admission', 'beta-deploy', 'beta-observe', 'beta-schema']);
+  assert.deepEqual(operationRoles['rearm-object-deletion'], ['lifecycle']);
+  assert.deepEqual(families(env('rearm-object-deletion'), 'operation'), ['lifecycle']);
+  assert.deepEqual(lifecycleActions('rearm-object-deletion'), ['rearm-object-deletion']);
+  for (const other of ['deploy-platform', 'deploy-runtime', 'migrate', 'admission-status', 'add-testers', 'set-testers']) {
+    assert.equal(lifecycleActions(other).includes('rearm-object-deletion'), false, other);
+  }
+  const manifestId = '5f0c1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b';
+  const rearmEnv = (overrides = {}) => env('rearm-object-deletion', {
+    OBJECT_DELETION_MANIFEST_ID: manifestId, OBJECT_DELETION_EXPECTED_GENERATION: '7', ...overrides });
+  const payload = `{"expected_generation":7,"manifest_id":"${manifestId}"}`;
+  assertOneShotAllowed(rearmEnv(), 'lifecycle', 'rearm-object-deletion', payload);
+  // The action belongs only to the re-arm operation.
+  for (const other of ['deploy-platform', 'migrate', 'admission-status', 'add-testers', 'set-testers']) {
+    assert.throws(() => assertOneShotAllowed(env(other, { OBJECT_DELETION_MANIFEST_ID: manifestId,
+      OBJECT_DELETION_EXPECTED_GENERATION: '7' }), 'lifecycle', 'rearm-object-deletion', payload), /forbidden/, other);
+  }
+  // The exact composed argument is the only accepted payload: a different
+  // generation, a different manifest, an extra field or a second payload fails.
+  for (const wrong of [`{"expected_generation":8,"manifest_id":"${manifestId}"}`,
+    `{"expected_generation":7,"manifest_id":"${'0'.repeat(8)}-0000-4000-8000-${'0'.repeat(12)}"}`,
+    `{"expected_generation":7,"manifest_id":"${manifestId}","extra":true}`,
+    `${payload}${payload}`, '[]']) {
+    assert.throws(() => assertOneShotAllowed(rearmEnv(), 'lifecycle', 'rearm-object-deletion', wrong),
+      /exact composed manifest\/generation payload/, wrong);
+  }
+  // A missing input pair is refused rather than composed into a command.
+  assert.throws(() => assertOneShotAllowed(env('rearm-object-deletion'), 'lifecycle', 'rearm-object-deletion', payload),
+    /requires OBJECT_DELETION_MANIFEST_ID/);
+  // The registration allow-list admits the exact command and nothing else: the
+  // beta-lifecycle entry point, a reordered or extra argument, a second payload
+  // and a changed generation are all refused.
+  const registration = (command) => ({
+    family: 'beta-anywear-lifecycle',
+    taskRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-lifecycle-task',
+    executionRoleArn: 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution',
+    containerDefinitions: [{ name: 'OneShot', command }],
+  });
+  const register = (operationEnv, command) => assertAwsAllowed(operationEnv,
+    ['ecs', 'register-task-definition', '--cli-input-json', JSON.stringify(registration(command))]);
+  assert.doesNotThrow(() => register(rearmEnv(), ['node', REARM_COMMAND, payload]));
+  for (const command of [['node', REARM_COMMAND], ['node', REARM_COMMAND, payload, payload],
+    ['node', REARM_COMMAND, `{"expected_generation":8,"manifest_id":"${manifestId}"}`],
+    ['node', 'dist/ops/beta-lifecycle.js', 'rearm-object-deletion', payload],
+    [REARM_COMMAND, 'node', payload], ['node', REARM_COMMAND, payload, '--extra']]) {
+    assert.throws(() => register(rearmEnv(), command), /forbidden/, command.join(' '));
+  }
+  // A registration under another operation's boundary is refused even when the
+  // command is the re-arm's exact command.
+  for (const other of ['deploy-platform', 'admission-status', 'set-testers']) {
+    assert.throws(() => register(env(other), ['node', REARM_COMMAND, payload]), /forbidden/, other);
+  }
 });
 
 test('deploy authority is limited to the configured stack set', () => {

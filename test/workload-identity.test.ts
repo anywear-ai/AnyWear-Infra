@@ -146,9 +146,10 @@ test('the recorded cdk context hash and app entry bind the recorded baseline', (
   // and is not duplicated here.
   expect(provenance.normalisation.length).toBe(4);
   // Issue #220 re-recorded the Runtime identity for the deployed age-alarm
-  // calibration; the retired phase stays equal to roles-added.
-  expect(provenance.identity_phases.legacy).toBe('24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4');
-  expect(provenance.identity_phases['roles-added']).toBe('2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745');
+  // calibration, and issue #321 re-recorded it for the two object-deletion worker
+  // alarms and their filters; the retired phase stays equal to roles-added.
+  expect(provenance.identity_phases.legacy).toBe('b15d6e6e31fde8efbea7e88e4a731a1209864cd2aeb2502bf43e7059c4b28853');
+  expect(provenance.identity_phases['roles-added']).toBe('b2756dff8de9661afbbaa306d5b2a0f32bf92da9acc9d34178ec8d7acd9681b1');
   expect(provenance.identity_phases.retired).toBe(provenance.identity_phases['roles-added']);
   const cdkJson = readFileSync(path.join(infraRoot, 'cdk.json'));
   const config = JSON.parse(cdkJson.toString('utf8'));

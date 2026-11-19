@@ -8,7 +8,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers]
+        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers, rearm-object-deletion]
         required: true
       service_artifact_tag:
         description: Sealed Service artifact tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
@@ -51,6 +51,19 @@ on:
         description: Retained Egress EIP allocation for a deploy-egress start (eipalloc-...); empty creates a new EIP
         type: string
         default: ''
+      # Issue #321: the abandoned object-deletion manifest one rearm-object-deletion
+      # run repairs. Both values are copied from the worker's
+      # `Object deletion manifest standing state` line, and both are empty on every
+      # other operation: their per-operation scope is enforced in the
+      # credential-free preflight, so a stray value fails the dispatch loudly.
+      object_deletion_manifest_id:
+        description: Abandoned manifest UUID for rearm-object-deletion only; empty on every other operation
+        type: string
+        default: ''
+      object_deletion_expected_generation:
+        description: The manifest's lease_generation for rearm-object-deletion only; a positive integer, empty otherwise
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -87,6 +100,8 @@ env:
   SERVICE_COMMIT: ${{ inputs.service_commit }}
   TESTER_EMAILS: ${{ inputs.tester_emails }}
   NAT_EIP_ALLOCATION_ID: ${{ inputs.nat_eip_allocation_id }}
+  OBJECT_DELETION_MANIFEST_ID: ${{ inputs.object_deletion_manifest_id }}
+  OBJECT_DELETION_EXPECTED_GENERATION: ${{ inputs.object_deletion_expected_generation }}
   INFRA_IDENTITY_PHASE: ${{ inputs.identity_phase }}
   INFRA_RETENTION_PROTECTION: ${{ inputs.retention_protection }}
   GH_TELEMETRY: disabled

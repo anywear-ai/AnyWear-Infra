@@ -3,17 +3,19 @@ import { changedStackNames } from './operation-stacks.mjs';
 import { normalizeTesterEmails } from './tester-allowlist.mjs';
 import { account, region } from './deployment-contract.mjs';
 import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
+import { REARM_COMMAND, REARM_OBJECT_DELETION, rearmCommand, rearmRequestArgument } from './object-deletion-rearm.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry; every mutation shares `mutate.yml`, including since #195 the
 // release slice's `deploy-runtime` and `stop-runtime`. Issue #207 retired the
 // `observe` operation with the record it produced; #213 retired the admission
-// open/close operations, leaving the tester allowlist surface.
+// open/close operations, leaving the tester allowlist surface. Issue #321 adds
+// the one operator repair for an abandoned object-deletion manifest.
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-    'admission-status', 'add-testers', 'set-testers'],
+    'admission-status', 'add-testers', 'set-testers', REARM_OBJECT_DELETION],
 });
 
 // The operation -> family mapping keeps the pre-#207 families stable for the
@@ -33,6 +35,13 @@ export const operationFamilies = Object.freeze({
   'admission-status': 'beta-admission',
   'add-testers': 'beta-admission',
   'set-testers': 'beta-admission',
+  // Issue #321: the abandoned-manifest re-arm has `migrate`'s shape — a one-shot
+  // runtime data operation from the immutable release image under an existing task
+  // role. It is not a deployment, not an admission write and not read-only
+  // observation, so it joins the schema family instead of introducing a fifth
+  // operation family; its one-shot role allow-list is the lifecycle role it
+  // already has.
+  'rearm-object-deletion': 'beta-schema',
 });
 
 // Live entries that execute verification or deployment. Every other path is a
@@ -151,6 +160,9 @@ export const operationRoles = Object.freeze({
   'admission-status': Object.freeze(['lifecycle']),
   'add-testers': Object.freeze(['lifecycle']),
   'set-testers': Object.freeze(['lifecycle']),
+  // Issue #321: one fenced repair on the existing lifecycle task role — no new
+  // role and no new one-shot family.
+  'rearm-object-deletion': Object.freeze(['lifecycle']),
 });
 const oneShotRoles = operation => operationRoles[operation];
 // The task role each one-shot family registers under. `verify` keeps the existing
@@ -165,14 +177,15 @@ const VERIFY_SCHEMA_JOURNAL_COMMAND = Object.freeze(['node', 'dist/verify.js', '
 // The tester allowlist surface is the whole surviving admission operation set:
 // `status` reads it and `set-testers` replaces it. #213 retired the mode
 // open/close actions (`resume`/`suspend`) with the mode parameter, so no entry
-// lists them. `set-testers` is the only payload-bearing action; `status` takes
-// none.
+// lists them. `set-testers` is the only admission action that carries a payload.
+// Issue #321 adds the abandoned-manifest repair as the lifecycle role's one new
+// action; its payload is the composed manifest/generation argument below.
 export const lifecycleActions = operation => ({ 'admission-status': ['status'], 'add-testers': ['set-testers', 'status'],
-  'set-testers': ['set-testers', 'status'] }[operation] ?? []);
+  'set-testers': ['set-testers', 'status'], [REARM_OBJECT_DELETION]: [REARM_OBJECT_DELETION] }[operation] ?? []);
 // Issue #194: the `verify` family's only non-URL action is the read-only
 // `schema-journal` read. It takes no payload; any other action is refused.
 export const verifyActions = operation => ({ 'deploy-runtime': ['schema-journal'] }[operation] ?? []);
-const payloadActions = ['set-testers'];
+const payloadActions = ['set-testers', REARM_OBJECT_DELETION];
 export function assertOneShotAllowed(env, role, action = '', payload) {
   operationBoundary(env);
   if (!oneShotRoles(env.INFRA_OPERATION).includes(role)
@@ -185,6 +198,12 @@ export function assertOneShotAllowed(env, role, action = '', payload) {
     if (env.INFRA_OPERATION === 'set-testers' && payload !== normalizeTesterEmails(env.TESTER_EMAILS)) throw new Error('Tester replacement differs from explicit dispatch input');
     if (parseJson(normalizeTesterEmails(env.TESTER_EMAILS)).some(email => !parseJson(payload).includes(email))) throw new Error('Tester addition omits explicit dispatch input');
   }
+  // Issue #321: the re-arm payload is composed from the two dispatch inputs, so a
+  // payload that is not exactly that composed argument — a changed manifest, a
+  // changed generation, an extra field or a different serialisation — is refused
+  // before the task is registered.
+  if (role === 'lifecycle' && action === REARM_OBJECT_DELETION
+    && payload !== rearmRequestArgument(env)) throw new Error('Re-arm helper requires the exact composed manifest/generation payload');
 }
 export function assertDeployAllowed(env, stack) {
   operationBoundary(env);
@@ -257,8 +276,23 @@ export function assertAwsAllowed(env, args, purpose = 'operation', session = 'ru
     if (family && definition.taskRoleArn === `arn:aws:iam::650880818323:role/beta-anywear-${role}-task`
       && definition.executionRoleArn === 'arn:aws:iam::650880818323:role/beta-anywear-one-shot-execution'
       && command?.[0] === 'node') {
-      if (family === 'lifecycle' && command[1] === 'dist/ops/beta-lifecycle.js' && [3, 4].includes(command.length)) {
+      // The re-arm action is not a beta-lifecycle action: its one accepted
+      // registration is the object-deletion entry point below, so this branch
+      // refuses it even with an otherwise valid action/payload pair.
+      if (family === 'lifecycle' && command[1] === 'dist/ops/beta-lifecycle.js' && [3, 4].includes(command.length)
+        && command[2] !== REARM_OBJECT_DELETION) {
         assertOneShotAllowed(env, 'lifecycle', command[2], command[3]); return;
+      }
+      // Issue #321: the re-arm's only accepted registration is the exact command
+      // the reviewed dispatch inputs compose — the one fixed entry point plus the
+      // one canonical JSON argument. A reordered or extra argument, a second
+      // payload or a different image/role is refused at registration.
+      if (family === 'lifecycle' && env.INFRA_OPERATION === REARM_OBJECT_DELETION) {
+        let expected;
+        try { expected = rearmCommand(env); } catch { expected = undefined; }
+        if (expected && canonicalJson(command) === canonicalJson(expected)) {
+          assertOneShotAllowed(env, 'lifecycle', REARM_OBJECT_DELETION, command[2]); return;
+        }
       }
       if (family === 'migrate' && command[1] === 'dist/migrate.js' && command.length === 2) return;
       // Issue #194: the verify family's only accepted registration is the exact

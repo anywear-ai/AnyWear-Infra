@@ -1222,6 +1222,12 @@
        "Id": "ExpireUnpromotedTaskAttempts",
        "Prefix": "task-attempts/",
        "Status": "Enabled"
+      },
+      {
+       "ExpirationInDays": 365,
+       "Id": "ExpireObjectDeletionArchive",
+       "Prefix": "object-deletion-archive/",
+       "Status": "Enabled"
       }
      ]
     }
@@ -2611,6 +2617,37 @@
          ]
         }
        ]
+      },
+      {
+       "Action": [
+        "s3:DeleteObject",
+        "s3:GetObject"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "AnyWearWardrobeBucket61DCC096",
+            "Arn"
+           ]
+          },
+          "/outfit-generations/*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "s3:ListBucket",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "AnyWearWardrobeBucket61DCC096",
+         "Arn"
+        ]
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -2737,7 +2774,7 @@
   "StageContractVpcIdParam09FCE657": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta VPC id",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta VPC id",
     "Name": "/anywear/beta/vpc_id",
     "Type": "String",
     "Value": {
@@ -2748,7 +2785,7 @@
   "StageContractPublicSubnetIdsParam141F3681": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta public subnet ids",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta public subnet ids",
     "Name": "/anywear/beta/public_subnet_ids",
     "Type": "StringList",
     "Value": {
@@ -2769,7 +2806,7 @@
   "StageContractPrivateSubnetIdsParam2AE9AD15": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta private subnet ids for workload tasks",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta private subnet ids for workload tasks",
     "Name": "/anywear/beta/private_subnet_ids",
     "Type": "StringList",
     "Value": {
@@ -2790,7 +2827,7 @@
   "StageContractApiBaseUrlParamC2C1842A": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: public API CloudFront distribution base URL",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: public API CloudFront distribution base URL",
     "Name": "/anywear/beta/api_base_url",
     "Type": "String",
     "Value": {
@@ -2812,7 +2849,7 @@
   "StageContractEcsClusterNameParam8A278375": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta ECS cluster name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta ECS cluster name",
     "Name": "/anywear/beta/ecs_cluster_name",
     "Type": "String",
     "Value": {
@@ -2823,7 +2860,7 @@
   "StageContractDatabaseSecretArnParamB1983452": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: Aurora credential secret ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: Aurora credential secret ARN",
     "Name": "/anywear/beta/database_secret_arn",
     "Type": "String",
     "Value": {
@@ -2834,7 +2871,7 @@
   "StageContractDatabaseHostParamA4EBC5DE": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: Aurora writer endpoint hostname",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: Aurora writer endpoint hostname",
     "Name": "/anywear/beta/database_host",
     "Type": "String",
     "Value": {
@@ -2848,7 +2885,7 @@
   "StageContractDatabasePortParam5C2ADD2A": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: Aurora writer endpoint port",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: Aurora writer endpoint port",
     "Name": "/anywear/beta/database_port",
     "Type": "String",
     "Value": {
@@ -2862,7 +2899,7 @@
   "StageContractApiSecurityGroupIdParamECD9D30D": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: API task security group id",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: API task security group id",
     "Name": "/anywear/beta/api_security_group_id",
     "Type": "String",
     "Value": {
@@ -2876,7 +2913,7 @@
   "StageContractWorkerSecurityGroupIdParamAA807CE5": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: worker task security group id",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: worker task security group id",
     "Name": "/anywear/beta/worker_security_group_id",
     "Type": "String",
     "Value": {
@@ -2890,7 +2927,7 @@
   "StageContractLoadBalancerSecurityGroupIdParam70E3DF7F": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared load-balancer security group id; the consumer adds only its own ingress rule",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared load-balancer security group id; the consumer adds only its own ingress rule",
     "Name": "/anywear/beta/load_balancer_security_group_id",
     "Type": "String",
     "Value": {
@@ -2904,7 +2941,7 @@
   "StageContractServiceRepositoryUriParamDF368AD2": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: service ECR repository URI",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: service ECR repository URI",
     "Name": "/anywear/beta/service_repository_uri",
     "Type": "String",
     "Value": {
@@ -2960,7 +2997,7 @@
   "StageContractServiceRepositoryNameParamAF9B18DC": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: service ECR repository name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: service ECR repository name",
     "Name": "/anywear/beta/service_repository_name",
     "Type": "String",
     "Value": {
@@ -2971,7 +3008,7 @@
   "StageContractServiceRepositoryArnParamE8F6E1A1": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: service ECR repository ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: service ECR repository ARN",
     "Name": "/anywear/beta/service_repository_arn",
     "Type": "String",
     "Value": {
@@ -2985,7 +3022,7 @@
   "StageContractVtoQueueUrlParam5A57EABA": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: VTO task queue URL",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: VTO task queue URL",
     "Name": "/anywear/beta/vto_queue_url",
     "Type": "String",
     "Value": {
@@ -2996,7 +3033,7 @@
   "StageContractVtoQueueArnParam2BD66DE9": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: VTO task queue ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: VTO task queue ARN",
     "Name": "/anywear/beta/vto_queue_arn",
     "Type": "String",
     "Value": {
@@ -3010,7 +3047,7 @@
   "StageContractVtoQueueNameParam8902E131": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: VTO task queue name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: VTO task queue name",
     "Name": "/anywear/beta/vto_queue_name",
     "Type": "String",
     "Value": {
@@ -3024,7 +3061,7 @@
   "StageContractAutoTaggingQueueUrlParam67B18FA8": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: auto-tagging task queue URL",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: auto-tagging task queue URL",
     "Name": "/anywear/beta/auto_tagging_queue_url",
     "Type": "String",
     "Value": {
@@ -3035,7 +3072,7 @@
   "StageContractAutoTaggingQueueArnParam9778E4D6": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: auto-tagging task queue ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: auto-tagging task queue ARN",
     "Name": "/anywear/beta/auto_tagging_queue_arn",
     "Type": "String",
     "Value": {
@@ -3049,7 +3086,7 @@
   "StageContractAutoTaggingQueueNameParam2A147BA5": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: auto-tagging task queue name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: auto-tagging task queue name",
     "Name": "/anywear/beta/auto_tagging_queue_name",
     "Type": "String",
     "Value": {
@@ -3063,7 +3100,7 @@
   "StageContractVtoDlqNameParam26BB32E3": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: VTO dead-letter queue name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: VTO dead-letter queue name",
     "Name": "/anywear/beta/vto_dlq_name",
     "Type": "String",
     "Value": {
@@ -3077,7 +3114,7 @@
   "StageContractAutoTaggingDlqNameParam4EFF8E00": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: auto-tagging dead-letter queue name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: auto-tagging dead-letter queue name",
     "Name": "/anywear/beta/auto_tagging_dlq_name",
     "Type": "String",
     "Value": {
@@ -3091,7 +3128,7 @@
   "StageContractS3BucketArnParam3835E4EF": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: wardrobe bucket ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: wardrobe bucket ARN",
     "Name": "/anywear/beta/s3_bucket_arn",
     "Type": "String",
     "Value": {
@@ -3105,7 +3142,7 @@
   "StageContractOperationsTopicArnParam31AACF91": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: Beta operations SNS topic ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: Beta operations SNS topic ARN",
     "Name": "/anywear/beta/operations_topic_arn",
     "Type": "String",
     "Value": {
@@ -3116,7 +3153,7 @@
   "StageContractCloudfrontPrefixListIdParam660EC2E0": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: AWS-managed CloudFront origin-facing prefix list id for the shared load-balancer ingress",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: AWS-managed CloudFront origin-facing prefix list id for the shared load-balancer ingress",
     "Name": "/anywear/beta/cloudfront_prefix_list_id",
     "Type": "String",
     "Value": "pl-14b2577d"
@@ -3125,7 +3162,7 @@
   "StageContractVlmConfigArnParam21064200": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: Secrets Manager ARN holding DOUBAO_VLM_API_KEY",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: Secrets Manager ARN holding DOUBAO_VLM_API_KEY",
     "Name": "/anywear/beta/vlm_config_arn",
     "Type": "String",
     "Value": "arn:aws:secretsmanager:ap-east-1:650880818323:secret:/anywear/beta/doubao_vlm_config-FEH2DQ"
@@ -3134,7 +3171,7 @@
   "StageContractVerificationTaskRoleArnParamF19E7348": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: one-shot verification task role ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: one-shot verification task role ARN",
     "Name": "/anywear/beta/verification_task_role_arn",
     "Type": "String",
     "Value": {
@@ -3148,7 +3185,7 @@
   "StageContractOneShotExecutionRoleArnParam6982F17C": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: one-shot task execution role ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: one-shot task execution role ARN",
     "Name": "/anywear/beta/one_shot_execution_role_arn",
     "Type": "String",
     "Value": {
@@ -3162,7 +3199,7 @@
   "StageContractOneShotLogGroupNameParam97AA5BE2": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: one-shot task log group name",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: one-shot task log group name",
     "Name": "/anywear/beta/one_shot_log_group_name",
     "Type": "String",
     "Value": {
@@ -3173,7 +3210,7 @@
   "StageContractOneShotLogGroupArnParam79E3A88B": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: one-shot task log group ARN",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: one-shot task log group ARN",
     "Name": "/anywear/beta/one_shot_log_group_arn",
     "Type": "String",
     "Value": {
@@ -3187,7 +3224,7 @@
   "StageContractOneShotSecurityGroupIdParam41BD78D4": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: one-shot task security group id",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: one-shot task security group id",
     "Name": "/anywear/beta/one_shot_security_group_id",
     "Type": "String",
     "Value": {
@@ -3201,7 +3238,7 @@
   "StageContractEcsClusterArnParamD8A2358B": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta ECS cluster ARN for workload services and one-shot tasks",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta ECS cluster ARN for workload services and one-shot tasks",
     "Name": "/anywear/beta/ecs_cluster_arn",
     "Type": "String",
     "Value": {
@@ -3215,7 +3252,7 @@
   "StageContractVtoDlqUrlParam665B1A03": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: VTO dead-letter queue URL for the workload cleanup task",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: VTO dead-letter queue URL for the workload cleanup task",
     "Name": "/anywear/beta/vto_dlq_url",
     "Type": "String",
     "Value": {
@@ -3226,7 +3263,7 @@
   "StageContractAutoTaggingDlqUrlParam877BDABC": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: auto-tagging dead-letter queue URL for the workload cleanup task",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: auto-tagging dead-letter queue URL for the workload cleanup task",
     "Name": "/anywear/beta/auto_tagging_dlq_url",
     "Type": "String",
     "Value": {
@@ -3237,7 +3274,7 @@
   "StageContractIsolatedSubnetIdsParamC46D2120": {
    "Type": "AWS::SSM::Parameter",
    "Properties": {
-    "Description": "AnyWear-Service AnyWearRuntimeStack-beta stage contract: shared Beta isolated subnet ids for workload tasks with no egress",
+    "Description": "AnyWear-Infra AnyWearRuntimeStack-beta stage contract: shared Beta isolated subnet ids for workload tasks with no egress",
     "Name": "/anywear/beta/isolated_subnet_ids",
     "Type": "StringList",
     "Value": {
@@ -3254,6 +3291,19 @@
      ]
     }
    }
+  }
+ },
+ "Parameters": {
+  "ApiOriginDomainName": {
+   "Type": "String",
+   "AllowedPattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$",
+   "ConstraintDescription": "must be a DNS name such as beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com",
+   "Description": "The live API load-balancer DNS name the Beta API CloudFront distribution points at (the ApiLoadBalancerDnsName output of AnyWearRuntimeStack-beta)."
+  },
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
   }
  },
  "Outputs": {
@@ -3555,19 +3605,6 @@
      ]
     ]
    }
-  }
- },
- "Parameters": {
-  "ApiOriginDomainName": {
-   "Type": "String",
-   "AllowedPattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$",
-   "ConstraintDescription": "must be a DNS name such as beta-anywear-api-0123456789.ap-east-1.elb.amazonaws.com",
-   "Description": "The live API load-balancer DNS name the Beta API CloudFront distribution points at (the ApiLoadBalancerDnsName output of AnyWearRuntimeStack-beta)."
-  },
-  "BootstrapVersion": {
-   "Type": "AWS::SSM::Parameter::Value<String>",
-   "Default": "/cdk-bootstrap/hnb659fds/version",
-   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
   }
  },
  "Rules": {

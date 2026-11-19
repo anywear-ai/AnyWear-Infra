@@ -91,17 +91,17 @@ test('the committed files reverse to the recorded producer bytes', () => {
 
 // ---------------------------------------------------------------------------
 // Value surface
-test('the shipped module is the whole 31-name value surface', () => {
+test('the shipped module is the whole 32-name value surface', () => {
   const measured = measure(contracts);
   assert.deepEqual(measured.export_names, fixture.export_names);
   assert.deepEqual(measured.constant_names, fixture.constant_names);
   assert.deepEqual(measured.function_names, fixture.function_names);
-  assert.equal(fixture.export_names.length, 31);
-  assert.equal(fixture.constant_names.length, 17);
+  assert.equal(fixture.export_names.length, 32);
+  assert.equal(fixture.constant_names.length, 18);
   assert.equal(fixture.function_names.length, 14);
   assert.deepEqual(Object.keys(contracts).sort(), fixture.export_names);
   assert.deepEqual(fixture.export_names, [...fixture.export_names].sort());
-  assert.equal(new Set(fixture.export_names).size, 31);
+  assert.equal(new Set(fixture.export_names).size, 32);
   assert.deepEqual([...fixture.constant_names, ...fixture.function_names].sort(), [...fixture.export_names].sort());
   for (const name of fixture.constant_names) assert.notEqual(typeof contracts[name], 'function', name);
   for (const name of fixture.function_names) assert.equal(typeof contracts[name], 'function', name);

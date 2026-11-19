@@ -62,8 +62,8 @@ const env = (overrides = {}) => ({
 });
 const TEMPLATE = JSON.parse(readFileSync('test/baselines/beta-active/AnyWearRuntimeStack-beta.template.json', 'utf8'));
 const SYNTHESIZED = { template: TEMPLATE, raw_sha256: 'a'.repeat(64),
-  normalised_sha256: '24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4',
-  expected: '24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4' };
+  normalised_sha256: 'b15d6e6e31fde8efbea7e88e4a731a1209864cd2aeb2502bf43e7059c4b28853',
+  expected: 'b15d6e6e31fde8efbea7e88e4a731a1209864cd2aeb2502bf43e7059c4b28853' };
 // The fixture synthesises the legacy-phase baseline (`TEMPLATE`), whose normalised
 // hash is its own `expected`, while the recorded roles-added identity differs. The
 // live-template acceptance set is a deploy seam, so the fixture pins it to that
@@ -396,30 +396,30 @@ test('the CDK arguments pass one stack-qualified flag per parameter and disable 
     identityPhase: 'roles-added', retentionProtection: 'true' }), /exactly the five reviewed parameters/);
 });
 
-// Issue #220's transition deployed in `mutate.yml` `deploy-runtime` run 39988090020
-// (2026-10-23), so its one recorded live predecessor is retired and the live record
-// accepts only the recorded roles-added identity. The read path keeps its predecessor
-// support — inert and fail-closed for the live record — while the synthesis check and
-// the post-deploy read-back stay exact against the recorded identity, which the deploy
-// tests above prove with the fixture-pinned seam.
-test('the live record accepts only the recorded identity, with its one predecessor retired', () => {
-  const RECORDED = '2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745';
-  const PREDECESSOR = 'ed4e99ee6e8c640ea6e71349f74bd7fed31f60627914f92121b1bc3b1f93c8be';
-  // Against the live record the accepted set is exactly the recorded identity: the
-  // pre-transition template the deploy started from is no longer accepted.
-  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED]);
+// Issue #321 re-recorded the Runtime identity for the two object-deletion worker
+// alarms and their filters. That change has not deployed, so the live 2fc979...
+// template (the issue #220 transition) is the one recorded live predecessor the
+// deploy may start from; the post-deploy Original must normalise to the recorded
+// roles-added identity. The predecessor member is retired by the Deployment stage
+// once the transition lands, exactly as #220 retired ed4e99ee.
+test('the live record accepts the recorded identity and its one recorded predecessor', () => {
+  const RECORDED = 'b2756dff8de9661afbbaa306d5b2a0f32bf92da9acc9d34178ec8d7acd9681b1';
+  const PREDECESSOR = '2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745';
+  // Against the live record the accepted set is the recorded identity plus the one
+  // recorded predecessor the pending transition starts from.
+  assert.deepEqual(acceptedLiveRuntimeHashes(), [RECORDED, PREDECESSOR]);
   assert.equal(acceptedLiveRuntimeHashes()[0], recordedRuntimePhaseHash());
   assert.doesNotThrow(() => assertLiveRuntimeIdentity(RECORDED));
   assert.equal(assertLiveRuntimeIdentity(RECORDED), RECORDED);
-  assert.throws(() => assertLiveRuntimeIdentity(PREDECESSOR), /not the recorded roles-added identity/);
+  assert.doesNotThrow(() => assertLiveRuntimeIdentity(PREDECESSOR));
   assert.throws(() => assertLiveRuntimeIdentity('f'.repeat(64)), /not the recorded roles-added identity/);
   // An empty accepted set can never pass.
   assert.throws(() => assertLiveRuntimeIdentity(RECORDED, []), /accepted Runtime live identities are unavailable/);
-  // The absent-member case is the live record itself: it carries no predecessor
-  // member and its reader yields none.
+  // The live record carries exactly the one predecessor the pending transition
+  // needs, so the read path is exercised by the record itself.
   const liveRecord = JSON.parse(readFileSync('test/baselines/provenance.json', 'utf8'));
-  assert.equal(Object.hasOwn(liveRecord.runtime_identity.identity_revision, 'accepted_live_predecessors'), false);
-  assert.deepEqual(recordedLivePredecessors(liveRecord.runtime_identity.identity_revision), []);
+  assert.deepEqual(liveRecord.runtime_identity.identity_revision.accepted_live_predecessors, [PREDECESSOR]);
+  assert.deepEqual(recordedLivePredecessors(liveRecord.runtime_identity.identity_revision), [PREDECESSOR]);
   // A record that does carry one predecessor still yields [recorded, predecessor] and
   // accepts it, so the read path stays inert rather than removed; a malformed list or
   // entry fails closed instead of widening the drift allowance.

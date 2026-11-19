@@ -227,6 +227,16 @@ export class PlatformStack extends cdk.Stack {
         id: 'ExpireUnpromotedTaskAttempts',
         prefix: 'task-attempts/',
         expiration: cdk.Duration.days(7),
+      }, {
+        // Issue #321: an `abandoned` object-deletion manifest that reaches its
+        // 90-day window is archived by the Service to
+        // `object-deletion-archive/<yyyy>/<mm>/<manifest_id>.json` in the bucket
+        // the row recorded (or this wardrobe bucket when that bucket is
+        // unreachable) before the row is deleted. The keys therefore outlive the
+        // record by a stated year instead of an unbounded keep.
+        id: 'ExpireObjectDeletionArchive',
+        prefix: 'object-deletion-archive/',
+        expiration: cdk.Duration.days(365),
       }],
       cors: [{
         allowedMethods: [
@@ -480,6 +490,27 @@ export class PlatformStack extends cdk.Stack {
         this.lifecycleTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
           actions: ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility'],
           resources: [this.vtoDeadLetterQueue.queueArn, this.autoTaggingDeadLetterQueue.queueArn],
+        }));
+        // Issue #321: the `rearm-object-deletion` one-shot runs on this existing
+        // role and its one drain pass issues a `HeadBucket` probe, one `HeadObject`
+        // per key and, where a key must go, one `DeleteObject` against the bucket
+        // the manifest recorded. `HeadBucket` requires `s3:ListBucket` and carries
+        // no `s3:prefix`, so the ListBucket grant must be unconditional on the
+        // bucket ARN: a conditioned grant would deny the probe against the stage's
+        // own wardrobe bucket and turn the pass into `recorded_bucket_unreachable`.
+        // The object statement stays scoped to the `outfit-generations/*` object
+        // ARNs, so no bucket-wide write is granted. IAM can name only this stage's
+        // wardrobe bucket, so a manifest recorded against any other bucket fails the
+        // probe with `AccessDenied`, is recorded `recorded_bucket_unreachable` and
+        // is retained: that fail-closed behaviour is the bucket-first proof, not a
+        // widened grant.
+        this.lifecycleTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+          actions: ['s3:GetObject', 's3:DeleteObject'],
+          resources: [this.wardrobeBucket.arnForObjects('outfit-generations/*')],
+        }));
+        this.lifecycleTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+          actions: ['s3:ListBucket'],
+          resources: [this.wardrobeBucket.bucketArn],
         }));
         pipelineRole.addToPrincipalPolicy(new iam.PolicyStatement({
           actions: ['ecs:ListTasks'],

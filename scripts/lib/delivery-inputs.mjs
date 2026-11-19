@@ -3,7 +3,7 @@ import { matches } from './json-contract.mjs';
 // The deploy chain's context (#226). `delivery_trigger` names the entry event that
 // reached this workflow and `dispatched_by` names the run that dispatched it.
 // Only `deploy-runtime` deploys a Runtime tuple, so only it may carry them; the
-// other eleven operations refuse a trigger that carries context, so a chain-shaped
+// other twelve operations refuse a trigger that carries context, so a chain-shaped
 // dispatch to the wrong operation fails loudly instead of being ignored.
 //
 // `release` is representable and refused: a version tag proves a qualification

@@ -147,7 +147,7 @@ says when to use each, including the hand stop and start of Beta.
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks, no mutation and no artifact |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (12 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` run adds `qualify-hook` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime`, and the hook dispatches the E2E qualification without waiting for it. The run's job and step conclusions are the verdict |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (13 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` run adds `qualify-hook` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime`, and the hook dispatches the E2E qualification without waiting for it. The run's job and step conclusions are the verdict |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -158,18 +158,25 @@ says when to use each, including the hand stop and start of Beta.
 
 The `mutate.yml` menu is a superset of the retired per-family files. A dispatch
 surface is per workflow, so `identity_phase`, `retention_protection`,
-`tester_emails`, `service_artifact_tag`, `service_commit`, `delivery_trigger` and
-`dispatched_by` are workflow-level inputs; `scripts/runtime-operation.mjs`
-enforces their per-operation scope in preflight, before any credential. Only a
+`tester_emails`, `object_deletion_manifest_id`,
+`object_deletion_expected_generation`, `service_artifact_tag`, `service_commit`,
+`delivery_trigger` and `dispatched_by` are workflow-level inputs;
+`scripts/runtime-operation.mjs` enforces their per-operation scope in preflight,
+before any credential. Only a
 `deploy-*` operation or `restore-release` may vary identity phase and retention
 protection; every other operation must run the `retired` / `true` context. Only
 `add-testers` and `set-testers` accept a tester payload. Only `deploy-platform`,
 `deploy-runtime`, `restore-release` and `migrate` take a Service artifact
-identity. Only `deploy-runtime` takes the deploy chain's context: a merge sends
+identity. Only `rearm-object-deletion` accepts `object_deletion_manifest_id` and
+`object_deletion_expected_generation` — the values the worker's
+`Object deletion manifest standing state` line reports for the oldest abandoned
+manifest — and every other operation refuses them; the credential-free preflight
+validates both, like the tester payload and the Egress EIP allocation. Only
+`deploy-runtime` takes the deploy chain's context: a merge sends
 `delivery_trigger=deploy` with the dispatching run's HTTPS URL as `dispatched_by`,
 a human sends the `manual` default with no run URL, and `release` is refused in
 the credential-free preflight so a tag-shaped dispatch fails loudly. The other
-eleven operations refuse a trigger that names an entry event. There is no
+twelve operations refuse a trigger that names an entry event. There is no
 admission-mode or bound input: the only admission value is the exact
 tester allowlist. The
 standalone `verify` operation is retired: Infra's operation chain runs no

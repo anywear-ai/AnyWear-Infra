@@ -4,7 +4,7 @@
   "source": "AwsSolutions-IAM5 findings from the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta, plus the count of wildcard-bearing policy statements in each stack's template. Regenerate with the same inputs test/authorization-lint.test.ts synthesizes. A wildcard-bearing statement is one whose Action or Resource carries a `*` in any AWS::IAM::Policy, AWS::IAM::ManagedPolicy or role-inline policy document, and `id` is the cdk-nag rule argument verbatim with `arn:<AWS::Partition>` normalized to `arn:aws`. Every entry carries a reviewed reason.",
   "templates": [
     { "stack": "AnyWearFoundationStack", "wildcard_statement_count": 12 },
-    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 88 }
+    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 89 }
   ],
   "findings": [
     {
@@ -120,7 +120,7 @@
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::<AnyWearWardrobeBucket61DCC096.Arn>/outfit-generations/*",
-      "reason": "Issue #311: the same Beta tester-cleanup task role deletes the run's VTO result objects under `outfit-generations/<sub>/`. The wildcard is the per-user object key under that fixed prefix; the bucket ARN is the CDK GetAtt of the same retained Base-owned wardrobe bucket, and the four-prefix ListBucket condition admits listings only under the four cleaned prefixes. No other bucket or prefix is granted."
+      "reason": "Two reviewed statements name this object prefix on the retained Base-owned wardrobe bucket, and both wildcards are the per-user object key under the fixed prefix: the #217/#311 Beta tester-cleanup task role's `s3:DeleteObject` (which also names `wearable-items/`, `base-photos/` and `task-attempts/vto/` plus the four-prefix ListBucket), and issue #321's lifecycle task role `s3:GetObject`/`s3:DeleteObject` for the one re-arm drain pass. That role's matching `s3:ListBucket` is unconditional on the bucket ARN, not conditioned on this prefix, because the re-arm's `HeadBucket` probe requires `s3:ListBucket` and carries no `s3:prefix`; the review fix that removed the condition moved no finding id and no wildcard count. No other bucket, prefix, action or role carries this form; the Platform count moved 88 -> 89 for the added statement and no new finding id was reported."
     },
     {
       "stack": "AnyWearPlatformStack-beta",

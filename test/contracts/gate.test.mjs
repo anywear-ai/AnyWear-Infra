@@ -13,6 +13,7 @@ import {
   deploymentBakeName,
   deploymentQueueNames,
   runtimeStageFromStack,
+  WORKER_ALARM_THRESHOLDS,
 } from '../../lib/contracts.mjs';
 
 // Issue #207 retired the record-gate block validator, so this file now owns only
@@ -65,4 +66,51 @@ test('the threshold table and comparison strings are stage-free; only names carr
   assert.throws(() => deploymentBakeName('Beta'), /Invalid deployment stage/);
   assert.equal(runtimeStageFromStack('AnyWearRuntimeStack-prod'), 'prod');
   assert.throws(() => runtimeStageFromStack('AnyWearPlatformStack-beta'), /Invalid Runtime stack identity/);
+});
+
+// Issue #321: the worker's standing-state alarms are worker alarms, not bake
+// signals. They are named by the same builder so a deployed alarm and the code
+// that reads it cannot disagree, and they are deliberately absent from the six
+// gate signals and their comparisons: the 300-second bake cannot observe an
+// hours-long failure and must not fail every deploy on standing debt.
+test('the worker alarm thresholds and their deployed names are the reviewed stage-free pair', () => {
+  assert.deepEqual(Object.keys(WORKER_ALARM_THRESHOLDS), [
+    'object_deletion_abandoned', 'object_deletion_reaper_tick',
+  ]);
+  assert.deepEqual(WORKER_ALARM_THRESHOLDS.object_deletion_abandoned, {
+    metric: 'ObjectDeletionAbandonedCount',
+    statistic: 'Maximum',
+    period_seconds: 60,
+    evaluation_periods: 2,
+    threshold: 0,
+    comparison: 'greater_than_threshold',
+    treat_missing_data: 'notBreaching',
+  });
+  assert.deepEqual(WORKER_ALARM_THRESHOLDS.object_deletion_reaper_tick, {
+    metric: 'ObjectDeletionReaperTick',
+    statistic: 'Sum',
+    period_seconds: 300,
+    evaluation_periods: 2,
+    threshold: 1,
+    comparison: 'less_than_threshold',
+    treat_missing_data: 'breaching',
+  });
+  for (const threshold of Object.values(WORKER_ALARM_THRESHOLDS)) {
+    assert.ok(Object.isFrozen(threshold));
+    assert.equal(JSON.stringify(threshold).includes('beta'), false);
+    assert.equal(JSON.stringify(threshold).includes('prod'), false);
+  }
+  assert.ok(Object.isFrozen(WORKER_ALARM_THRESHOLDS));
+  assert.deepEqual(deploymentAlarmName('beta', 'object_deletion_abandoned'), ['beta-anywear-object-deletion-abandoned']);
+  assert.deepEqual(deploymentAlarmName('beta', 'object_deletion_reaper_tick'), ['beta-anywear-object-deletion-reaper-tick']);
+  assert.deepEqual(deploymentAlarmName('prod', 'object_deletion_reaper_tick'), ['prod-anywear-object-deletion-reaper-tick']);
+  assert.throws(() => deploymentAlarmName('Beta', 'object_deletion_abandoned'), /Invalid deployment stage/);
+  // The worker alarms are not gate signals: the six-name list, the gate threshold
+  // table and the six alarm names keep exactly their old surface.
+  for (const name of Object.keys(WORKER_ALARM_THRESHOLDS)) {
+    assert.equal(DEPLOYMENT_GATE_SIGNAL_NAMES.includes(name), false, name);
+    assert.equal(Object.hasOwn(DEPLOYMENT_GATE_THRESHOLDS, name), false, name);
+    assert.equal(Object.hasOwn(DEPLOYMENT_GATE_COMPARISONS, name), false, name);
+  }
+  assert.deepEqual(Object.keys(deploymentAlarmNames('beta')), [...DEPLOYMENT_GATE_SIGNAL_NAMES]);
 });
