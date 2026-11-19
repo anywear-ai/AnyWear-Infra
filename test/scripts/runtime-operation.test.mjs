@@ -435,6 +435,97 @@ test('a failed migrate launch still names the task it started', async () => {
   assert.match(captured.stderr, /One-shot task failed with exit code 3/);
 });
 
+// Issue #321: the abandoned-manifest re-arm takes exactly the two values the
+// worker's standing-state line reports, refuses a release identity, and dispatches
+// one lifecycle one-shot from the image the Runtime stack already reports.
+const manifestId = '5f0c1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b';
+const rearmEnv = (overrides = {}) => ({ ...env, INFRA_OPERATION: 'rearm-object-deletion',
+  OBJECT_DELETION_MANIFEST_ID: manifestId, OBJECT_DELETION_EXPECTED_GENERATION: '7', ...overrides });
+const rearmPayload = `{"expected_generation":7,"manifest_id":"${manifestId}"}`;
+const runtimeParameters = [
+  { ParameterKey: 'ServiceImageDigest', ParameterValue: imageDigest },
+  { ParameterKey: 'ServiceCommitSha', ParameterValue: serviceCommit },
+  { ParameterKey: 'VlmConfigArn', ParameterValue: 'arn:aws:secretsmanager:ap-east-1:650880818323:secret:test' },
+  { ParameterKey: 'CloudFrontPrefixListId', ParameterValue: 'pl-test' },
+];
+
+function rearmSurface({ runtime = { StackStatus: 'UPDATE_COMPLETE', Parameters: runtimeParameters } } = {}) {
+  const calls = [];
+  const oneShots = [];
+  const io = {
+    async aws(args) {
+      calls.push([...args]);
+      if (args[0] === 'sts') return { Account: '650880818323' };
+      if (args[0] === 'cloudformation') {
+        const name = args[args.indexOf('--stack-name') + 1];
+        if (name === runtimeStack) {
+          if (runtime === null) throw stackAbsence(name);
+          return { Stacks: [{ StackName: name, ...runtime }] };
+        }
+        if (name === baseStack) return { Stacks: [{ StackName: name, StackStatus: 'UPDATE_COMPLETE' }] };
+      }
+      throw new Error(`Unexpected AWS call ${args.join(' ')}`);
+    },
+    async oneShot(role, revision, action, payload) { oneShots.push([role, revision, action, payload]); },
+  };
+  return { calls, oneShots, io };
+}
+
+test('the re-arm inputs are exactly the two standing-state values and nothing else', () => {
+  assert.deepEqual(validateOperationInputs(rearmEnv()).object_deletion_rearm,
+    { manifest_id: manifestId, expected_generation: 7 });
+  // The UUID is canonicalised so the allow-list, the registration and the Service
+  // all see the same bytes.
+  assert.equal(validateOperationInputs(rearmEnv({ OBJECT_DELETION_MANIFEST_ID: manifestId.toUpperCase() }))
+    .object_deletion_rearm.manifest_id, manifestId);
+  // Both inputs are absent on every other operation, and a leftover value there is
+  // a refusal rather than an ignored input.
+  assert.equal(Object.hasOwn(validateOperationInputs({ ...env, OBJECT_DELETION_MANIFEST_ID: '',
+    OBJECT_DELETION_EXPECTED_GENERATION: '' }), 'object_deletion_rearm'), false);
+  for (const other of ['admission-status', 'add-testers', 'set-testers']) {
+    assert.throws(() => validateOperationInputs({ ...env, INFRA_OPERATION: other, TESTER_EMAILS: '[]',
+      OBJECT_DELETION_MANIFEST_ID: manifestId, OBJECT_DELETION_EXPECTED_GENERATION: '7' }),
+    /belong only to rearm-object-deletion/, other);
+  }
+  // The re-arm itself refuses a missing, partial or malformed pair in the
+  // credential-free preflight.
+  for (const [id, generation] of [['', ''], [manifestId, ''], ['', '7'], ['not-a-uuid', '7'],
+    [manifestId, '0'], [manifestId, '-1'], [manifestId, '1.5'], [manifestId, '1e3'], [manifestId, '9007199254740992']]) {
+    assert.throws(() => validateOperationInputs(rearmEnv({ OBJECT_DELETION_MANIFEST_ID: id,
+      OBJECT_DELETION_EXPECTED_GENERATION: generation })), /OBJECT_DELETION_/, `${id}|${generation}`);
+  }
+  // Only the four deploy operations take a Service artifact identity: the re-arm
+  // refuses one like every other non-release operation.
+  assert.throws(() => validateOperationInputs(rearmEnv({ SERVICE_ARTIFACT_TAG: `service-artifacts-${serviceCommit}`,
+    SERVICE_COMMIT: serviceCommit })), /take a Service artifact identity/);
+});
+
+test('the re-arm dispatches the exact lifecycle one-shot from the deployed revision', async () => {
+  const surface = rearmSurface();
+  const captured = await captureStreams(() => runOperation(rearmEnv(), { createIo: async () => surface.io }));
+  assert.deepEqual(surface.oneShots, [['lifecycle', { digest: imageDigest, commit: serviceCommit,
+    parameters: Object.fromEntries(runtimeParameters.map((row) => [row.ParameterKey, row.ParameterValue])) },
+  'rearm-object-deletion', rearmPayload]]);
+  assert.equal(JSON.parse(captured.stdout.trim()).dispatched, true);
+  assert.equal(JSON.parse(captured.stdout.trim()).manifest_id, manifestId);
+  // No stack write and no deploy: four CloudFormation reads (the operation's
+  // Base/Runtime proof and the run's closing Base/Runtime read) and nothing else.
+  // The fake has no `deploy` or `destroy`, so a mutation would fail rather than
+  // pass.
+  const stackCalls = surface.calls.filter((call) => call[0] === 'cloudformation');
+  assert.equal(stackCalls.length, 4);
+  assert.ok(stackCalls.every((call) => call[1] === 'describe-stacks'));
+});
+
+test('the re-arm refuses a stopped or non-terminal Beta before the task is registered', async () => {
+  for (const [runtime, pattern] of [[null, /requires AnyWearRuntimeStack-beta; start Beta first/],
+    [{ StackStatus: 'UPDATE_IN_PROGRESS' }, /requires a terminal AnyWearRuntimeStack-beta/]]) {
+    const surface = rearmSurface({ runtime });
+    await captureStreams(() => assert.rejects(runOperation(rearmEnv(), { createIo: async () => surface.io }), pattern));
+    assert.equal(surface.oneShots.length, 0, 'the refusal precedes the task registration');
+  }
+});
+
 // Issue #316: the read-only `state` entry. It prints the ECS block through the real
 // `runOperation` and adds each service's verdict and counts to the `Beta state:`
 // summary line, so an operator reading only the summary still learns whether

@@ -129,7 +129,7 @@ and must not be relabeled as an Infra-produced deployment.
   accepted only by `deploy-runtime` and proved in the same credential-free
   preflight: `deploy` requires the dispatching run's HTTPS URL, `manual` requires
   no URL, `release` is refused there because the release chain never deploys, and
-  the other eleven operations refuse a trigger that names an entry event.
+  the other twelve operations refuse a trigger that names an entry event.
   `deploy-egress`/`delete-egress`
   change only the operation-owned `AnyWearEgressStack-beta`; `delete-egress`
   refuses unless the Runtime stack is absent. `production.yml`

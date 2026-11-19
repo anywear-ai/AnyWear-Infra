@@ -50,6 +50,7 @@ const KEPT_EXPORTS = Object.freeze([
   'DEPLOYMENT_GATE_MAX_PROBES', 'DEPLOYMENT_GATE_SIGNAL_NAMES', 'DEPLOYMENT_GATE_THRESHOLDS',
   'DEPLOYMENT_GATE_COMPARISONS', 'DEPLOYMENT_SQS_DEPTH_ATTRIBUTES', 'deploymentBakeName',
   'runtimeStageFromStack', 'deploymentAlarmName', 'deploymentAlarmNames', 'deploymentQueueNames',
+  'WORKER_ALARM_THRESHOLDS',
 ]);
 
 test('every removed record/gate export is undefined and every kept export is present', () => {

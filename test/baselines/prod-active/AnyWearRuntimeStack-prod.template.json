@@ -1901,6 +1901,68 @@
     "Threshold": 150000,
     "TreatMissingData": "notBreaching"
    }
+  },
+  "ComputeRuntimeWorkerObjectDeletionAbandonedMetricFilterFAF53144": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "{ $.msg = \"Object deletion manifest standing state\" }",
+    "LogGroupName": {
+     "Ref": "ComputeRuntimeWorkerLogGroupF6DEE804"
+    },
+    "MetricTransformations": [
+     {
+      "MetricName": "ObjectDeletionAbandonedCount",
+      "MetricNamespace": "AnyWear/Worker",
+      "MetricValue": "$.objectDeletionAbandoned",
+      "Unit": "Count"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeWorkerObjectDeletionReaperTickMetricFilter21525251": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "{ $.msg = \"Object deletion manifest standing state\" }",
+    "LogGroupName": {
+     "Ref": "ComputeRuntimeWorkerLogGroupF6DEE804"
+    },
+    "MetricTransformations": [
+     {
+      "MetricName": "ObjectDeletionReaperTick",
+      "MetricNamespace": "AnyWear/Worker",
+      "MetricValue": "1",
+      "Unit": "Count"
+     }
+    ]
+   }
+  },
+  "ComputeRuntimeObjectDeletionAbandonedAlarm7F0DB828": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmName": "prod-anywear-object-deletion-abandoned",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "EvaluationPeriods": 2,
+    "MetricName": "ObjectDeletionAbandonedCount",
+    "Namespace": "AnyWear/Worker",
+    "Period": 60,
+    "Statistic": "Maximum",
+    "Threshold": 0,
+    "TreatMissingData": "notBreaching"
+   }
+  },
+  "ComputeRuntimeObjectDeletionReaperTickAlarm76B8A3B2": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmName": "prod-anywear-object-deletion-reaper-tick",
+    "ComparisonOperator": "LessThanThreshold",
+    "EvaluationPeriods": 2,
+    "MetricName": "ObjectDeletionReaperTick",
+    "Namespace": "AnyWear/Worker",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Threshold": 1,
+    "TreatMissingData": "breaching"
+   }
   }
  },
  "Outputs": {

@@ -634,6 +634,31 @@ describe('Platform safety controls', () => {
     }));
   });
 
+  // Issue #321: an abandoned object-deletion manifest is archived to
+  // `object-deletion-archive/<yyyy>/<mm>/<manifest_id>.json` before its row is
+  // deleted, so the keys outlive the record by a stated year. The rule is on the
+  // wardrobe bucket in every stage (the bucket exists in every stage), and the
+  // seven-day task-attempt rule is retained beside it.
+  it('expires the object-deletion archive after a year on every stage', () => {
+    for (const stage of ['dev', 'beta', 'prod']) {
+      const template = synthesizePlatform(stage);
+      const bucket = Object.values(template.Resources).find((resource: any) => resource.Type === 'AWS::S3::Bucket'
+        && JSON.stringify(resource.Properties.BucketName ?? '').includes('anywear-wardrobe-bucket')) as any;
+      expect(bucket).toBeDefined();
+      expect(bucket.Properties.LifecycleConfiguration.Rules).toContainEqual(expect.objectContaining({
+        Id: 'ExpireObjectDeletionArchive',
+        Prefix: 'object-deletion-archive/',
+        ExpirationInDays: 365,
+      }));
+      expect(bucket.Properties.LifecycleConfiguration.Rules).toContainEqual(expect.objectContaining({
+        Id: 'ExpireUnpromotedTaskAttempts', Prefix: 'task-attempts/', ExpirationInDays: 7,
+      }));
+      // The archive prefix is the whole rule: no other prefix, tag filter or
+      // transition is added to either rule.
+      expect(bucket.Properties.LifecycleConfiguration.Rules).toHaveLength(2);
+    }
+  });
+
   it('creates the test-user trigger only outside production', () => {
     const devTemplate = synthesizePlatform('dev');
     const prodTemplate = synthesizePlatform('prod');
@@ -1440,6 +1465,64 @@ describe('Explicit infrastructure identity cutover', () => {
       expect(JSON.stringify(phasedPolicies[0])).not.toContain('cognito:');
       expect(JSON.stringify(phasedPolicies[0])).not.toContain('ssm:');
     }
+  });
+
+  // Issue #321: the `rearm-object-deletion` one-shot runs on the existing lifecycle
+  // task role and its one drain pass issues a HeadBucket probe, one HeadObject per
+  // key and one DeleteObject against the row's recorded bucket. The grant is two
+  // statements on the stage's wardrobe bucket only — object read/delete on the
+  // `outfit-generations/*` object ARNs and listing on the bucket ARN under an
+  // `s3:prefix` condition — added to the four statements the role already carried.
+  it('grants the lifecycle task exactly the re-arm wardrobe-bucket statements', () => {
+    const template = synthesizePlatform('beta', 'roles-added');
+    const [roleId] = (Object.entries(template.Resources) as [string, any][]).find(([, resource]) => (
+      resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-lifecycle-task'))!;
+    const policies = (Object.values(template.Resources) as any[]).filter((resource) => (
+      resource.Type === 'AWS::IAM::Policy'
+        && JSON.stringify(resource.Properties.Roles) === JSON.stringify([{ Ref: roleId }])));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0].Properties.PolicyDocument.Statement;
+    const bucketId = (Object.entries(template.Resources) as [string, any][]).find(([, resource]) => (
+      resource.Type === 'AWS::S3::Bucket'
+        && JSON.stringify(resource.Properties.BucketName ?? '').includes('anywear-wardrobe-bucket')))?.[0];
+    expect(bucketId).toBeDefined();
+    const objectArn = (prefix: string) => ({
+      'Fn::Join': ['', [{ 'Fn::GetAtt': [bucketId, 'Arn'] }, `/${prefix}`]],
+    });
+    const s3Statements = statements.filter((statement: any) => JSON.stringify(statement.Action).includes('"s3:'));
+    expect(s3Statements).toEqual([
+      { Action: ['s3:GetObject', 's3:DeleteObject'], Effect: 'Allow',
+        Resource: objectArn('outfit-generations/*') },
+      { Action: 's3:ListBucket', Effect: 'Allow', Resource: { 'Fn::GetAtt': [bucketId, 'Arn'] },
+        Condition: { StringLike: { 's3:prefix': ['outfit-generations/*'] } } },
+    ]);
+    // The four pre-existing grants are untouched: the database secret read, one
+    // SSM statement on the Beta admission parameters and the two SQS statements.
+    expect(statements).toHaveLength(6);
+    expect(statements[0].Action).toContain('secretsmanager:GetSecretValue');
+    expect(statements[1].Action).toEqual(['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter']);
+    expect(statements[2].Action).toBe('sqs:GetQueueAttributes');
+    expect(statements[3].Action).toEqual(
+      ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility']);
+    // No other S3 action, bucket or wildcard resource exists on this role, and the
+    // grant is not a second role: the role name and its trust are unchanged. The
+    // only object-prefix resource is the one delete/read ARN; the list grant names
+    // the bucket ARN and confines listings through its condition.
+    for (const statement of statements) {
+      expect(JSON.stringify(statement.Action)).not.toContain('s3:*');
+      expect(JSON.stringify(statement.Resource ?? '')).not.toContain('"*"');
+    }
+    expect(statements.flatMap((statement: any) => [statement.Resource ?? []].flat())
+      .filter((resource: any) => JSON.stringify(resource).includes('outfit-generations')))
+      .toEqual([objectArn('outfit-generations/*')]);
+    expect(JSON.stringify(statements.find((statement: any) => statement.Action === 's3:ListBucket').Condition))
+      .toContain('outfit-generations/*');
+    // The role exists only in Beta; a Production synthesis creates no lifecycle
+    // task role and no wardrobe-bucket grant for one.
+    const prod = synthesizePlatform('prod');
+    expect(Object.values(prod.Resources).some((resource: any) => resource.Type === 'AWS::IAM::Role'
+      && resource.Properties.RoleName === 'beta-anywear-lifecycle-task')).toBe(false);
+    expect(JSON.stringify(prod)).not.toContain('outfit-generations/*');
   });
 
   it('grants the E2E qualification role exactly the #217 read-only CloudTrail lookup', () => {

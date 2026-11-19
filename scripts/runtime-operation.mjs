@@ -13,6 +13,7 @@ import { readLifecycleStatus } from './lib/lifecycle-status.mjs';
 import { runRestoreRelease } from './lib/restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './lib/one-writer.mjs';
 import { operationBoundary, sessionPolicy, assertAwsAllowed, assertOneShotAllowed, assertDeployAllowed, assertProtectedExecutor } from './lib/operation-boundaries.mjs';
+import { REARM_OBJECT_DELETION, rearmCommand, rearmRequest, runObjectDeletionRearm } from './lib/object-deletion-rearm.mjs';
 import { runAuthorizationPreflight } from './lib/authorization-preflight.mjs';
 import { observeBetaState } from './lib/observe-beta-state.mjs';
 import { account, region } from './lib/deployment-contract.mjs';
@@ -85,6 +86,21 @@ export function validateOperationInputs(env = process.env) {
       throw new Error('NAT_EIP_ALLOCATION_ID must be an Elastic IP allocation id (eipalloc-...)');
     }
   }
+  // Issue #321: the abandoned-manifest re-arm takes exactly the two values the
+  // worker's standing-state line reports — the oldest abandoned manifest id and
+  // its lease generation. Both inputs default to empty on every operation, so a
+  // non-empty pair on any other operation is refused; the re-arm itself refuses a
+  // missing or malformed pair before any credential. A release identity is
+  // already refused by `validateReleaseInput` above, because only the four deploy
+  // operations take one.
+  const rearm = rearmRequest(env);
+  if (operation === REARM_OBJECT_DELETION) {
+    if (!rearm) {
+      throw new Error('rearm-object-deletion requires OBJECT_DELETION_MANIFEST_ID and OBJECT_DELETION_EXPECTED_GENERATION');
+    }
+  } else if (rearm) {
+    throw new Error('The object-deletion re-arm inputs belong only to rearm-object-deletion');
+  }
   // Cross-repository boundary, not a local preference: these names remain live
   // outside Infra. Service's own .github/scripts/run-one-shot-task.sh:19,29,34 and
   // .github/scripts/runtime-checkpoint.test.mjs:97-98,148,161 read the evidence and
@@ -95,7 +111,8 @@ export function validateOperationInputs(env = process.env) {
     if (env[key]) throw new Error('Experimental task scopes are not ordinary Beta workflow inputs');
   }
   return { source_sha: env.GITHUB_SHA, operation, service_release: release,
-    ...(operation === 'deploy-egress' && natEipAllocationId ? { nat_eip_allocation_id: natEipAllocationId } : {}) };
+    ...(operation === 'deploy-egress' && natEipAllocationId ? { nat_eip_allocation_id: natEipAllocationId } : {}),
+    ...(rearm ? { object_deletion_rearm: rearm } : {}) };
 }
 const baseStack = 'AnyWearPlatformStack-beta';
 const egressStack = 'AnyWearEgressStack-beta';
@@ -366,8 +383,18 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       const container = definition?.containerDefinitions?.find(item => item.name === 'OneShot');
       if (task?.lastStatus !== 'STOPPED' || task.taskDefinitionArn !== definitions[0] || actualContainer?.exitCode !== 0
         || actualContainer.imageDigest !== revision.digest) throw new Error('Actual one-shot image/result differs from the deployed revision');
-      if (role === 'lifecycle' && canonicalJson(container.command) !== canonicalJson(['node', 'dist/ops/beta-lifecycle.js', argument,
-        ...(payload === undefined ? [] : [payload])])) throw new Error('Actual lifecycle command differs from the requested action');
+      if (role === 'lifecycle') {
+        // Issue #321: the re-arm registers its own entry point and one canonical
+        // JSON argument; every other lifecycle action keeps the beta-lifecycle
+        // command. Both sides read one builder, so a reorder, an extra flag or a
+        // second payload fails the identity check instead of running.
+        const expected = argument === REARM_OBJECT_DELETION
+          ? rearmCommand(env)
+          : ['node', 'dist/ops/beta-lifecycle.js', argument, ...(payload === undefined ? [] : [payload])];
+        if (canonicalJson(container.command) !== canonicalJson(expected)) {
+          throw new Error('Actual lifecycle command differs from the requested action');
+        }
+      }
       if (role === 'lifecycle' && argument === 'status') {
         const status = await readLifecycleStatus(io, task, definition);
         return status;
@@ -553,6 +580,12 @@ export async function runOperation(env = process.env, {
     await deployRuntime({ ...deployRuntimeDependencies, io, env, release: serviceRelease });
   } else if (operation === 'stop-runtime') {
     await stopRuntime({ io, env });
+  } else if (operation === REARM_OBJECT_DELETION) {
+    // Issue #321: one fenced repair of one abandoned object-deletion manifest,
+    // dispatched as a lifecycle one-shot from the image the Runtime stack already
+    // reports. The Service command's non-zero exit code makes `oneShot` throw, so
+    // a refused repair is a failed run and never a quiet no-op.
+    await runObjectDeletionRearm(io, env);
   } else if (operation === 'delete-egress') {
     await deleteOperationStack(io, operation);
   } else {

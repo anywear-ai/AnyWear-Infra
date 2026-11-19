@@ -1,5 +1,5 @@
 {
-  "note": "Historical identity of the retired @git-malu/stage-contracts 0.7.0 package. The tag stage-contracts-v0.7.0 is an annotated tag: producer_ref is its tag object and producer_commit is the commit it peels to. The two producer paths are the package blobs at that tag; the committed files are those bytes with the declared rewrites applied, which remove the retired package name and, since issue #266, rename the two repository-owner constants to the durable `anywear-ai` organization. Reversing the rewrites reproduces the recorded producer digests, so the producer's own `git-malu` owner names stay recorded only as the reverse side of those rewrites. This fixture is a dated historical record, not a current dependency.",
+  "note": "Historical identity of the retired @git-malu/stage-contracts 0.7.0 package. The tag stage-contracts-v0.7.0 is an annotated tag: producer_ref is its tag object and producer_commit is the commit it peels to. The two producer paths are the package blobs at that tag; the committed files are those bytes with the declared rewrites applied, which remove the retired package name, rename the two repository-owner constants to the durable `anywear-ai` organization (issue #266), and add the #321 worker alarm thresholds and their name resolution. Reversing the rewrites reproduces the recorded producer digests, so each reviewed addition is the `to` side of one declared rewrite and the producer's own bytes stay recorded only as the reverse side. This fixture is a dated historical record, not a current dependency.",
   "recorded_at": "2026-10-24",
   "producer_tag": "stage-contracts-v0.7.0",
   "producer_ref": "418dc408659bccd2e9bb3cac712eedeefec0a7e0",
@@ -43,6 +43,21 @@
       "file": "lib/contracts.d.mts",
       "from": "export declare const SERVICE_REPOSITORY: 'git-malu/AnyWear-Service';",
       "to": "export declare const SERVICE_REPOSITORY: 'anywear-ai/AnyWear-Service';"
+    },
+    {
+      "file": "lib/contracts.mjs",
+      "from": "  sqs_dlq_depth: Object.freeze({ max_depth: 0 }),\n  outbox_oldest_age: Object.freeze({ max_age_milliseconds: 150000 }),\n});\n\nconst DEPLOYMENT_GATE_SIGNAL_DEFINITIONS = Object.freeze({",
+      "to": "  sqs_dlq_depth: Object.freeze({ max_depth: 0 }),\n  outbox_oldest_age: Object.freeze({ max_age_milliseconds: 150000 }),\n});\n\n// Issue #321: the worker's two object-deletion standing-state alarms. They are\n// worker alarms, not deployment-gate signals: they are deliberately absent from\n// `DEPLOYMENT_GATE_SIGNAL_NAMES`, so the 300-second bake never reads them and a\n// standing failure measured in hours cannot fail every unrelated deploy. The\n// values are stage-free; only the alarm names carry the stage.\nexport const WORKER_ALARM_THRESHOLDS = Object.freeze({\n  object_deletion_abandoned: Object.freeze({\n    metric: 'ObjectDeletionAbandonedCount',\n    statistic: 'Maximum',\n    period_seconds: 60,\n    evaluation_periods: 2,\n    threshold: 0,\n    comparison: 'greater_than_threshold',\n    treat_missing_data: 'notBreaching',\n  }),\n  object_deletion_reaper_tick: Object.freeze({\n    metric: 'ObjectDeletionReaperTick',\n    statistic: 'Sum',\n    period_seconds: 300,\n    evaluation_periods: 2,\n    threshold: 1,\n    comparison: 'less_than_threshold',\n    treat_missing_data: 'breaching',\n  }),\n});\n\nconst DEPLOYMENT_GATE_SIGNAL_DEFINITIONS = Object.freeze({"
+    },
+    {
+      "file": "lib/contracts.mjs",
+      "from": "  outbox_oldest_age: Object.freeze(['outbox-oldest-age']),\n});\n\n/** The deployed alarm names for one signal, for example `beta-anywear-alb-5xx`. */\nexport function deploymentAlarmName(stage, signalName) {\n  requireStage(stage);\n  const suffixes = DEPLOYMENT_GATE_ALARM_SUFFIXES[signalName];",
+      "to": "  outbox_oldest_age: Object.freeze(['outbox-oldest-age']),\n});\n\n// Issue #321: the worker alarms are named by the same builder, but they live in\n// their own suffix table so `deploymentAlarmNames` still enumerates exactly the\n// six bake signals. The table is not a second gate surface: no bake code reads it.\nconst WORKER_ALARM_SUFFIXES = Object.freeze({\n  object_deletion_abandoned: Object.freeze(['object-deletion-abandoned']),\n  object_deletion_reaper_tick: Object.freeze(['object-deletion-reaper-tick']),\n});\n\n// Every deployed alarm this contract names, gate and worker alike.\nconst ALARM_SUFFIXES = Object.freeze({ ...DEPLOYMENT_GATE_ALARM_SUFFIXES, ...WORKER_ALARM_SUFFIXES });\n\n/** The deployed alarm names for one signal, for example `beta-anywear-alb-5xx`. */\nexport function deploymentAlarmName(stage, signalName) {\n  requireStage(stage);\n  const suffixes = ALARM_SUFFIXES[signalName];"
+    },
+    {
+      "file": "lib/contracts.d.mts",
+      "from": "export declare const DEPLOYMENT_GATE_COMPARISONS: Readonly<Record<string, string>>;\n\n/** The gate window: exactly 300 seconds. */",
+      "to": "export declare const DEPLOYMENT_GATE_COMPARISONS: Readonly<Record<string, string>>;\n\n/**\n * One worker alarm's stage-free calibration. Every field feeds the deployed\n * `AWS::CloudWatch::Alarm` or the metric filter that publishes its metric, so the\n * alarm and the contract cannot drift.\n */\nexport interface WorkerAlarmThreshold {\n  /** The metric the worker's log filter publishes. */\n  readonly metric: string;\n  /** The CloudWatch statistic the alarm evaluates. */\n  readonly statistic: 'Maximum' | 'Sum';\n  /** The alarm period in seconds. */\n  readonly period_seconds: number;\n  /** Consecutive periods the alarm evaluates. */\n  readonly evaluation_periods: number;\n  /** The stage-free threshold. */\n  readonly threshold: number;\n  /** The comparison operator, in the low-level CloudFormation vocabulary. */\n  readonly comparison: 'greater_than_threshold' | 'less_than_threshold';\n  /** What a missing datapoint means: `breaching` is the fail-closed setting. */\n  readonly treat_missing_data: 'breaching' | 'notBreaching';\n}\n\n/**\n * Issue #321: the two worker standing-state alarm thresholds, keyed by the worker\n * signal name. They are not deployment-gate signals: `DEPLOYMENT_GATE_SIGNAL_NAMES`\n * and the 300-second bake never read them.\n */\nexport declare const WORKER_ALARM_THRESHOLDS: Readonly<Record<\n  'object_deletion_abandoned' | 'object_deletion_reaper_tick', WorkerAlarmThreshold>>;\n\n/** The gate window: exactly 300 seconds. */"
     }
   ],
   "export_names": [
@@ -63,6 +78,7 @@
     "STAGE_CONTRACT_PARAMETERS",
     "STAGE_CONTRACT_READ_PARAMETERS",
     "STAGE_CONTRACT_STAGE",
+    "WORKER_ALARM_THRESHOLDS",
     "canonicalDeployedTemplateHash",
     "deploymentAlarmName",
     "deploymentAlarmNames",
@@ -95,7 +111,8 @@
     "STAGE_CONTRACT_CONDITIONAL_PARAMETERS",
     "STAGE_CONTRACT_PARAMETERS",
     "STAGE_CONTRACT_READ_PARAMETERS",
-    "STAGE_CONTRACT_STAGE"
+    "STAGE_CONTRACT_STAGE",
+    "WORKER_ALARM_THRESHOLDS"
   ],
   "function_names": [
     "canonicalDeployedTemplateHash",
@@ -113,7 +130,7 @@
     "taskDefinitionContentHash",
     "validateStageInputs"
   ],
-  "canonical_export_sha256": "77916c0dff693d2ce04e656b59065520c7ce2846c6f341e5f2f8c16d04efbaa5",
+  "canonical_export_sha256": "863d2707b018af79c9ef0df5a4cf96f0713b537d9d4637edf8ff305d47e5eace",
   "counts": {
     "parameters": 35,
     "conditional_parameters": 1,

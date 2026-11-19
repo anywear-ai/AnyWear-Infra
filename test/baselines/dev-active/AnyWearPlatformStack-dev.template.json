@@ -561,6 +561,12 @@
        "Id": "ExpireUnpromotedTaskAttempts",
        "Prefix": "task-attempts/",
        "Status": "Enabled"
+      },
+      {
+       "ExpirationInDays": 365,
+       "Id": "ExpireObjectDeletionArchive",
+       "Prefix": "object-deletion-archive/",
+       "Status": "Enabled"
       }
      ]
     },

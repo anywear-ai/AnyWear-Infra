@@ -129,9 +129,10 @@ test('the deploy session policy still grants the change-set read the CDK path pe
 // would leave the Platform deploy — the operation that installs them — blocked.
 test('only deploy-runtime simulates and is granted the bake reads', () => {
   const operations = Object.values(workflowOperations).flat();
-  // 13 operations: #207 retired `observe` with the record it produced, and #213
-  // retired the admission open/close operations.
-  assert.equal(operations.length, 13);
+  // 14 operations: #207 retired `observe` with the record it produced, #213
+  // retired the admission open/close operations, and #321 added the
+  // abandoned-manifest re-arm.
+  assert.equal(operations.length, 14);
   const bakeReads = ['cloudwatch/get-metric-statistics', 'cloudwatch/describe-alarms', 'logs/filter-log-events'];
   assert.deepEqual(Object.keys(readOperations).sort(), [...bakeReads].sort());
   for (const pair of bakeReads) {

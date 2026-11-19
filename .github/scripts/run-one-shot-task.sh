@@ -39,18 +39,32 @@ elif [[ "$role" == "tester-cleanup" ]]; then
     || { echo "Tester cleanup requires a bounded run scope and exact user JSON payload" >&2; exit 2; }
 elif [[ "$role" == "lifecycle" ]]; then
   [[ "$stage" == "beta" ]] || { echo "Lifecycle only supports beta" >&2; exit 2; }
-  # #213 retired the admission mode, so the only lifecycle actions left are the
-  # tester allowlist read and its one write.
-  [[ "$verify_api_url" =~ ^(status|set-testers)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
+  # #213 retired the admission mode, so the surviving lifecycle actions are the
+  # tester allowlist read and its one write. #321 adds the one fenced repair of an
+  # abandoned object-deletion manifest; it registers a different Service entry
+  # point and its exact payload is validated below.
+  [[ "$verify_api_url" =~ ^(status|set-testers|rearm-object-deletion)$ ]] || { echo "Invalid lifecycle action" >&2; exit 2; }
   if [[ "$verify_api_url" == "set-testers" ]]; then
     jq -e --arg payload "$lifecycle_payload" \
       '($payload | utf8bytelength) <= 4096 and type == "array" and length <= 50 and all(.[]; type == "string")' \
       <<<"$lifecycle_payload" >/dev/null 2>&1 \
       || { echo "Tester list must be a JSON array of at most 50 email strings within 4096 bytes" >&2; exit 2; }
+  elif [[ "$verify_api_url" == "rearm-object-deletion" ]]; then
+    # Issue #321: the re-arm argument is one JSON object with exactly a UUID
+    # `manifest_id` and a positive-integer `expected_generation`, and nothing else.
+    # It is refused here, before any task definition is registered.
+    jq -e --arg payload "$lifecycle_payload" \
+      '($payload | utf8bytelength) <= 4096 and type == "object"
+        and (keys | sort) == ["expected_generation","manifest_id"]
+        and (.manifest_id | type == "string"
+          and test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+        and (.expected_generation | type == "number" and . >= 1 and . == floor and . <= 9007199254740991)' \
+      <<<"$lifecycle_payload" >/dev/null 2>&1 \
+      || { echo "Re-arm requires one JSON object with a UUID manifest_id and a positive-integer expected_generation" >&2; exit 2; }
   elif [[ -n "$lifecycle_payload" ]]; then
     # `status` takes no payload: a stray payload would widen the registered
     # lifecycle command.
-    echo "Only set-testers accepts a lifecycle payload; status takes none" >&2
+    echo "Only set-testers and rearm-object-deletion accept a lifecycle payload; status takes none" >&2
     exit 2
   fi
 elif [[ "$role" == "verify" ]]; then
@@ -139,7 +153,13 @@ fi
 image="${repository_uri}@${image_digest}"
 command="dist/${role}.js"
 if [[ "$role" == "lifecycle" ]]; then
-  command="dist/ops/beta-lifecycle.js"
+  # #321: the re-arm registers the Service's own object-deletion entry point;
+  # every other lifecycle action keeps the beta-lifecycle entry point.
+  if [[ "$verify_api_url" == "rearm-object-deletion" ]]; then
+    command="dist/ops/object-deletion-rearm.js"
+  else
+    command="dist/ops/beta-lifecycle.js"
+  fi
 elif [[ "$role" == "tester-cleanup" ]]; then
   command="dist/ops/beta-tester-cleanup.js"
 elif [[ "$role" == "lifecycle-fixture" ]]; then
@@ -164,6 +184,8 @@ environment="$(jq -n \
   --arg digest "$image_digest" \
   --arg api "$verify_api_url" \
   --arg role "$role" \
+  --arg actor "${GITHUB_ACTOR:-unknown-actor}" \
+  --arg runId "${GITHUB_RUN_ID:-unknown-run}" \
   '[
     {name:"STAGE",value:$stage},
     {name:"NODE_ENV",value:"production"},
@@ -179,7 +201,10 @@ environment="$(jq -n \
     {name:"SERVICE_COMMIT_SHA",value:$commit},
     {name:"IMAGE_DIGEST",value:$digest}
   ] + (if $role == "verify" and $api != "" and $api != "schema-journal" then [{name:"VERIFY_API_URL",value:$api}] else [] end)
-    + (if $role == "lifecycle" or $role == "tester-cleanup" then [{name:"SQS_VTO_DLQ_URL",value:$vtoDlq},{name:"SQS_AUTO_TAGGING_DLQ_URL",value:$taggingDlq}] else [] end)')"
+    + (if $role == "lifecycle" or $role == "tester-cleanup" then [{name:"SQS_VTO_DLQ_URL",value:$vtoDlq},{name:"SQS_AUTO_TAGGING_DLQ_URL",value:$taggingDlq}] else [] end)
+    # #321: the re-arm's `last_rearmed_by` is the reviewed dispatch's actor and run
+    # id, so the Service can attribute the repair to a person and an audited run.
+    + (if $role == "lifecycle" and $api == "rearm-object-deletion" then [{name:"GITHUB_ACTOR",value:$actor},{name:"GITHUB_RUN_ID",value:$runId}] else [] end)')"
 
 family="${stage}-anywear-${role}"
 task_definition="$(jq -n \
@@ -206,9 +231,9 @@ task_definition="$(jq -n \
       name:"OneShot",
       image:$image,
       essential:true,
-      command:(["node",$command] + (if $role == "lifecycle" or $role == "lifecycle-fixture" then [$action] else [] end)
+      command:(["node",$command] + (if ($role == "lifecycle" and $action != "rearm-object-deletion") or $role == "lifecycle-fixture" then [$action] else [] end)
         + (if $role == "verify" and $action == "schema-journal" then ["schema-journal"] else [] end)
-        + (if ($role == "lifecycle" and $action == "set-testers") or $role == "tester-cleanup" or $role == "lifecycle-fixture" or $role == "task-audit" then [$payload] else [] end)),
+        + (if ($role == "lifecycle" and $action == "set-testers") or ($role == "lifecycle" and $action == "rearm-object-deletion") or $role == "tester-cleanup" or $role == "lifecycle-fixture" or $role == "task-audit" then [$payload] else [] end)),
       environment:$environment,
       logConfiguration:{
         logDriver:"awslogs",

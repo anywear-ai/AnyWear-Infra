@@ -14,7 +14,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmNames } from './contracts.mjs';
+import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentAlarmNames, WORKER_ALARM_THRESHOLDS } from './contracts.mjs';
 import type { PlatformDatabase } from './platform-inputs';
 
 export interface ComputeRuntimeProps {
@@ -580,5 +580,78 @@ export class ComputeRuntime extends Construct {
       evaluationPeriods: 2,
     });
     addAction(outboxOldestAgeAlarm);
+
+    // Issue #321: the object-deletion ledger's standing state. The worker reaper
+    // emits one `Object deletion manifest standing state` line per tick carrying
+    // `objectDeletionAbandoned`; two alarms read it, both wired through the same
+    // `addAction` the worker's other alarms use. Every number below comes from
+    // `WORKER_ALARM_THRESHOLDS`, so the deployed alarm and the reviewed contract
+    // cannot drift. The pair is deliberately not a bake signal: the 300-second bake
+    // cannot observe an hours-long failure, so neither name is added to
+    // `DEPLOYMENT_GATE_SIGNAL_NAMES` and the bake never reads them.
+    const workerStatistic = (statistic: 'Maximum' | 'Sum') => (statistic === 'Maximum'
+      ? cloudwatch.Stats.MAXIMUM : cloudwatch.Stats.SUM);
+    const workerComparison = (comparison: 'greater_than_threshold' | 'less_than_threshold') => (
+      comparison === 'greater_than_threshold'
+        ? cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD
+        : cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD);
+    const workerMissingData = (treatMissingData: 'breaching' | 'notBreaching') => (
+      treatMissingData === 'breaching'
+        ? cloudwatch.TreatMissingData.BREACHING : cloudwatch.TreatMissingData.NOT_BREACHING);
+    // The abandoned-count filter extracts the integer the line always carries, so
+    // it sets no `defaultValue`: AWS publishes a filter default whenever the
+    // pattern does not match, and #220 removed exactly that from the outbox filter
+    // because a zero default makes a quiet system look healthy. The ADR also
+    // deleted the count-null sentinel — the line always carries an integer count,
+    // so a filter keyed on null could never distinguish "nothing abandoned" from
+    // "no signal".
+    const abandonedThreshold = WORKER_ALARM_THRESHOLDS.object_deletion_abandoned;
+    const abandonedFilter = new logs.MetricFilter(this, 'WorkerObjectDeletionAbandonedMetricFilter', {
+      logGroup: workerLogGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.msg', '=', 'Object deletion manifest standing state'),
+      metricNamespace: 'AnyWear/Worker',
+      metricName: abandonedThreshold.metric,
+      metricValue: '$.objectDeletionAbandoned',
+      unit: cloudwatch.Unit.COUNT,
+    });
+    // The tick filter publishes the static value 1 on every matched line. A
+    // per-tick signal cannot report its own absence, so the alarm's
+    // `treatMissingData: BREACHING` over two 300-second periods is what turns a
+    // stopped reaper into a breach instead of silence read as health. A static
+    // metric value is emitted only on a pattern match, exactly like the outbox
+    // missing-age filter, so nothing is published for an idle or stopped worker.
+    const tickThreshold = WORKER_ALARM_THRESHOLDS.object_deletion_reaper_tick;
+    const tickFilter = new logs.MetricFilter(this, 'WorkerObjectDeletionReaperTickMetricFilter', {
+      logGroup: workerLogGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.msg', '=', 'Object deletion manifest standing state'),
+      metricNamespace: 'AnyWear/Worker',
+      metricName: tickThreshold.metric,
+      metricValue: '1',
+      unit: cloudwatch.Unit.COUNT,
+    });
+    const objectDeletionAbandonedAlarm = new cloudwatch.Alarm(this, 'ObjectDeletionAbandonedAlarm', {
+      alarmName: deploymentAlarmName(props.stage, 'object_deletion_abandoned')[0],
+      metric: abandonedFilter.metric({
+        statistic: workerStatistic(abandonedThreshold.statistic),
+        period: cdk.Duration.seconds(abandonedThreshold.period_seconds),
+      }),
+      threshold: abandonedThreshold.threshold,
+      comparisonOperator: workerComparison(abandonedThreshold.comparison),
+      evaluationPeriods: abandonedThreshold.evaluation_periods,
+      treatMissingData: workerMissingData(abandonedThreshold.treat_missing_data),
+    });
+    addAction(objectDeletionAbandonedAlarm);
+    const objectDeletionReaperTickAlarm = new cloudwatch.Alarm(this, 'ObjectDeletionReaperTickAlarm', {
+      alarmName: deploymentAlarmName(props.stage, 'object_deletion_reaper_tick')[0],
+      metric: tickFilter.metric({
+        statistic: workerStatistic(tickThreshold.statistic),
+        period: cdk.Duration.seconds(tickThreshold.period_seconds),
+      }),
+      threshold: tickThreshold.threshold,
+      comparisonOperator: workerComparison(tickThreshold.comparison),
+      evaluationPeriods: tickThreshold.evaluation_periods,
+      treatMissingData: workerMissingData(tickThreshold.treat_missing_data),
+    });
+    addAction(objectDeletionReaperTickAlarm);
   }
 }

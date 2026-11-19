@@ -99,6 +99,36 @@ export declare const DEPLOYMENT_GATE_THRESHOLDS: Readonly<Record<string, Readonl
 /** The fixed comparison string of each signal, keyed by signal name. */
 export declare const DEPLOYMENT_GATE_COMPARISONS: Readonly<Record<string, string>>;
 
+/**
+ * One worker alarm's stage-free calibration. Every field feeds the deployed
+ * `AWS::CloudWatch::Alarm` or the metric filter that publishes its metric, so the
+ * alarm and the contract cannot drift.
+ */
+export interface WorkerAlarmThreshold {
+  /** The metric the worker's log filter publishes. */
+  readonly metric: string;
+  /** The CloudWatch statistic the alarm evaluates. */
+  readonly statistic: 'Maximum' | 'Sum';
+  /** The alarm period in seconds. */
+  readonly period_seconds: number;
+  /** Consecutive periods the alarm evaluates. */
+  readonly evaluation_periods: number;
+  /** The stage-free threshold. */
+  readonly threshold: number;
+  /** The comparison operator, in the low-level CloudFormation vocabulary. */
+  readonly comparison: 'greater_than_threshold' | 'less_than_threshold';
+  /** What a missing datapoint means: `breaching` is the fail-closed setting. */
+  readonly treat_missing_data: 'breaching' | 'notBreaching';
+}
+
+/**
+ * Issue #321: the two worker standing-state alarm thresholds, keyed by the worker
+ * signal name. They are not deployment-gate signals: `DEPLOYMENT_GATE_SIGNAL_NAMES`
+ * and the 300-second bake never read them.
+ */
+export declare const WORKER_ALARM_THRESHOLDS: Readonly<Record<
+  'object_deletion_abandoned' | 'object_deletion_reaper_tick', WorkerAlarmThreshold>>;
+
 /** The gate window: exactly 300 seconds. */
 export declare const DEPLOYMENT_GATE_DURATION_SECONDS: 300;
 

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { App, type Stack } from 'aws-cdk-lib';
-import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentAlarmNames } from '../lib/contracts.mjs';
+import { DEPLOYMENT_GATE_THRESHOLDS, deploymentAlarmName, deploymentAlarmNames, WORKER_ALARM_THRESHOLDS } from '../lib/contracts.mjs';
 import { PLATFORM_REGION, platformInputs, type Stage } from '../lib/platform-inputs';
 import { BOOTSTRAP_QUALIFIER, RuntimeStack } from '../lib/runtime-stack';
 
@@ -99,16 +99,17 @@ test.each(VARIANTS.map((variant) => [variant.name, variant] as const))(
     const { template } = synthesize(variant);
     const resources = Object.entries(template.Resources) as Array<[string, any]>;
     const alarms = resources.filter(([, resource]) => resource.Type === 'AWS::CloudWatch::Alarm');
-    // The alarm set is unchanged by #220: the same nine names, so no alarm was
-    // added, removed or renamed. The autoscaling policies' own alarms are unnamed
-    // and outside this set.
-    const nineSuffixes = ['vto-dlq-not-empty', 'auto-tagging-dlq-not-empty', 'vto-oldest-message',
+    // Issue #321 adds two worker alarms to the same nine names #220 left: eleven
+    // named alarms, no alarm added, removed or renamed for any other signal. The
+    // autoscaling policies' own alarms are unnamed and outside this set.
+    const expectedSuffixes = ['vto-dlq-not-empty', 'auto-tagging-dlq-not-empty', 'vto-oldest-message',
       'auto-tagging-oldest-message', 'api-high-cpu', 'alb-5xx', 'api-p95-latency',
-      'ecs-running-not-desired', 'outbox-oldest-age'];
+      'ecs-running-not-desired', 'outbox-oldest-age',
+      'object-deletion-abandoned', 'object-deletion-reaper-tick'];
     const named = alarms.filter(([, alarm]) => typeof alarm.Properties.AlarmName === 'string');
-    expect(named).toHaveLength(9);
+    expect(named).toHaveLength(11);
     const byName = new Map(named.map(([, alarm]) => [alarm.Properties.AlarmName, alarm]));
-    expect([...byName.keys()].sort()).toEqual(nineSuffixes.map((suffix) => `${variant.stage}-anywear-${suffix}`).sort());
+    expect([...byName.keys()].sort()).toEqual(expectedSuffixes.map((suffix) => `${variant.stage}-anywear-${suffix}`).sort());
     // Every alarm the bake's six signals name is one of them, so `describe-alarms`
     // still finds each read.
     for (const names of Object.values(deploymentAlarmNames(variant.stage))) {
@@ -175,6 +176,72 @@ test.each(VARIANTS.map((variant) => [variant.name, variant] as const))(
     // threshold + 1 the first breaching value, and it is the only static value.
     expect(missingAgeFilter.Properties.MetricTransformations[0].MetricValue).toBe(`${outboxThreshold + 1}`);
     expect(missingAgeFilter.Properties.MetricTransformations[0].MetricValue).toBe('150001');
+
+    // Issue #321: the object-deletion ledger's two worker alarms and their two
+    // filters. Every calibration value is read from WORKER_ALARM_THRESHOLDS, so a
+    // deployed alarm that ignores the contract fails here; the literal values are
+    // asserted beside them so a contract edit is a visible test change.
+    const abandonedThreshold = WORKER_ALARM_THRESHOLDS.object_deletion_abandoned;
+    expect(abandonedThreshold.period_seconds).toBe(60);
+    expect(abandonedThreshold.threshold).toBe(0);
+    const abandonedAlarm = byName.get(`${variant.stage}-anywear-object-deletion-abandoned`);
+    expect(abandonedAlarm).toBeDefined();
+    expect(abandonedAlarm.Properties.Namespace).toBe('AnyWear/Worker');
+    expect(abandonedAlarm.Properties.MetricName).toBe('ObjectDeletionAbandonedCount');
+    expect(abandonedAlarm.Properties.Statistic).toBe('Maximum');
+    expect(abandonedAlarm.Properties.Period).toBe(abandonedThreshold.period_seconds);
+    expect(abandonedAlarm.Properties.Period).toBe(60);
+    expect(abandonedAlarm.Properties.EvaluationPeriods).toBe(abandonedThreshold.evaluation_periods);
+    expect(abandonedAlarm.Properties.EvaluationPeriods).toBe(2);
+    expect(abandonedAlarm.Properties.Threshold).toBe(abandonedThreshold.threshold);
+    expect(abandonedAlarm.Properties.Threshold).toBe(0);
+    expect(abandonedAlarm.Properties.ComparisonOperator).toBe('GreaterThanThreshold');
+    expect(abandonedAlarm.Properties.TreatMissingData).toBe('notBreaching');
+    // The operations notification is Beta-only, exactly like the worker's other
+    // alarms: a Production synthesis carries no alarm action.
+    expect(abandonedAlarm.Properties.AlarmActions === undefined).toBe(variant.stage !== 'beta');
+    const tickThreshold = WORKER_ALARM_THRESHOLDS.object_deletion_reaper_tick;
+    expect(tickThreshold.period_seconds).toBe(300);
+    expect(tickThreshold.threshold).toBe(1);
+    const tickAlarm = byName.get(`${variant.stage}-anywear-object-deletion-reaper-tick`);
+    expect(tickAlarm).toBeDefined();
+    expect(tickAlarm.Properties.Namespace).toBe('AnyWear/Worker');
+    expect(tickAlarm.Properties.MetricName).toBe('ObjectDeletionReaperTick');
+    expect(tickAlarm.Properties.Statistic).toBe('Sum');
+    expect(tickAlarm.Properties.Period).toBe(tickThreshold.period_seconds);
+    expect(tickAlarm.Properties.Period).toBe(300);
+    expect(tickAlarm.Properties.EvaluationPeriods).toBe(tickThreshold.evaluation_periods);
+    expect(tickAlarm.Properties.EvaluationPeriods).toBe(2);
+    expect(tickAlarm.Properties.Threshold).toBe(tickThreshold.threshold);
+    expect(tickAlarm.Properties.Threshold).toBe(1);
+    expect(tickAlarm.Properties.ComparisonOperator).toBe('LessThanThreshold');
+    // The fail-closed half: a stopped reaper publishes nothing, which breaches.
+    expect(tickAlarm.Properties.TreatMissingData).toBe('breaching');
+    expect(tickAlarm.Properties.AlarmActions === undefined).toBe(variant.stage !== 'beta');
+
+    const objectDeletionFilters = filters.filter(([, filter]) => filter.Properties.MetricTransformations?.some(
+      (transformation: any) => ['ObjectDeletionAbandonedCount', 'ObjectDeletionReaperTick'].includes(transformation.MetricName)));
+    expect(objectDeletionFilters).toHaveLength(2);
+    const workerLogGroupName = `/anywear/${variant.stage}/worker`;
+    for (const [, filter] of objectDeletionFilters) {
+      // Both filters read the worker's own log group and publish exactly one
+      // metric in the worker namespace from the exact standing-state message.
+      expect(template.Resources[filter.Properties.LogGroupName.Ref].Properties.LogGroupName).toBe(workerLogGroupName);
+      expect(filter.Properties.FilterPattern).toBe('{ $.msg = "Object deletion manifest standing state" }');
+      expect(filter.Properties.MetricTransformations).toHaveLength(1);
+      expect(filter.Properties.MetricTransformations[0].MetricNamespace).toBe('AnyWear/Worker');
+      expect(filter.Properties.MetricTransformations[0].Unit).toBe('Count');
+      // No filter publishes a default: a zero the system did not read must never
+      // look like a healthy count (#220's rule, reused here).
+      expect(filter.Properties.MetricTransformations[0].DefaultValue).toBeUndefined();
+    }
+    const filterByMetric = (metricName: string) => (objectDeletionFilters.find(([, filter]) =>
+      filter.Properties.MetricTransformations[0].MetricName === metricName) as [string, any])[1];
+    // The abandoned count is the integer the line carries; the tick is the static
+    // 1 that makes a stopped reaper observable through missing data.
+    expect(filterByMetric('ObjectDeletionAbandonedCount').Properties.MetricTransformations[0].MetricValue)
+      .toBe('$.objectDeletionAbandoned');
+    expect(filterByMetric('ObjectDeletionReaperTick').Properties.MetricTransformations[0].MetricValue).toBe('1');
   },
 );
 

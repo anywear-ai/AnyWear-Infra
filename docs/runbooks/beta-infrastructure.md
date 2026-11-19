@@ -292,7 +292,7 @@ and `dispatched_by` (string, default `''`). The Service deploy chain sends
 URL. `release` is refused in the credential-free preflight with
 `delivery_trigger=release is refused: the release chain never deploys`, so a
 tag-shaped dispatch fails before any job holds a token, an `environment` or an
-OIDC identity. The other eleven operations refuse a trigger that names an entry
+OIDC identity. The other twelve operations refuse a trigger that names an entry
 event. `release_version` does not exist: no tag reaches Infra, so the input has no
 producer and no tag-to-commit proof runs here.
 
@@ -950,6 +950,125 @@ bake is the **deployment-window** control: it refuses a stalled queue within one
 300-second window. These three alarms are the **continuing surface** an operator
 watches between deployments, and their roughly ten-minute SQS latency is that
 surface's recorded property, not a defect.
+
+**The object-deletion ledger's standing state and its two alarms (issue #321)**
+
+`DELETE /vto/generations/{id}` commits one `object_deletion_manifests` row with the
+object keys the delete owes, then drains it once; a 60-second worker reaper retries
+the row until its attempt budget is spent. When the budget is spent the row becomes
+`abandoned`, which the reaper never claims again. The reaper reports that state on
+every tick instead of only on the tick that abandoned the row, and the worker log
+group carries the monitored signal an operator reads.
+
+The worker reaper emits exactly one `info` line per tick with the message
+`Object deletion manifest standing state`, before it sweeps, whether or not it
+claims anything and whether or not the sweep throws:
+
+| Field | Meaning |
+| --- | --- |
+| `objectDeletionAbandoned` | How many manifests are `abandoned` right now. Always an integer, `0` when none are — the line never omits it. |
+| `objectDeletionAbandonedOldestAgeMs` | Age of the oldest abandoned row in milliseconds, `null` (never `0`) when nothing is abandoned. |
+| `objectDeletionOpenBacklog` | Manifests still `open` with work owed. |
+| `objectDeletionDueBacklog` | `open` manifests already due for a retry. |
+| `objectDeletionOldestAbandonedManifestId` | The oldest abandoned row's manifest id, `null` when none. This is the `object_deletion_manifest_id` input for the re-arm below. |
+| `objectDeletionOldestAbandonedLeaseGeneration` | That row's `lease_generation`, `null` when none. This is the `object_deletion_expected_generation` input. |
+
+Two alarms on `/anywear/beta/worker` read that line, both wired to the same
+operations topic as the worker's other alarms, and both use the stage-free
+`WORKER_ALARM_THRESHOLDS` from `lib/contracts.mjs`:
+
+| Deployed alarm | Metric | Threshold | Period × evaluationPeriods | Missing data | What a page means |
+| --- | --- | --- | --- | --- | --- |
+| `<stage>-anywear-object-deletion-abandoned` | `ObjectDeletionAbandonedCount` (`Maximum`) | greater than `0` | 60 s × 2 | `notBreaching` | A row has reached `abandoned`: its keys could not be proven absent and nothing will retry it. Re-arm it or accept the archive at 90 days. |
+| `<stage>-anywear-object-deletion-reaper-tick` | `ObjectDeletionReaperTick` (`Sum`) | less than `1` | 300 s × 2 | `breaching` | The worker reaper stopped publishing its per-tick line. A stopped Beta (no Runtime stack) legitimately stops the worker, so a page while Beta is stopped is expected; start Beta and the reaper resumes, clearing the alarm. While Beta runs, it means the worker is down or the reaper is wedged. |
+
+The count filter extracts `$.objectDeletionAbandoned` and sets **no**
+`defaultValue`: as issue #220 recorded for the outbox, AWS publishes a filter
+default whenever the pattern does not match, so a zero default would make a quiet
+system look healthy. The tick filter publishes the static value `1` on every
+matched line; a per-tick signal cannot report its own absence, so the second
+alarm's `treatMissingData: breaching` is the fail-closed half. There are exactly
+**two** filters and two alarms: the ADR deleted the null-count sentinel (the line
+always carries an integer count, so a null-keyed filter could never distinguish
+"nothing abandoned" from "no signal") and requires no age metric, so the oldest
+age is a field of the line rather than a third metric.
+
+The two alarms are **worker alarms, not deployment-bake signals**: they are absent
+from `DEPLOYMENT_GATE_SIGNAL_NAMES` and the 300-second bake never reads them,
+because a failure measured in hours must not fail every unrelated deploy.
+
+**Re-arming one abandoned manifest**
+
+`mutate.yml` operation `rearm-object-deletion` is the supported repair; there is no
+route, SQL, or hand-run `aws s3api` procedure. It runs one fenced drain pass on the
+existing `beta-anywear-lifecycle-task` role from the release image the Runtime stack
+already reports, so Beta must be running (the Runtime stack present and terminal)
+and the stage switch `ENABLE_BETA_MUTATION` must be true.
+
+| Input | Value |
+| --- | --- |
+| `object_deletion_manifest_id` | `objectDeletionOldestAbandonedManifestId` from the latest standing-state line; a UUID. |
+| `object_deletion_expected_generation` | `objectDeletionOldestAbandonedLeaseGeneration` from the same line; a positive integer. |
+
+Both inputs are refused on every other operation. The operation takes **no**
+`service_artifact_tag`/`service_commit` — only `deploy-platform`, `deploy-runtime`,
+`restore-release` and `migrate` do — and a dispatch that supplies one is refused in
+the credential-free preflight. The workflow composes the single argument
+`{"manifest_id":"<uuid>","expected_generation":<int>}` and registers exactly
+`node dist/ops/object-deletion-rearm.js <json>`; any other command, argument order
+or second payload is refused before the task is defined.
+
+The repair is fenced on the row's `lease_generation`, so the operator's read is the
+intent: a row re-armed by someone else answers `stale_generation`/`already_rearmed`
+and is never repaired twice. `last_rearmed_by` on the row is
+`<GITHUB_ACTOR>/<GITHUB_RUN_ID>`, so the repair is attributable to the person and
+the audited Actions run. The Service command's exit code is the verdict:
+
+| Exit | Result | Meaning |
+| --- | --- | --- |
+| `0` | `rearmed` | The fence matched; the row is `open` on a fresh budget and this run's one pass retained keys. |
+| `0` | `absent_discarded` | The fence matched and the pass proved every key absent; the row is retired `drained`. |
+| `2` | — | Malformed argument: nothing was read or written. |
+| `3` | `already_rearmed` | The row exists, is not abandoned, and has been re-armed before. No second repair. |
+| `4` | `stale_generation` | The row is abandoned but its `lease_generation` is not the one the operator read. |
+| `5` | `not_abandoned` | The row exists, is not abandoned, and has never been re-armed. |
+| `6` | `not_found` | No row with that id. |
+| `1` | — | Unexpected failure. |
+
+A non-zero exit fails the run: a refused repair never reads as success. The JSON
+result line is in the one-shot task's log stream
+(`/anywear/beta/one-shot` → `beta-anywear-lifecycle/OneShot/<task id>`); the step
+log prints the dispatch identity and the task ARN. A re-arm can legitimately report
+`rearmed` with `drain_status: 'skipped'`: the 60-second reaper claimed the row
+between the fence and this run's own pass, so the repair proceeds under the reaper.
+That is not a failure, and the next standing-state line shows the row `open` with a
+fresh budget. Running the operation again after a successful re-arm is refused with
+one of the codes above and writes nothing.
+
+**Retention of the abandoned row, and the archive**
+
+An abandoned row is kept for **90 days** from `abandoned_at`; it is the only re-arm
+target, so expiry is the point at which the record and its objects leave the
+ledger. The worker writes the whole row to
+`object-deletion-archive/<yyyy>/<mm>/<manifest_id>.json` in the bucket the row
+recorded — or, when that bucket is unreachable, in the stage's
+`AnyWearWardrobeBucket` under the same prefix — head-reads the object, logs
+`Object deletion manifest archived and discarded` with the archive key, and only
+then deletes the row under its id/status/generation fence. The wardrobe bucket's
+`object-deletion-archive/` prefix therefore expires at **365 days** (Platform stack
+lifecycle rule `ExpireObjectDeletionArchive`), so the keys stay readable for a year
+after the row is gone. The archive log line names which bucket received the object,
+and the keys are also in `/anywear/beta/worker` for the log group's own retention.
+
+A re-arm's one drain pass reaches only the stage's `AnyWearWardrobeBucket`: IAM can
+name only that bucket, so a manifest recorded against any other bucket fails its
+first `HeadBucket` with `AccessDenied`, is recorded
+`recorded_bucket_unreachable` and is retained (and later archived to the wardrobe
+bucket). That fail-closed behaviour is intended — an unreachable recorded bucket is
+never evidence of absence — not a grant that needs widening. Such a row cannot be
+repaired by this operation: its re-arm runs, the fresh pass fails the probe again,
+and it walks its new budget back to `abandoned` before leaving the ledger at its
+90-day archive.
 
 **The one artifact a mutating run publishes**
 

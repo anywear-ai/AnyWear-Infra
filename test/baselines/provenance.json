@@ -29,12 +29,12 @@
   },
   "templates": {
     "dev-active/AnyWearFoundationStack.template.json": "cc8c7c485105405b0d95d21569b00c58bf0c339325d84bd03869751b19185890",
-    "dev-active/AnyWearPlatformStack-dev.template.json": "19f31ad8bb6903f50855481d043454a473019629edcd8c7f04d4a3dea254a176",
+    "dev-active/AnyWearPlatformStack-dev.template.json": "0d14b01c438174d6636a7a60174ac0f55a6fbd2a0325cef719f4fbf8c27a0709",
     "beta-active/AnyWearBillingStack-beta.template.json": "31543af92ca60dabcf89abb2118f4c3ed5001560a7beb30245ef52662278d7e8",
     "beta-active/AnyWearFoundationStack.template.json": "cc8c7c485105405b0d95d21569b00c58bf0c339325d84bd03869751b19185890",
-    "beta-active/AnyWearPlatformStack-beta.template.json": "83556dccf5aa0c22428f88aaae74f41a910a165a29b61d864e9c27f82754cd84",
+    "beta-active/AnyWearPlatformStack-beta.template.json": "715adc09964b70e05c83d4bec91b4d649de93ddf6f2403c3483b96131bbadda9",
     "prod-active/AnyWearFoundationStack.template.json": "cc8c7c485105405b0d95d21569b00c58bf0c339325d84bd03869751b19185890",
-    "prod-active/AnyWearPlatformStack-prod.template.json": "5e6e4f327158f15eeff48bcd71b4db757685b4281095a13b18e6f69f97b4d409"
+    "prod-active/AnyWearPlatformStack-prod.template.json": "8fa9f721fa940a84d12db97c99e3ad8ad316b257701ba3b6697c97ce007e780b"
   },
   "platform_baseline": {
     "re-recorded_from": "AnyWear-Infra final source synth (#158 step C extension)",
@@ -90,9 +90,19 @@
         "prod-active/AnyWearFoundationStack.template.json"
       ],
       "reason": "Issue #266 step 24 drops the retired personal owner `git-malu@11473072` now that every repository is owned by `anywear-ai@352675702`. The three Foundation baselines were re-recorded from this source synthesis for exactly that change: each `*-github-actions-pipeline-role` trust keeps only its single `repo:anywear-ai@352675702/<Repository>@<id>:environment:<stage>` subject, with the repository halves (`@1158460323`, `@1317091305`, `@1176104200`, `@1409047265`) unchanged. No other byte moved: no resource, output, role name, policy statement or condition changed, and the `retired` phase still renders the unmatchable single subject."
+    },
+    "object_deletion_archive": {
+      "recorded_at": "2026-11-19",
+      "issue": 321,
+      "files": [
+        "dev-active/AnyWearPlatformStack-dev.template.json",
+        "beta-active/AnyWearPlatformStack-beta.template.json",
+        "prod-active/AnyWearPlatformStack-prod.template.json"
+      ],
+      "reason": "Issue #321 adds the wardrobe bucket's 365-day `object-deletion-archive/` lifecycle rule to every stage, and, in Beta only, the existing lifecycle task role's two S3 statements for the `rearm-object-deletion` one-shot (`s3:GetObject`/`s3:DeleteObject` on `outfit-generations/*` and `s3:ListBucket` on the bucket ARN under the single-prefix `s3:prefix` condition). The three Platform baselines were re-recorded from this source synthesis. The dev and prod templates move only by that lifecycle rule. The Beta template additionally absorbs the #201 stage-contract description rename already admitted by the comparator's `stageContractDescription` allowance (`AnyWear-Service ...` -> `AnyWear-Infra ...`), so those 34 differences are now exact and that allowance no longer fires for this baseline; the `Parameters` block also serialises at a different place in the file, which is key order only and not a template change. The Foundation and Billing templates are unchanged, and the cleanup task role and its #217/#311 grant are untouched."
     }
   },
-  "scope": "Source synth comparison only. The Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth, and issue #266 re-recorded the Foundation templates for the dual owner subjects and then narrowed them to the organization owner alone (step 24), while the Billing template remains the Service source move anchor. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes. The #166 three-stack split re-recorded only the Base (Beta Platform) baseline; Billing still matches the Service move anchor.",
+  "scope": "Source synth comparison only. The Platform templates listed under platform_baseline were re-recorded from the final AnyWear-Infra source synth, and issue #266 re-recorded the Foundation templates for the dual owner subjects and then narrowed them to the organization owner alone (step 24), while the Billing template remains the Service source move anchor. Live Original CFN templates and physical inventories remain separate release gates. ZIP asset locations may differ from unchanged imported live bytes. The #166 three-stack split re-recorded only the Base (Beta Platform) baseline; Billing still matches the Service move anchor. Issue #321 re-recorded the three Platform templates for the 365-day archive lifecycle rule and the Beta lifecycle task role's two re-arm S3 statements, and both Runtime templates for the two worker standing-state alarms and their filters.",
   "egress_identity_experiment": {
     "recorded_at": "2026-10-21",
     "issue": 166,
@@ -136,24 +146,24 @@
     "application_region": "ap-east-1",
     "identity_phase": "legacy",
     "templates": {
-      "beta-active/AnyWearRuntimeStack-beta.template.json": "c735fa6cf9430d99ce077be4d080687d4402f7f76f1f9d9058d5d227d68b75ce",
-      "prod-active/AnyWearRuntimeStack-prod.template.json": "cd339fc8776f5ce7872296c115e6af1da1384ee8c45e6b091088837c49926fba"
+      "beta-active/AnyWearRuntimeStack-beta.template.json": "591d8d71170f533bd0f313b9209c2a170420b1ce9e411b45d642a04ca0cb1d75",
+      "prod-active/AnyWearRuntimeStack-prod.template.json": "d866d384e522a6e3fa8c464d47e445759d4bc035eac704a34e9275445e956d25"
     },
     "identity_phases": {
-      "legacy": "24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4",
-      "roles-added": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745",
-      "retired": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745"
+      "legacy": "b15d6e6e31fde8efbea7e88e4a731a1209864cd2aeb2502bf43e7059c4b28853",
+      "roles-added": "b2756dff8de9661afbbaa306d5b2a0f32bf92da9acc9d34178ec8d7acd9681b1",
+      "retired": "b2756dff8de9661afbbaa306d5b2a0f32bf92da9acc9d34178ec8d7acd9681b1"
     },
     "phase_hashes": {
       "beta": {
-        "legacy": "24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4",
-        "roles-added": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745",
-        "retired": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745"
+        "legacy": "b15d6e6e31fde8efbea7e88e4a731a1209864cd2aeb2502bf43e7059c4b28853",
+        "roles-added": "b2756dff8de9661afbbaa306d5b2a0f32bf92da9acc9d34178ec8d7acd9681b1",
+        "retired": "b2756dff8de9661afbbaa306d5b2a0f32bf92da9acc9d34178ec8d7acd9681b1"
       },
       "prod": {
-        "legacy": "41288539e5fec413dc361d4d515ce70f4469c7b221b813735c620e20e3b0752f",
-        "roles-added": "aa40dd032a22cb9be5dbff292b52161967b18cbcd5c2c1774f4064b7396f0581",
-        "retired": "aa40dd032a22cb9be5dbff292b52161967b18cbcd5c2c1774f4064b7396f0581"
+        "legacy": "81bbc25d6fc394c128a54c2009c81d9e5c5c68981eac3ce74578263325f0b9e3",
+        "roles-added": "1443e280f7fb9dbb2b2b97e225a51378688a14d8082e3ff853c3ac90bbd322a0",
+        "retired": "1443e280f7fb9dbb2b2b97e225a51378688a14d8082e3ff853c3ac90bbd322a0"
       }
     },
     "normalisation": [
@@ -240,7 +250,7 @@
     "identity_revision": {
       "issue": 220,
       "recorded_at": "2026-10-23",
-      "change": "Aligned the three deployed age alarms with the 300-second bake's recorded calibration. Both oldest-message alarms moved from threshold 300 to 150 seconds, keeping period 300 s and evaluationPeriods 2, and the outbox alarm moved from 300000 to 150000 milliseconds, keeping period 60 s and evaluationPeriods 2; all three read DEPLOYMENT_GATE_THRESHOLDS from @git-malu/stage-contracts 0.7.0. The outbox metric filter lost its `defaultValue: 0`, because a default is published whenever the pattern does not match and made a non-empty backlog with no age look healthy, and a second static-value filter publishes the 150001 ms sentinel (threshold + 1) only when a matched worker line reports outboxBacklog > 0 with a null or absent outboxOldestAgeMs. The alarm set, names, metric, statistic, periods and evaluation periods are unchanged. Both Runtime templates, all six phase hashes and the three Beta identity phases were re-recorded from that source; the alarms are stage-free, so the prod template moves with Beta. The transition deployed in `mutate.yml` `deploy-runtime` run 39988090020 (attempt 1, head a86902304a89c67749e719f5376eeeed4cc31f83): the reviewed non-replacement delta was applied under the unchanged Service release, the deployed Original moved from ed4e99ee... to the recorded roles-added identity, and the predecessor is therefore retired, so the live check accepts only the recorded roles-added identity.",
+      "change": "Aligned the three deployed age alarms with the 300-second bake's recorded calibration. Both oldest-message alarms moved from threshold 300 to 150 seconds, keeping period 300 s and evaluationPeriods 2, and the outbox alarm moved from 300000 to 150000 milliseconds, keeping period 60 s and evaluationPeriods 2; all three read DEPLOYMENT_GATE_THRESHOLDS from @git-malu/stage-contracts 0.7.0. The outbox metric filter lost its `defaultValue: 0`, because a default is published whenever the pattern does not match and made a non-empty backlog with no age look healthy, and a second static-value filter publishes the 150001 ms sentinel (threshold + 1) only when a matched worker line reports outboxBacklog > 0 with a null or absent outboxOldestAgeMs. The alarm set, names, metric, statistic, periods and evaluation periods are unchanged. Both Runtime templates, all six phase hashes and the three Beta identity phases were re-recorded from that source; the alarms are stage-free, so the prod template moves with Beta. The transition deployed in `mutate.yml` `deploy-runtime` run 39988090020 (attempt 1, head a86902304a89c67749e719f5376eeeed4cc31f83): the reviewed non-replacement delta was applied under the unchanged Service release, the deployed Original moved from ed4e99ee... to the recorded roles-added identity, and the predecessor is therefore retired, so the live check accepts only the recorded roles-added identity. Issue #321 then added the two object-deletion worker alarms and their filters, re-recording both Runtime templates, all six phase hashes and the three Beta identity phases; that change has not deployed, so the live 2fc979... template is recorded as the accepted live predecessor and the post-deploy Original must normalise to the recorded roles-added identity b2756dff... .",
       "previous_templates": {
         "beta-active/AnyWearRuntimeStack-beta.template.json": "49fec436921b1592c748edaa128f934e13751264051c46e5aaaac7d3200ca1db",
         "prod-active/AnyWearRuntimeStack-prod.template.json": "e54592929a3fc1e493cee0dc21ca075c0b31c17e7c3a4374469561647bed97a3"
@@ -256,7 +266,10 @@
           "roles-added": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55",
           "retired": "4ac2398a00925aeffa1a0a66df6651ff6767033ed0ce259569b8df032e3f5a55"
         }
-      }
+      },
+      "accepted_live_predecessors": [
+        "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745"
+      ]
     },
     "source_files": {
       "lib/runtime-stack.ts": "cb679b436fb5fdcdd31bb0f74cb73ffd117f7b2d",
@@ -268,7 +281,7 @@
       "test/baselines/prod-active/AnyWearRuntimeStack-prod.template.json": "8b11dc3c21fb2191011f151cb195489ca98d9bb0"
     },
     "source_file_hashes": "Git blob hashes of the Runtime files this record binds, in this repository's paths. The two Runtime template entries and lib/compute-runtime.ts are recorded at the issue #220 change head (the deployed age-alarm calibration and the added missing-age metric filter); scripts/bake-gate.mjs is recorded at the #219 change head, because #219 recalibrated the bake window in that file after the #183 record without re-recording this member, and the issue #220 alarm calibration pairs with it. lib/runtime-stack.ts, lib/cleanup-operation.ts and lib/platform-inputs.ts are unchanged since the #183 head. None of these are the 4f2ba555 move-anchor blobs. #195 compared the moved files with `git rev-parse 4f2ba555:infra/<path>`; after that anchor the #195 synthesiser change and later reviewed changes altered runtime-stack.ts, compute-runtime.ts, platform-inputs.ts and bake-gate.mjs, issue #183 altered runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline, issue #219 altered bake-gate.mjs, and issue #220 altered compute-runtime.ts and both Runtime baselines. cleanup-operation.ts still matches its move-anchor blob. source_sha above stays 4f2ba555ec293771551c0d23266af7038d95383e because scripts/synth-matrix.mjs asserts it as the move anchor, not as a claim that the current bytes equal it.",
-    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e; that statement describes the move anchor only. The #195 synthesiser change replaced the retired own-credentials synthesiser with the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes. After the anchor, runtime-stack.ts, compute-runtime.ts, platform-inputs.ts, bake-gate.mjs and the Beta Runtime baseline changed again; issue #183 accounts for runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline (removal of the Beta sizing-telemetry parameter and its container environment entry). Issue #219 recalibrated the bake to 300 seconds in scripts/bake-gate.mjs and @git-malu/stage-contracts 0.7.0 without moving the Runtime template bytes. Issue #220 then recorded the deployed age alarms' calibration in lib/compute-runtime.ts and the fail-closed missing-age metric filter, so both Runtime templates, all six phase hashes and the three Beta identity phases moved together, because the alarm thresholds are stage-free; the templates, phase_hashes, identity_phases, source_files and identity_revision members are measured from that source, not copied from the live stack. cleanup-operation.ts still matches the anchor, and the prod template differs from the #183 value only by the same stage-free alarm change.",
+    "note": "The two Runtime baselines and the four Runtime source modules moved byte-for-byte from AnyWear-Service/infra at 4f2ba555ec293771551c0d23266af7038d95383e; that statement describes the move anchor only. The #195 synthesiser change replaced the retired own-credentials synthesiser with the standard cdk-hnb659fds DefaultStackSynthesizer, which changes the assumed principals and not the template bytes. After the anchor, runtime-stack.ts, compute-runtime.ts, platform-inputs.ts, bake-gate.mjs and the Beta Runtime baseline changed again; issue #183 accounts for runtime-stack.ts, compute-runtime.ts and the Beta Runtime baseline (removal of the Beta sizing-telemetry parameter and its container environment entry). Issue #219 recalibrated the bake to 300 seconds in scripts/bake-gate.mjs and @git-malu/stage-contracts 0.7.0 without moving the Runtime template bytes. Issue #220 then recorded the deployed age alarms' calibration in lib/compute-runtime.ts and the fail-closed missing-age metric filter, so both Runtime templates, all six phase hashes and the three Beta identity phases moved together, because the alarm thresholds are stage-free; the templates, phase_hashes, identity_phases, source_files and identity_revision members are measured from that source, not copied from the live stack. cleanup-operation.ts still matches the anchor, and the prod template differs from the #183 value only by the same stage-free alarm change. Issue #321 then added the two object-deletion worker alarms and their two metric filters, so both Runtime templates, all six phase hashes and the three Beta identity phases moved together again (the alarms are stage-free); the `object_deletion_alarms` record states that delta from the #220 values.",
     "alarm_calibration": {
       "issue": 220,
       "source": "@git-malu/stage-contracts 0.7.0",
@@ -337,6 +350,56 @@
       ],
       "resource_scope": "arn:aws:ecs:<region>:<account>:task/<cluster-name>/*",
       "note": "The WorkerTaskRole's default policy gains exactly one statement so the ECS container agent can set, refresh and clear task scale-in protection for the worker's own task. The resource is the cluster's task ARNs, built with Stack.formatArn from props.cluster.clusterName (an SSM-backed token on this base) rather than '*'; the worker task role is the only role that carries either action, and no other resource changes."
+    },
+    "object_deletion_alarms": {
+      "issue": 321,
+      "recorded_at": "2026-11-19",
+      "added_resources": [
+        "ComputeRuntimeWorkerObjectDeletionAbandonedMetricFilterFAF53144",
+        "ComputeRuntimeWorkerObjectDeletionReaperTickMetricFilter21525251",
+        "ComputeRuntimeObjectDeletionAbandonedAlarm7F0DB828",
+        "ComputeRuntimeObjectDeletionReaperTickAlarm76B8A3B2"
+      ],
+      "contract": "lib/contracts.mjs WORKER_ALARM_THRESHOLDS, named through deploymentAlarmName(stage, signalName)",
+      "abandoned_alarm": {
+        "alarm": "<stage>-anywear-object-deletion-abandoned",
+        "metric": "ObjectDeletionAbandonedCount",
+        "filter_metric_value": "$.objectDeletionAbandoned",
+        "statistic": "Maximum",
+        "period_seconds": 60,
+        "evaluation_periods": 2,
+        "threshold": 0,
+        "comparison": "GreaterThanThreshold",
+        "treat_missing_data": "notBreaching"
+      },
+      "reaper_tick_alarm": {
+        "alarm": "<stage>-anywear-object-deletion-reaper-tick",
+        "metric": "ObjectDeletionReaperTick",
+        "filter_metric_value": "1",
+        "statistic": "Sum",
+        "period_seconds": 300,
+        "evaluation_periods": 2,
+        "threshold": 1,
+        "comparison": "LessThanThreshold",
+        "treat_missing_data": "breaching"
+      },
+      "note": "Exactly two filters and two alarms: issue #321 records that the ADR deleted the count-null sentinel (the standing-state line always carries an integer count, so a null-keyed filter could never distinguish \"nothing abandoned\" from \"no signal\") and requires no age metric, so the oldest age stays a field of the same log line. Neither signal is added to DEPLOYMENT_GATE_SIGNAL_NAMES; the 300-second bake never reads them. Both alarms take the operations-topic action only in Beta, like the worker's other alarms. The filters set no `defaultValue`: #220's rule, because AWS publishes a filter default whenever the pattern does not match.",
+      "previous_templates": {
+        "beta-active/AnyWearRuntimeStack-beta.template.json": "c735fa6cf9430d99ce077be4d080687d4402f7f76f1f9d9058d5d227d68b75ce",
+        "prod-active/AnyWearRuntimeStack-prod.template.json": "cd339fc8776f5ce7872296c115e6af1da1384ee8c45e6b091088837c49926fba"
+      },
+      "previous_phase_hashes": {
+        "beta": {
+          "legacy": "24492de063394e857b1d8f5cbdc33467eaba84a5a629f5b7b34625f84518f5e4",
+          "roles-added": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745",
+          "retired": "2fc979d5b645c72551e2c35982e3c0ef54ee9cebd5980a6c7c6e7d7c96488745"
+        },
+        "prod": {
+          "legacy": "41288539e5fec413dc361d4d515ce70f4469c7b221b813735c620e20e3b0752f",
+          "roles-added": "aa40dd032a22cb9be5dbff292b52161967b18cbcd5c2c1774f4064b7396f0581",
+          "retired": "aa40dd032a22cb9be5dbff292b52161967b18cbcd5c2c1774f4064b7396f0581"
+        }
+      }
     }
   }
 }
