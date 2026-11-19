@@ -1470,13 +1470,16 @@ describe('Explicit infrastructure identity cutover', () => {
   // Issue #321: the `rearm-object-deletion` one-shot runs on the existing lifecycle
   // task role and its one drain pass issues a HeadBucket probe, one HeadObject per
   // key and one DeleteObject against the row's recorded bucket. The grant is two
-  // statements on the stage's wardrobe bucket only — object read/delete on the
-  // `outfit-generations/*` object ARNs and listing on the bucket ARN under an
-  // `s3:prefix` condition — added to the four statements the role already carried.
+  // statements on the stage's wardrobe bucket only — object read/delete scoped to
+  // the `outfit-generations/*` object ARNs, and `s3:ListBucket` on the bucket ARN
+  // **without** a condition, because `HeadBucket` requires that action and carries
+  // no `s3:prefix`; a conditioned grant would deny the probe. The two statements are
+  // added to the four the role already carried.
   it('grants the lifecycle task exactly the re-arm wardrobe-bucket statements', () => {
     const template = synthesizePlatform('beta', 'roles-added');
     const [roleId] = (Object.entries(template.Resources) as [string, any][]).find(([, resource]) => (
       resource.Type === 'AWS::IAM::Role' && resource.Properties.RoleName === 'beta-anywear-lifecycle-task'))!;
+    expect(roleId).toMatch(/^LifecycleTaskRole[A-F0-9]{8}$/);
     const policies = (Object.values(template.Resources) as any[]).filter((resource) => (
       resource.Type === 'AWS::IAM::Policy'
         && JSON.stringify(resource.Properties.Roles) === JSON.stringify([{ Ref: roleId }])));
@@ -1491,10 +1494,13 @@ describe('Explicit infrastructure identity cutover', () => {
     });
     const s3Statements = statements.filter((statement: any) => JSON.stringify(statement.Action).includes('"s3:'));
     expect(s3Statements).toEqual([
+      // The write/read surface stays scoped to the `outfit-generations/*` objects:
+      // no bucket-wide `DeleteObject` is granted.
       { Action: ['s3:GetObject', 's3:DeleteObject'], Effect: 'Allow',
         Resource: objectArn('outfit-generations/*') },
-      { Action: 's3:ListBucket', Effect: 'Allow', Resource: { 'Fn::GetAtt': [bucketId, 'Arn'] },
-        Condition: { StringLike: { 's3:prefix': ['outfit-generations/*'] } } },
+      // `HeadBucket` carries no `s3:prefix`, so this grant cannot be conditioned:
+      // the statement is exactly the action and the bucket ARN, nothing else.
+      { Action: 's3:ListBucket', Effect: 'Allow', Resource: { 'Fn::GetAtt': [bucketId, 'Arn'] } },
     ]);
     // The four pre-existing grants are untouched: the database secret read, one
     // SSM statement on the Beta admission parameters and the two SQS statements.
@@ -1506,8 +1512,8 @@ describe('Explicit infrastructure identity cutover', () => {
       ['sqs:ReceiveMessage', 'sqs:DeleteMessage', 'sqs:ChangeMessageVisibility']);
     // No other S3 action, bucket or wildcard resource exists on this role, and the
     // grant is not a second role: the role name and its trust are unchanged. The
-    // only object-prefix resource is the one delete/read ARN; the list grant names
-    // the bucket ARN and confines listings through its condition.
+    // only object-prefix resource is the one delete/read ARN; the ListBucket
+    // statement carries no condition (the HeadBucket probe cannot satisfy one).
     for (const statement of statements) {
       expect(JSON.stringify(statement.Action)).not.toContain('s3:*');
       expect(JSON.stringify(statement.Resource ?? '')).not.toContain('"*"');
@@ -1515,8 +1521,9 @@ describe('Explicit infrastructure identity cutover', () => {
     expect(statements.flatMap((statement: any) => [statement.Resource ?? []].flat())
       .filter((resource: any) => JSON.stringify(resource).includes('outfit-generations')))
       .toEqual([objectArn('outfit-generations/*')]);
-    expect(JSON.stringify(statements.find((statement: any) => statement.Action === 's3:ListBucket').Condition))
-      .toContain('outfit-generations/*');
+    const listStatement = statements.find((statement: any) => statement.Action === 's3:ListBucket');
+    expect(listStatement.Condition).toBeUndefined();
+    expect(Object.keys(listStatement).sort()).toEqual(['Action', 'Effect', 'Resource']);
     // The role exists only in Beta; a Production synthesis creates no lifecycle
     // task role and no wardrobe-bucket grant for one.
     const prod = synthesizePlatform('prod');

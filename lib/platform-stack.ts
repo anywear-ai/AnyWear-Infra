@@ -494,13 +494,16 @@ export class PlatformStack extends cdk.Stack {
         // Issue #321: the `rearm-object-deletion` one-shot runs on this existing
         // role and its one drain pass issues a `HeadBucket` probe, one `HeadObject`
         // per key and, where a key must go, one `DeleteObject` against the bucket
-        // the manifest recorded. IAM can name only this stage's wardrobe bucket, so
-        // a manifest recorded against any other bucket fails the probe with
-        // `AccessDenied`, is recorded `recorded_bucket_unreachable` and is retained:
-        // that fail-closed behaviour is the bucket-first proof, not a widened
-        // grant. The statements stay split — object read/delete on the
-        // `outfit-generations/*` object ARNs, listing on the bucket ARN under an
-        // `s3:prefix` condition — exactly as the adjacent cleanup role states them.
+        // the manifest recorded. `HeadBucket` requires `s3:ListBucket` and carries
+        // no `s3:prefix`, so the ListBucket grant must be unconditional on the
+        // bucket ARN: a conditioned grant would deny the probe against the stage's
+        // own wardrobe bucket and turn the pass into `recorded_bucket_unreachable`.
+        // The object statement stays scoped to the `outfit-generations/*` object
+        // ARNs, so no bucket-wide write is granted. IAM can name only this stage's
+        // wardrobe bucket, so a manifest recorded against any other bucket fails the
+        // probe with `AccessDenied`, is recorded `recorded_bucket_unreachable` and
+        // is retained: that fail-closed behaviour is the bucket-first proof, not a
+        // widened grant.
         this.lifecycleTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
           actions: ['s3:GetObject', 's3:DeleteObject'],
           resources: [this.wardrobeBucket.arnForObjects('outfit-generations/*')],
@@ -508,7 +511,6 @@ export class PlatformStack extends cdk.Stack {
         this.lifecycleTaskRole.addToPrincipalPolicy(new iam.PolicyStatement({
           actions: ['s3:ListBucket'],
           resources: [this.wardrobeBucket.bucketArn],
-          conditions: { StringLike: { 's3:prefix': ['outfit-generations/*'] } },
         }));
         pipelineRole.addToPrincipalPolicy(new iam.PolicyStatement({
           actions: ['ecs:ListTasks'],

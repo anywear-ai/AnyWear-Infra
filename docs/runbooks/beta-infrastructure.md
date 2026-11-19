@@ -1060,15 +1060,20 @@ lifecycle rule `ExpireObjectDeletionArchive`), so the keys stay readable for a y
 after the row is gone. The archive log line names which bucket received the object,
 and the keys are also in `/anywear/beta/worker` for the log group's own retention.
 
-A re-arm's one drain pass reaches only the stage's `AnyWearWardrobeBucket`: IAM can
-name only that bucket, so a manifest recorded against any other bucket fails its
-first `HeadBucket` with `AccessDenied`, is recorded
+A re-arm's one drain pass reaches only the stage's `AnyWearWardrobeBucket`, and its
+`HeadBucket` probe **succeeds** for that bucket: the lifecycle task role's
+`s3:ListBucket` statement is unconditional on the bucket ARN, because `HeadBucket`
+requires `s3:ListBucket` and carries no `s3:prefix` (a conditioned grant would deny
+the probe). The object statement is scoped to `outfit-generations/*`, and IAM names
+no other bucket, so the operation cannot act on a manifest recorded elsewhere: such
+a manifest fails the probe with `AccessDenied`, is recorded
 `recorded_bucket_unreachable` and is retained (and later archived to the wardrobe
 bucket). That fail-closed behaviour is intended — an unreachable recorded bucket is
-never evidence of absence — not a grant that needs widening. Such a row cannot be
-repaired by this operation: its re-arm runs, the fresh pass fails the probe again,
-and it walks its new budget back to `abandoned` before leaving the ledger at its
-90-day archive.
+never evidence of absence — not a grant that needs widening. A denial therefore
+means a foreign recorded bucket or a credential/authorization problem, never the
+stage wardrobe bucket's own policy. Such a foreign-bucket row cannot be repaired by
+this operation: its re-arm runs, the fresh pass fails the probe again, and it walks
+its new budget back to `abandoned` before leaving the ledger at its 90-day archive.
 
 **The one artifact a mutating run publishes**
 

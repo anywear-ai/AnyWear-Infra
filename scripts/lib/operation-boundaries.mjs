@@ -35,10 +35,13 @@ export const operationFamilies = Object.freeze({
   'admission-status': 'beta-admission',
   'add-testers': 'beta-admission',
   'set-testers': 'beta-admission',
-  // Issue #321: the abandoned-manifest re-arm repairs one ledger row. It is
-  // neither a deployment nor an admission write, so it carries its own family
-  // label and its one-shot role allow-list is the lifecycle role it already has.
-  'rearm-object-deletion': 'beta-repair',
+  // Issue #321: the abandoned-manifest re-arm has `migrate`'s shape — a one-shot
+  // runtime data operation from the immutable release image under an existing task
+  // role. It is not a deployment, not an admission write and not read-only
+  // observation, so it joins the schema family instead of introducing a fifth
+  // operation family; its one-shot role allow-list is the lifecycle role it
+  // already has.
+  'rearm-object-deletion': 'beta-schema',
 });
 
 // Live entries that execute verification or deployment. Every other path is a

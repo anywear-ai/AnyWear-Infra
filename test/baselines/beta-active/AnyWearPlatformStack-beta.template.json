@@ -2641,13 +2641,6 @@
       },
       {
        "Action": "s3:ListBucket",
-       "Condition": {
-        "StringLike": {
-         "s3:prefix": [
-          "outfit-generations/*"
-         ]
-        }
-       },
        "Effect": "Allow",
        "Resource": {
         "Fn::GetAtt": [

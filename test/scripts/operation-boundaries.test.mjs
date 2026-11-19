@@ -102,7 +102,13 @@ test('one-shot guards admit only the reviewed role/action pairs', () => {
 // action, exact composed payload and exact registration command are pinned here;
 // every other operation refuses the action, the payload and the command.
 test('the re-arm operation is admitted only as one fenced lifecycle one-shot', () => {
-  assert.equal(operationFamilies['rearm-object-deletion'], 'beta-repair');
+  // The re-arm has `migrate`'s shape (one-shot runtime data operation from the
+  // immutable release image under an existing task role), so it reuses the schema
+  // family rather than introducing a fifth operation family.
+  assert.equal(operationFamilies['rearm-object-deletion'], 'beta-schema');
+  assert.equal(operationFamilies['rearm-object-deletion'], operationFamilies.migrate);
+  assert.deepEqual([...new Set(Object.values(operationFamilies))].sort(),
+    ['beta-admission', 'beta-deploy', 'beta-observe', 'beta-schema']);
   assert.deepEqual(operationRoles['rearm-object-deletion'], ['lifecycle']);
   assert.deepEqual(families(env('rearm-object-deletion'), 'operation'), ['lifecycle']);
   assert.deepEqual(lifecycleActions('rearm-object-deletion'), ['rearm-object-deletion']);
