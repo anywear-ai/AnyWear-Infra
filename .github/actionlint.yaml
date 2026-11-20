@@ -18,6 +18,12 @@ paths:
       # 1.7.12 predates the key and refuses it with this one syntax-check message;
       # the key is valid GitHub workflow syntax, `cancel-in-progress: false` is its
       # only legal pairing, and `test/scripts/entry-surface.test.mjs` pins both.
-      # The ignore covers only this message for this one file; no other workflow
-      # uses `queue`.
+      # The ignore covers only this message for this one file.
+      - 'unexpected key "queue" for "concurrency" section. expected one of "cancel-in-progress", "group"'
+  .github/workflows/schedule.yml:
+    ignore:
+      # #344: the scheduled entry joins `mutate.yml`'s non-cancelling
+      # `anywear-infra-runtime` group and therefore carries the same `queue: max`.
+      # The same 1.7.12 limitation applies, and the same test pins both keys in both
+      # files; the ignore is this one message for this one file.
       - 'unexpected key "queue" for "concurrency" section. expected one of "cancel-in-progress", "group"'

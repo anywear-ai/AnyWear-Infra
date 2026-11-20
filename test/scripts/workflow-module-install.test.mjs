@@ -68,9 +68,11 @@ test('every job that runs a repository module installs dependencies before it', 
   // Keep the rule observable: the scan still finds module-running jobs, so a
   // broken pattern cannot make this test pass vacuously.
   assert.ok(checked.length > 0, 'the scan still finds repository-module jobs');
-  // Regression anchors: the credential-free preflight jobs run a repository module
-  // and stay covered by the derived rule.
-  for (const moduleJob of ['runtime.yml#preflight', 'mutate.yml#preflight']) {
+  // Regression anchors: the credential-free preflight and hold jobs run a
+  // repository module and stay covered by the derived rule. #344 adds the scheduled
+  // entry's two jobs.
+  for (const moduleJob of ['runtime.yml#preflight', 'mutate.yml#preflight', 'schedule.yml#preflight',
+    'schedule.yml#hold']) {
     assert.ok(checked.includes(moduleJob), `${moduleJob} is covered by the module scan`);
   }
 
