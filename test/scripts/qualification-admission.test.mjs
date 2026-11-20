@@ -141,6 +141,7 @@ test('the budget expires non-zero and names the holder run URL', async () => {
   const clock = fakeClock();
   const { code, text, waits } = await admit({ gh, clock });
   assert.equal(code, 1, 'a spent budget refuses the mutation');
+  assert.equal(ADMISSION_BUDGET_MS, 1_800_000, 'the admission budget is pinned at 30 minutes');
   assert.equal(waits.reduce((total, value) => total + value, 0), ADMISSION_BUDGET_MS,
     'it waits exactly the budget, never past it');
   assert.match(text, /^Refusing the mutation: 1 full qualification run\(s\) were still nonterminal/);

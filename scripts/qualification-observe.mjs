@@ -6,14 +6,16 @@ import { observeQualification, recordQualificationOutcome } from './qualificatio
 // with exactly one `qualified` or `unqualified` line in its step summary and its
 // `outcome` step output. The step never changes the `deploy` job's conclusion.
 //
-// The exit code separates the three states. No run id and no run URL means the
-// dispatch step failed inside this job: the outcome is recorded `unqualified`
-// naming that failure and the step exits zero, because the job is already red from
-// the dispatch step and the recorder has nothing to add. A run that cannot be read
-// is recorded `unqualified` naming the unread run and exits non-zero: an unknown
-// hold is never recorded as a good one. A terminal non-success run, the 55-minute
-// ceiling and `qualified` all record their one outcome and exit zero.
-async function main({ env = process.env, run, wait, out = process.stdout, now = Date.now } = {}) {
+// The exit code separates the three states. No run id and no run URL means this job
+// recorded no dispatched run — a step of the job failed before one existed — so the
+// outcome is recorded `unqualified` saying that no qualification run was created and
+// no run id or URL was recorded, and the step exits zero because the job is already
+// red from the step that failed. A dispatched run that cannot be read is recorded
+// `unqualified` naming the unread run and the read cause, and exits non-zero: an
+// unknown hold is never recorded as a good one. A terminal non-success run, the
+// 55-minute ceiling and `qualified` all record their one outcome and exit zero.
+export async function runQualificationObservation(
+  { env = process.env, run, wait, out = process.stdout, now = Date.now } = {}) {
   const runId = env.QUALIFICATION_RUN_ID;
   const runUrl = env.QUALIFICATION_RUN_URL;
   // The outcome names the deployed Service commit, which the workflow carries
@@ -26,7 +28,7 @@ async function main({ env = process.env, run, wait, out = process.stdout, now = 
   const tuple = serviceCommit === undefined ? {} : { service_commit: serviceCommit };
   if ((typeof runId !== 'string' || runId === '') && (typeof runUrl !== 'string' || runUrl === '')) {
     await recordQualificationOutcome({ env, out, result: { outcome: 'unqualified',
-      reason: 'the dispatch step failed and created no qualification run, so the deployed tuple carries no qualification record', ...tuple } });
+      reason: 'no qualification run was created and no dispatched run id or URL was recorded, so the deployed tuple carries no qualification record', ...tuple } });
     return 0;
   }
   let result;
@@ -44,4 +46,6 @@ async function main({ env = process.env, run, wait, out = process.stdout, now = 
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) process.exitCode = await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = await runQualificationObservation();
+}

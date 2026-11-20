@@ -245,6 +245,10 @@ jobs:
     timeout-minutes: 65
     permissions:
       contents: read
+    # ADR 0033 §7's "job output": the one `qualified`/`unqualified` verdict this run
+    # records, readable from the workflow run without opening the step summary.
+    outputs:
+      outcome: ${{ steps.observe.outputs.outcome }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -275,14 +279,15 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: node scripts/qualification-dispatch.mjs
-      # #338: the observation is the job's last step and runs even when the dispatch
+      # #338: the observation is the job's last step and runs even when an earlier
       # step failed, so every hold that ran leaves exactly one outcome. With no run id
-      # and no run URL it records `unqualified` naming the failed dispatch and exits
-      # zero (the job is already red from the dispatch step); a dispatched run it
-      # cannot read is recorded `unqualified` and fails the job; a terminal
-      # non-success run, the 55-minute ceiling and `qualified` record their one
-      # outcome and exit zero.
+      # and no run URL it records `unqualified` saying that no qualification run was
+      # created and exits zero (the job is already red from the step that failed); a
+      # dispatched run it cannot read is recorded `unqualified` and fails the job; a
+      # terminal non-success run, the 55-minute ceiling and `qualified` record their
+      # one outcome and exit zero. Its `outcome` is the job output above.
       - name: Observe the dispatched qualification and record its one outcome
+        id: observe
         if: always() && env.DELIVERY_TRIGGER == 'deploy'
         shell: bash
         env:

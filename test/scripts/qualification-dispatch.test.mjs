@@ -399,12 +399,28 @@ test('the one outcome line names the run, the conclusion and the failed jobs, or
     failed_jobs: ['full', 'record'] }),
   `Qualification unqualified: ${createdUrl} concluded failure; failed job(s): full, record.`);
   assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: null,
-    failed_jobs: [], ceiling_ms: HOLD_CEILING_MS }),
+    failed_jobs: [], ceiling: true, ceiling_ms: HOLD_CEILING_MS }),
   `Qualification unqualified: ${createdUrl} had not reached a terminal state when the 55-minute hold ceiling was reached.`);
   assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', service_commit: serviceCommit,
-    reason: 'the dispatch step failed and created no qualification run, so the deployed tuple carries no qualification record' }),
-  `Qualification unqualified: the dispatch step failed and created no qualification run, so the deployed tuple carries no `
-    + `qualification record for Service commit ${serviceCommit}.`);
+    reason: 'no qualification run was created and no dispatched run id or URL was recorded, so the deployed tuple carries no qualification record' }),
+  `Qualification unqualified: no qualification run was created and no dispatched run id or URL was recorded, so the deployed `
+    + `tuple carries no qualification record for Service commit ${serviceCommit}.`);
+});
+
+// F1: the line states only an observed cause. A known run whose read failed has no
+// conclusion and no ceiling, so it carries the recorded reason and never the ceiling
+// sentence; the ceiling wording appears only when `ceiling === true`.
+test('a read failure is reported as itself, never as the hold ceiling', async () => {
+  const reason = `the dispatched qualification ${createdUrl} could not be read, so the deployed tuple carries no `
+    + 'qualification record: gh: HTTP 401 Bad credentials';
+  const line = qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: null, reason,
+    service_commit: serviceCommit });
+  assert.ok(line.includes('gh: HTTP 401 Bad credentials'), 'the real read cause is in the line');
+  assert.ok(line.includes(createdUrl), 'the line still names the run');
+  assert.ok(line.includes('could not be read'), 'the reason is carried verbatim');
+  assert.equal(line.includes('hold ceiling'), false, 'an unobserved ceiling is never invented');
+  const noRun = qualificationOutcomeLine({ outcome: 'unqualified', reason: 'the observation could not record a cause' });
+  assert.equal(noRun, 'Qualification unqualified: the observation could not record a cause.');
 });
 
 test('the recorder writes exactly one summary line, the step outcome and a warning only for the ceiling', async () => {

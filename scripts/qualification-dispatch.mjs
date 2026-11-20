@@ -324,22 +324,35 @@ export async function observeQualification({ env = process.env, run = execute, w
   }
 }
 
-/** The one outcome line #338 records, for the step summary and the job log. */
+/**
+ * The one outcome line #338 records, for the step summary and the job log. The
+ * cause is only ever what was observed: a conclusion when the run reached a
+ * terminal state, the ceiling when the hold actually expired, and the recorded
+ * `reason` otherwise — a read failure must never be reported as the ceiling.
+ */
 export function qualificationOutcomeLine(result) {
   const tuple = typeof result.service_commit === 'string' && result.service_commit !== ''
     ? ` for Service commit ${result.service_commit}` : '';
   if (result.outcome === 'qualified') {
     return `Qualification qualified: ${result.run_url} concluded ${result.conclusion}${tuple}.`;
   }
-  if (typeof result.run_url === 'string' && result.run_url !== '') {
-    const verdict = typeof result.conclusion === 'string' && result.conclusion !== ''
-      ? `concluded ${result.conclusion}`
-      : `had not reached a terminal state when the ${ceilingMinutes(result.ceiling_ms ?? HOLD_CEILING_MS)}-minute hold ceiling was reached`;
+  const runUrl = typeof result.run_url === 'string' && result.run_url !== '' ? result.run_url : undefined;
+  const conclusion = typeof result.conclusion === 'string' && result.conclusion !== '' ? result.conclusion : undefined;
+  if (conclusion !== undefined) {
     const failed = Array.isArray(result.failed_jobs) && result.failed_jobs.length > 0
       ? `; failed job(s): ${result.failed_jobs.join(', ')}` : '';
-    return `Qualification unqualified: ${result.run_url} ${verdict}${tuple}${failed}.`;
+    return `Qualification unqualified: ${runUrl ?? 'the dispatched qualification run'} concluded`
+      + ` ${conclusion}${tuple}${failed}.`;
   }
-  return `Qualification unqualified: ${result.reason}${tuple}.`;
+  if (result.ceiling === true) {
+    return `Qualification unqualified: ${runUrl ?? 'the dispatched qualification run'} had not reached a`
+      + ` terminal state when the ${ceilingMinutes(result.ceiling_ms ?? HOLD_CEILING_MS)}-minute hold ceiling`
+      + ` was reached${tuple}.`;
+  }
+  const reason = typeof result.reason === 'string' && result.reason !== ''
+    ? result.reason : 'the qualification observation recorded no cause';
+  const named = runUrl !== undefined && !reason.includes(runUrl) ? `${runUrl}: ` : '';
+  return `Qualification unqualified: ${named}${reason}${tuple}.`;
 }
 
 /**

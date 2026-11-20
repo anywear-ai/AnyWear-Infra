@@ -269,6 +269,9 @@ test('the qualification hold is credential-free, single-token and observes last'
   assert.equal(observation.env.GH_TOKEN, '${{ steps.app.outputs.token }}');
   assert.equal(observation.env.QUALIFICATION_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
   assert.equal(observation.env.QUALIFICATION_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
+  assert.equal(observation.id, 'observe', 'the observation exposes the outcome as a step output');
+  assert.deepEqual(hold.outputs, { outcome: '${{ steps.observe.outputs.outcome }}' },
+    'the job publishes exactly the observation step\'s outcome: ADR 0033 §7\'s job output');
   assert.equal(hold.steps.indexOf(token) < dispatchIndex, true, 'the token exists before the dispatch');
   assert.equal(hold.steps[dispatchIndex].env.GH_TOKEN, '${{ steps.app.outputs.token }}');
 });
@@ -290,7 +293,6 @@ test('the deploy job admits the mutation before any credential and mints one rea
   assert.ok(installIndex >= 0, 'the deploy job installs the pinned dependencies');
   assert.ok(admissionIndex > checkoutIndex, 'the admission follows checkout');
   assert.ok(admissionIndex > setupNodeIndex, 'the admission follows setup-node');
-  assert.ok(admissionIndex > installIndex, 'the admission follows the dependency install');
   assert.ok(admissionIndex < compositeIndex,
     'the admission precedes the credential-requesting composite, so no AWS credential exists at a refusal');
   assert.equal(steps[admissionIndex].env.GH_TOKEN, '${{ steps.admission.outputs.token }}');
@@ -309,6 +311,17 @@ test('the deploy job admits the mutation before any credential and mints one rea
   assert.equal(token.with['permission-actions'], 'read');
   assert.deepEqual(Object.keys(token.with).filter(name => name.startsWith('permission-')), ['permission-actions'],
     'actions: read is the token\'s only permission');
+  // The intended shape, not merely "somewhere before the composite": the step after
+  // `npm ci` is the read-only token mint and the step after that is the admission
+  // run. Nothing in that gap can request a credential.
+  assert.equal(steps[installIndex + 1], token, 'the token mint immediately follows the dependency install');
+  assert.equal(steps[installIndex + 2], steps[admissionIndex], 'the admission run immediately follows its token mint');
+  assert.equal(admissionIndex, installIndex + 2, 'no other step sits between the install and the admission');
+  for (const step of steps.slice(installIndex + 1, admissionIndex)) {
+    assert.equal(step, token, 'the only step between the install and the admission is the token mint');
+    assert.equal(/configure-aws-credentials|aws-actions\/|id-token/.test(`${step.uses ?? ''} ${step.run ?? ''}`), false,
+      'no step in the gap between the install and the admission can request a credential');
+  }
   assert.ok(steps.indexOf(token) < admissionIndex, 'the read runs only after its token exists');
 });
 
@@ -331,7 +344,6 @@ test('mutate.yml holds exactly two App-token allocations and no third', async ()
     { jobName: 'qualify-hold', permissions: ['permission-actions'], actionPermission: 'write', repositories: 'AnyWear-E2E' },
   ], 'two allocations: the deploy job reads, the hold writes, both narrowed to AnyWear-E2E with actions only');
 });
-
 
 // #226: `queue: max` beside `cancel-in-progress: false`, and the reviewed actionlint
 // ignore the pinned 1.7.12 needs because it predates the key.
