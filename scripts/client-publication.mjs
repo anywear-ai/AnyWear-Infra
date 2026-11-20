@@ -392,14 +392,24 @@ export async function assumeClientSession({ env = process.env, policy, requestTo
  * One AWS call under the client-publish session. The allow-list is asked first,
  * with the live interface the run resolved, so a call the session cannot make is
  * refused before the CLI starts.
+ *
+ * The call declares its output mode. `json` (the default) appends `--output json`
+ * and parses the reply; `text` passes no output flag and returns the trimmed stdout
+ * unparsed, because `aws s3 sync` prints progress text, not a document. Infra run
+ * 44747956657 failed here: the sync had already written the bucket, so this seam
+ * must never parse a text reply.
  */
-function clientAws({ env, credentials, run, resources, out }) {
-  return async (args) => {
+export function clientAws({ env, credentials, run, resources, out }) {
+  return async (args, { output = 'json' } = {}) => {
+    if (output !== 'json' && output !== 'text') throw new Error(`Unknown AWS output mode '${String(output)}'`);
     assertAwsAllowed(env, args, 'operation', 'client-publish', resources);
-    const result = await run('aws', [...args, '--region', region, '--output', 'json'],
+    const result = await run('aws', [...args, '--region', region, ...(output === 'json' ? ['--output', 'json'] : [])],
       { env: credentials, timeout: 600_000, maxBuffer: MAX_BUFFER });
     const stdout = String(result.stdout ?? '').trim();
     if (stdout) out.write(`${args.slice(0, 2).join(' ')}: ${stdout.split('\n').slice(-1)[0].slice(0, 400)}\n`);
+    // `s3 sync` reports progress on stderr and normally prints nothing here; its
+    // empty or textual stdout is returned as-is and never parsed.
+    if (output === 'text') return stdout === '' ? {} : stdout;
     return stdout ? parseJson(stdout) : {};
   };
 }
@@ -531,7 +541,10 @@ export async function publishClientBundle({ env = process.env, run = execute, re
   const publication = await assumeClientSession({ env, requestToken, run, sessionMarker: 'publish',
     policy: sessionPolicy('client-publish', env, 'operation', live) });
   const publishAws = clientAws({ env, credentials: publication, run, resources: live, out });
-  await publishAws(clientSyncArguments(live.bucket));
+  // `s3 sync` is the one text call: it reports progress rather than a document, so
+  // it must never be parsed as JSON. The invalidation that follows returns a JSON
+  // Invalidation document, so it keeps the default mode.
+  await publishAws(clientSyncArguments(live.bucket), { output: 'text' });
   const invalidation = await publishAws(clientInvalidationArguments(live.distribution_id));
   const invalidationId = invalidation?.Invalidation?.Id;
   if (typeof invalidationId !== 'string' || !CLOUDFRONT_INVALIDATION_ID.test(invalidationId)) {

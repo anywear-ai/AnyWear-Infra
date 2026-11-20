@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  assertInterfaceMatches, assertPublisherJobs, assertPublisherRun, bundleManifestDigest,
+  assertInterfaceMatches, assertPublisherJobs, assertPublisherRun, bundleManifestDigest, clientAws,
   extractZip, findClientDistArtifact, normalizeBundleTree, publicationRecord, publishClientBundle,
   readBuildMetadata, readZipEntries, resolveLiveInterface, verifyClientBundle,
 } from '../../scripts/client-publication.mjs';
@@ -446,14 +446,24 @@ test('publish resolves the live interface, refuses nothing, and performs exactly
     ['cloudformation:DescribeStacks', 'ssm:GetParameter', 'sts:GetCallerIdentity']);
     assert.match(JSON.stringify(JSON.parse(assumptions[1][assumptions[1].indexOf('--policy') + 1])), /"s3:PutObject"/);
     // The reads precede the first write; the two writes are the exact vectors, and
-    // the only tokens appended after the allow-list check are the CLI's region and
-    // output flags.
-    const invoked = args => args.slice(0, args.length - 4);
+    // the only tokens appended after the allow-list check are the CLI's region (and,
+    // for a JSON call, its output flag). `s3 sync` is the one text call: it must not
+    // carry `--output json` — Infra run 44747956657 threw after the bucket was
+    // already written because the sync's progress text was parsed as JSON.
+    const invoked = args => args.slice(0, args.indexOf('--region'));
     assert.deepEqual(aws.writes().map(args => args.slice(0, 2).join(' ')), ['s3 sync', 'cloudfront create-invalidation']);
     assert.deepEqual(invoked(aws.writes()[0]), clientSyncArguments(bucket));
     assert.deepEqual(invoked(aws.writes()[1]), clientInvalidationArguments(distributionId));
-    for (const args of aws.writes()) {
-      assert.deepEqual(args.slice(-4), ['--region', 'ap-east-1', '--output', 'json']);
+    assert.deepEqual(aws.writes()[0].slice(aws.writes()[0].indexOf('--region')), ['--region', 'ap-east-1'],
+      'the sync is a text call: no --output flag');
+    assert.equal(aws.writes()[0].includes('--output'), false);
+    assert.deepEqual(aws.writes()[1].slice(aws.writes()[1].indexOf('--region')),
+      ['--region', 'ap-east-1', '--output', 'json'], 'the invalidation is a JSON call');
+    // Every non-write call is a JSON call: the seam appends `--output json` for the
+    // three reads.
+    for (const args of aws.calls.filter(call => ['sts', 'cloudformation', 'ssm'].includes(call[0])
+      && call[1] !== 'assume-role-with-web-identity')) {
+      assert.deepEqual(args.slice(-2), ['--output', 'json'], `${args.slice(0, 2).join(' ')} resolves as JSON`);
     }
     assert.ok(aws.calls.indexOf(aws.writes()[0]) > aws.calls.findIndex(args => args[1] === 'describe-stacks'));
     // The one publication record, in the v2 contract: the Client run is named in
@@ -542,6 +552,55 @@ test('publish refuses a session that is not the dedicated role, and an invalidat
       ClientDistributionId: distributionId } }), directory: tree, recordPath: record }),
     /has no ClientBucketName output/);
   });
+});
+
+// Issue #344: the AWS-call seam declares each call's output mode. Infra run
+// 44747956657 appended `--output json` to `aws s3 sync`, parsed its progress text
+// and threw *after* the sync had already written the bucket. A text call must pass
+// no output flag and return its stdout unparsed.
+test('the AWS seam parses JSON replies and returns s3 sync text unparsed', async () => {
+  const live = { ...interfaceValues, bucket, distribution_id: distributionId };
+  const calls = [];
+  let stdoutOf = () => '';
+  const run = async (command, args) => {
+    assert.equal(command, 'aws');
+    calls.push([...args]);
+    return { stdout: stdoutOf(args), stderr: '' };
+  };
+  const streams = sink();
+  const aws = clientAws({ env: env(), credentials: { AWS_ACCESS_KEY_ID: 'AK' }, run, resources: live, out: streams.out });
+
+  // JSON mode (the default): the seam appends `--output json` and parses the reply.
+  stdoutOf = () => `${JSON.stringify({ Invalidation: { Id: invalidationId } })}\n`;
+  assert.deepEqual(await aws(clientInvalidationArguments(distributionId)), { Invalidation: { Id: invalidationId } });
+  assert.deepEqual(calls[0].slice(-4), ['--region', 'ap-east-1', '--output', 'json']);
+
+  // Text mode: no `--output` flag, the trimmed stdout back, and no parse — a
+  // JSON-looking reply is still text.
+  stdoutOf = () => 'Completed 654.4 KiB/654.4 KiB\nupload: .client-artifacts/dist/assets/index.js to s3://bucket\n';
+  const text = await aws(clientSyncArguments(bucket), { output: 'text' });
+  assert.equal(typeof text, 'string');
+  assert.match(text, /^Completed 654\.4 KiB\/654\.4 KiB/);
+  assert.equal(calls[1].includes('--output'), false, 'the text call carries no output flag');
+  assert.deepEqual(calls[1].slice(-2), ['--region', 'ap-east-1']);
+  assert.deepEqual(calls[1].slice(0, clientSyncArguments(bucket).length), clientSyncArguments(bucket));
+  stdoutOf = () => JSON.stringify({ Invalidation: { Id: invalidationId } });
+  assert.equal(typeof await aws(clientSyncArguments(bucket), { output: 'text' }), 'string',
+    'text mode never parses, even when the reply looks like JSON');
+
+  // Empty replies are empty results in both modes, never a parse error.
+  stdoutOf = () => '   \n';
+  assert.deepEqual(await aws(clientSyncArguments(bucket), { output: 'text' }), {});
+  assert.deepEqual(await aws(clientInvalidationArguments(distributionId)), {});
+
+  // The allow-list is asked first, and the mode must be one the seam knows.
+  const syncCalls = calls.filter(args => args[1] === 'sync').length;
+  const unresolved = clientAws({ env: env(), credentials: {}, run, resources: undefined, out: streams.out });
+  await assert.rejects(unresolved(clientSyncArguments(bucket), { output: 'text' }),
+    /forbidden for the client-publish session/);
+  assert.equal(calls.filter(args => args[1] === 'sync').length, syncCalls,
+    'a refused call never reaches the CLI');
+  await assert.rejects(aws(clientSyncArguments(bucket), { output: 'yaml' }), /Unknown AWS output mode 'yaml'/);
 });
 
 test('the resolution and the record builders are unit-checkable', async () => {
