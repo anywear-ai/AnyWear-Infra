@@ -31,6 +31,9 @@ test('deploy-runtime and stop-runtime own the Runtime slice; Egress stays operat
   assert.deepEqual(changedStackNames('deploy-workload'), []);
   assert.deepEqual(changedStackNames('deploy-runtime'), ['AnyWearRuntimeStack-beta']);
   assert.deepEqual(changedStackNames('stop-runtime'), ['AnyWearRuntimeStack-beta']);
+  // Issue #344: the Client publication changes no stack at all — it writes the
+  // Client bucket and invalidates its distribution under its own session.
+  assert.deepEqual(changedStackNames('publish-client'), []);
 });
 
 test('cdk arguments load Service artifacts and pass the API origin parameter only for the Base stack', () => {

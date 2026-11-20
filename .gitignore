@@ -15,6 +15,10 @@ test/*.d.ts
 test/support/*.js
 test/support/*.d.ts
 .service-artifacts/
+# Issue #344: the Client publication's run scratch space — the verified bundle tree
+# that travels to the deploy job and the one publication record it uploads.
+.client-artifacts/
+.client-publication/
 .qualification/
 .qualification-verifier/
 runtime-evidence/

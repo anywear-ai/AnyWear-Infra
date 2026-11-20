@@ -8,7 +8,7 @@ import { enforceBetaPlatformLogRetention } from '../.github/scripts/beta-platfor
 import { normalizeTesterEmails, runTesterAllowlist } from './lib/tester-allowlist.mjs';
 import { changedStackNames } from './lib/operation-stacks.mjs';
 import { validateReleaseInput, SELECTED_RELEASE_DIRECTORY } from './lib/release-inputs.mjs';
-import { validateDeliveryInput } from './lib/delivery-inputs.mjs';
+import { validateDeliveryInput, validateClientInputs } from './lib/delivery-inputs.mjs';
 import { readLifecycleStatus } from './lib/lifecycle-status.mjs';
 import { runRestoreRelease } from './lib/restore-release.mjs';
 import { assertTerminalRuntime, assertRuntimeAbsent, describeStack, runtimeExists, runtimeStack, terminalStackStatuses } from './lib/one-writer.mjs';
@@ -53,11 +53,14 @@ export function validateOperationInputs(env = process.env) {
   // Service-built identity; every other operation must not carry a release
   // identity at all.
   const release = validateReleaseInput(env, operation);
-  // The deploy chain's entry event and its dispatching run belong to the one
-  // operation that deploys a Runtime tuple (#226). `release` is refused here, in
+  // The deploy chain's entry event and its dispatching run belong to the two
+  // operations that carry chain context (#226, #344). `release` is refused here, in
   // the credential-free preflight, so a tag-shaped dispatch fails before any job
   // holds a token, an environment or an OIDC identity.
   validateDeliveryInput(env, operation);
+  // Issue #344: the Client publication identity belongs to `publish-client` alone,
+  // and every other operation refuses a supplied run id, attempt or bundle digest.
+  const clientPublication = validateClientInputs(env, operation);
   // The Runtime operations act only on the recorded live identity phase.
   if (operation === 'deploy-runtime' || operation === 'stop-runtime') assertRuntimePhase(operation, env);
   // Only a deployment or a release recovery may vary these workflow-level
@@ -111,6 +114,7 @@ export function validateOperationInputs(env = process.env) {
     if (env[key]) throw new Error('Experimental task scopes are not ordinary Beta workflow inputs');
   }
   return { source_sha: env.GITHUB_SHA, operation, service_release: release,
+    ...(clientPublication ? { client_publication: clientPublication } : {}),
     ...(operation === 'deploy-egress' && natEipAllocationId ? { nat_eip_allocation_id: natEipAllocationId } : {}),
     ...(rearm ? { object_deletion_rearm: rearm } : {}) };
 }

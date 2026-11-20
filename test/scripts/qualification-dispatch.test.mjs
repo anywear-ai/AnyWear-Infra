@@ -13,6 +13,7 @@ import { dispatchArguments, dispatchQualification, FALLBACK_WAIT_MS, findDispatc
 // confirmed by the id the dispatch response names, not by a title that can lag it.
 const serviceCommit = 'b'.repeat(40);
 const dispatchedBy = 'https://github.com/git-malu/AnyWear-Service/actions/runs/40123456789';
+const clientDispatchedBy = 'https://github.com/git-malu/AnyWear-Client/actions/runs/40123456790';
 const key = 'https://github.com/git-malu/AnyWear-Infra/actions/runs/77';
 const createdUrl = 'https://github.com/git-malu/AnyWear-E2E/actions/runs/4242';
 const env = (overrides = {}) => ({
@@ -82,13 +83,37 @@ test('a merge dispatches full/deploy-qualify and a manual deployment dispatches 
   // The manual row carries no expected commits at all.
   assert.equal(Object.hasOwn(manual, 'expected_service_commit'), false);
   assert.equal(Object.hasOwn(manual, 'expected_client_commit'), false);
-  // Only the operation that deploys a Runtime tuple dispatches.
-  assert.throws(() => qualificationPayload(dispatchEnv({ INFRA_OPERATION: 'migrate' })),
-    /Only deploy-runtime dispatches a qualification/);
+  // Only the two operations that carry chain context dispatch.
+  assert.throws(() => qualificationPayload(dispatchEnv({ INFRA_OPERATION: 'migrate', DELIVERY_TRIGGER: 'manual' })),
+    /Only deploy-runtime and publish-client dispatches a qualification/);
   // The deploy payload requires the deployed commit; the preflight already proved
   // it, and the payload refuses to build without it.
   assert.throws(() => qualificationPayload(dispatchEnv({ DELIVERY_TRIGGER: 'deploy', DISPATCHED_BY: dispatchedBy,
     SERVICE_COMMIT: undefined })), /deployed Service commit/);
+});
+
+// #344: the Client publication dispatches the post-publication `smoke` inside its
+// held run. It is the manual Runtime deployment's row — `smoke`/`deploy-smoke`, no
+// expected commits — and it requires the publication chain's own event.
+test('a Client publication dispatches smoke/deploy-smoke and nothing else', () => {
+  const publishEnv = overrides => dispatchEnv({ INFRA_OPERATION: 'publish-client', DELIVERY_TRIGGER: 'publish',
+    DISPATCHED_BY: clientDispatchedBy, SERVICE_COMMIT: '', SERVICE_ARTIFACT_TAG: '',
+    CLIENT_RUN_ID: '40123456789', CLIENT_RUN_ATTEMPT: '2', CLIENT_BUNDLE_DIGEST: 'd'.repeat(64), ...overrides });
+  const payload = qualificationPayload(publishEnv());
+  assert.deepEqual(payload, { operation: 'smoke', trigger: 'deploy-smoke', worker_slot_offset: '0', dispatched_by: key });
+  assert.equal(Object.hasOwn(payload, 'expected_service_commit'), false,
+    'a publication seals no qualification record, so it names no expected commit');
+  // A manual publication keeps the same no-wait shape.
+  assert.deepEqual(qualificationPayload(publishEnv({ DELIVERY_TRIGGER: 'manual', DISPATCHED_BY: '' })), payload);
+  // The deploy chain's event belongs to the Runtime deployment, not to a publication.
+  assert.throws(() => qualificationPayload(publishEnv({ DELIVERY_TRIGGER: 'deploy', DISPATCHED_BY: dispatchedBy })),
+    /publish-client requires delivery_trigger=publish or manual/);
+  assert.throws(() => qualificationPayload(publishEnv({ DELIVERY_TRIGGER: 'release' })),
+    /delivery_trigger=release is refused/);
+  // The dispatch is the same REST call with this run's URL as the key.
+  const args = dispatchArguments(payload);
+  assert.deepEqual(inputFields(args), payload);
+  assert.ok(args.includes(`inputs[dispatched_by]=${key}`));
 });
 
 test('the dispatch goes through the REST endpoint with return_run_details and prints the created run', async () => {
@@ -193,7 +218,7 @@ test('the hook refuses a missing token, a release trigger and an unknown operati
   await assert.rejects(dispatchQualification({ env: dispatchEnv({ DELIVERY_TRIGGER: 'release', DISPATCHED_BY: dispatchedBy }),
     run: gh.run, out: gh.out }), /delivery_trigger=release is refused/);
   await assert.rejects(dispatchQualification({ env: dispatchEnv({ INFRA_OPERATION: 'migrate', INFRA_IDENTITY_PHASE: 'retired' }),
-    run: gh.run, out: gh.out }), /Only deploy-runtime dispatches a qualification/);
+    run: gh.run, out: gh.out }), /Only deploy-runtime and publish-client dispatches a qualification/);
   assert.deepEqual(gh.calls, [], 'no GitHub or AWS call precedes the refusal');
 });
 

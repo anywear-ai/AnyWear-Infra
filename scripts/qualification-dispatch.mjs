@@ -3,7 +3,7 @@ import { appendFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { matches, parseJson, SHA } from './lib/json-contract.mjs';
-import { DELIVERY_TRIGGER_OPERATION, dispatchingRunUrl } from './lib/delivery-inputs.mjs';
+import { DELIVERY_TRIGGER_OPERATIONS, dispatchingRunUrl } from './lib/delivery-inputs.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
 
 // The deploy chain's qualification hop and hold (#226, #338). After `deploy`
@@ -40,16 +40,31 @@ const MAX_BUFFER = 10 * 1024 * 1024;
 const GH_OPTIONS = { timeout: 60_000, maxBuffer: MAX_BUFFER };
 
 /**
- * The exact dispatch payload for this deployment's entry event, per `## Data
- * Models`: a merge sends `full` with `deploy-qualify` and the deployed Service
- * commit; a manual dispatch sends `smoke` with `deploy-smoke` and no expected
- * commits. Both carry `worker_slot_offset=0` and this run's URL as `dispatched_by`.
+ * The exact dispatch payload for this run's entry event, per ADR 0033 §7 and §8:
+ * a Service merge sends `full` with `deploy-qualify` and the deployed Service
+ * commit; a manual Runtime deployment and every Client publication send `smoke`
+ * with `deploy-smoke` and no expected commits. All carry `worker_slot_offset=0`
+ * and this run's URL as `dispatched_by`.
  */
 export function qualificationPayload(env = process.env) {
-  if (env.INFRA_OPERATION !== DELIVERY_TRIGGER_OPERATION) {
-    throw new Error(`Only ${DELIVERY_TRIGGER_OPERATION} dispatches a qualification`);
+  if (!DELIVERY_TRIGGER_OPERATIONS.includes(env.INFRA_OPERATION)) {
+    throw new Error(`Only ${DELIVERY_TRIGGER_OPERATIONS.join(' and ')} dispatches a qualification`);
+  }
+  // The ADR's exact refusal, whatever the operation: a version tag never deploys and
+  // never publishes, so it dispatches no qualification either.
+  if (env.DELIVERY_TRIGGER === 'release') {
+    throw new Error('delivery_trigger=release is refused: the release chain never deploys');
   }
   const dispatchedBy = dispatchingRunUrl(env);
+  // Issue #344: the Client publication dispatches the post-publication `smoke`
+  // inside its own held run. It is the same row a manual Runtime deployment sends:
+  // a publication seals no qualification record, so it names no expected commit.
+  if (env.INFRA_OPERATION === 'publish-client') {
+    if (env.DELIVERY_TRIGGER !== 'publish' && env.DELIVERY_TRIGGER !== 'manual') {
+      throw new Error('publish-client requires delivery_trigger=publish or manual to dispatch a qualification');
+    }
+    return { operation: 'smoke', trigger: 'deploy-smoke', worker_slot_offset: '0', dispatched_by: dispatchedBy };
+  }
   if (env.DELIVERY_TRIGGER === 'deploy') {
     matches(env.SERVICE_COMMIT, SHA, 'deployed Service commit');
     return { operation: 'full', trigger: 'deploy-qualify', expected_service_commit: env.SERVICE_COMMIT,
@@ -154,14 +169,15 @@ async function pollDispatchedRun({ run, ghEnv, key, attempts, wait }) {
  * #338: the created run's id and URL are also appended to the workflow step's
  * `GITHUB_OUTPUT`, so the job's final step can observe exactly the run this
  * dispatch created.
+ *
+ * Issue #344: the body is shared with the scheduled entry, whose payload is built
+ * from its own operation menu; only the payload differs.
  */
-export async function dispatchQualification({ env = process.env, run = execute, out = process.stdout,
+export async function dispatchRun({ env = process.env, run = execute, out = process.stdout, payload,
   attempts = FALLBACK_ATTEMPTS, wait = sleep } = {}) {
-  validateOperationInputs(env);
   if (typeof env.GH_TOKEN !== 'string' || !env.GH_TOKEN) {
     throw new Error('A write-scoped AnyWear-E2E App token is required to dispatch the qualification');
   }
-  const payload = qualificationPayload(env);
   const key = payload.dispatched_by;
   const ghEnv = { ...process.env, GH_TOKEN: env.GH_TOKEN, GH_TELEMETRY: 'disabled' };
   let existing;
@@ -203,6 +219,11 @@ export async function dispatchQualification({ env = process.env, run = execute, 
   const matchId = Number.isSafeInteger(match.id) && match.id > 0 ? match.id : undefined;
   await publishDispatchedRun(env, match.html_url, matchId);
   return { dispatched: true, payload, run_url: match.html_url, run_id: matchId };
+}
+
+export async function dispatchQualification({ env = process.env, ...options } = {}) {
+  validateOperationInputs(env);
+  return dispatchRun({ env, ...options, payload: qualificationPayload(env) });
 }
 
 /** The run id to observe: the dispatch output, or the trailing `/runs/<id>` of its URL. */
