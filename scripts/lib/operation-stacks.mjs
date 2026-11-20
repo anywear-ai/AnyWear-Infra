@@ -17,6 +17,9 @@ const stackChanges = Object.freeze({
   'stop-runtime': ['AnyWearRuntimeStack-beta'],
   // Release recovery restores the persistent Base stack only.
   'restore-release': ['AnyWearPlatformStack-beta'],
+  // Issue #344: `publish-client` changes no stack. It writes the Client bucket and
+  // invalidates its distribution, so its change scope stays empty and its family is
+  // `beta-publish`; the absent entry is the reviewed decision, not an omission.
 });
 
 // One authoritative table for the configured stack set. The authorization gate and

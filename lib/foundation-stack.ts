@@ -110,7 +110,12 @@ export class FoundationStack extends cdk.Stack {
     const artifacts = createRole('BetaServiceArtifactRole', 'service-artifact',
       ownerSubject('AnyWear-Service', 1158460323, 'service-artifacts'));
     createRole('BetaServiceDataRole', 'service-data', betaSubject('AnyWear-Service', 1158460323));
-    createRole('BetaClientPublishRole', 'client-publish', betaSubject('AnyWear-Client', 1176104200));
+    // Issue #344: the Client publication moved into Infra's `publish-client`
+    // operation, so the publish role's trust moves with the write: the Client holds
+    // no AWS principal after this change and the capability stays confined to this
+    // role (it is not added to beta-infra-deploy-role). The role's grants are
+    // unchanged; only the trusted environment subject changes.
+    createRole('BetaClientPublishRole', 'client-publish', infraSubject);
     createRole('BetaE2EQualificationRole', 'e2e-qualification', betaSubject('AnyWear-E2E', 1317091305));
     // Issue #166 M4: a Base deploy resolves its API origin by reading the
     // Infra-owned Runtime stack (an absent stack is a `ValidationError` that

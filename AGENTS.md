@@ -111,13 +111,18 @@ and must not be relabeled as an Infra-produced deployment.
   messages such as `deploy-runtime requires a terminal Base stack`. They all name
   `AnyWearPlatformStack-<stage>`, and no code, stack id, construct id, operation or
   SSM parameter name changes with this rename.
-- Issue #166 keeps the three bounded Beta entries in the
+- Issue #166 keeps the bounded Beta entries in the
   [operations catalog](README.md#operations): `check.yml` is automatic;
   `runtime.yml` is the manual `state` entry,
   where `state` is read-only with restricted STS credentials, works with
   `ENABLE_BETA_MUTATION` closed and publishes no artifact; `mutate.yml` is the
   single manual mutation entry
-  and rejects cross-family or out-of-scope inputs before credentials. Since #207
+  and rejects cross-family or out-of-scope inputs before credentials; and since
+  #344 `schedule.yml` is the scheduled entry (daily 03:17 UTC plus a manual
+  `reconcile`/`smoke`/`full`), which shares `anywear-infra-runtime`, mints the one
+  AnyWear-E2E `actions: write` token and holds the qualification it dispatched —
+  it declares no environment, no `id-token` and no AWS credential and runs no
+  admission read of its own. Since #207
   every mutation runs `preflight` → `verify` → `deploy` in one run and has no
   `observe` or `record` job: `deploy` is the only job that holds an AWS
   credential; its first work after checkout and `npm ci` is a read-only
@@ -126,16 +131,24 @@ and must not be relabeled as an Infra-produced deployment.
   credential request, and the `deploy-operation` composite then proves the
   travelled release bytes against the published digests before the first OIDC
   request. Since #226 a `deploy-runtime` run adds `qualify-hold` after a
-  successful `deploy`: no environment, no `id-token`, no AWS permission,
+  successful `deploy` (since #344 a `publish-client` run adds it too): no
+  environment, no `id-token`, no AWS permission,
   `contents: read` and one App installation token narrowed to `AnyWear-E2E` with
   `actions: write` only, dispatching the E2E qualification and — for
-  `delivery_trigger=deploy` — reading it to a terminal state under a 55-minute
-  ceiling, recording exactly one `qualified`/`unqualified` outcome.
+  `delivery_trigger=deploy` or `publish` — reading it to a terminal state under a
+  55-minute ceiling, recording exactly one `qualified`/`unqualified` outcome.
   `delivery_trigger` and `dispatched_by` are
-  accepted only by `deploy-runtime` and proved in the same credential-free
-  preflight: `deploy` requires the dispatching run's HTTPS URL, `manual` requires
-  no URL, `release` is refused there because the release chain never deploys, and
-  the other twelve operations refuse a trigger that names an entry event.
+  accepted only by `deploy-runtime` (`deploy`/`manual`) and `publish-client`
+  (`publish`/`manual`) and proved in the same credential-free preflight: a chain
+  event requires the dispatching run's HTTPS URL, `manual` requires no URL,
+  `release` is refused there because the release chain never deploys, and the
+  other twelve operations refuse a trigger that names an entry event.
+  `publish-client` additionally takes `client_run_id`, `client_run_attempt` and
+  `client_bundle_digest`, and no other operation accepts them; it changes no
+  stack, assumes `beta-client-publish-role` twice (a read-only live-interface
+  resolution, then the publication session narrowed to the resolved bucket and
+  distribution), and writes the one publication record. `CLIENT_PUBLISH_ROLE_ARN`
+  is a workflow literal, not a repository variable.
   `deploy-egress`/`delete-egress`
   change only the operation-owned `AnyWearEgressStack-beta`; `delete-egress`
   refuses unless the Runtime stack is absent. `production.yml`

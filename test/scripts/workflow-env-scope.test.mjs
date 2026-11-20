@@ -9,6 +9,11 @@ import yaml from 'js-yaml';
 // `environment:`, so the credential-free `preflight` job saw empty values and
 // rejected the account/region before any credential.
 const workflowFiles = ['.github/workflows/mutate.yml', '.github/workflows/runtime.yml'];
+// Issue #344: the scheduled entry declares no AWS constant, no role and no
+// environment, so the account/region and role pins above stay applied to the two
+// files that carry them. It does carry the one stage switch, at workflow scope, for
+// the same reason the other entries keep it there.
+const switchWorkflowFiles = [...workflowFiles, '.github/workflows/schedule.yml'];
 const accountRegionNames = ['AWS_ACCOUNT_ID', 'AWS_REGION', 'CDK_DEFAULT_ACCOUNT', 'CDK_DEFAULT_REGION'];
 const roleNames = ['INFRA_DEPLOY_ROLE_ARN', 'INFRA_RUNTIME_ROLE_ARN'];
 const scoped = value => typeof value === 'string' && /\$\{\{\s*vars\./.test(value);
@@ -89,7 +94,7 @@ test('preflight stays environment-free, credential-free and fully resolvable at 
 });
 
 test('the single stage switch stays repository-scoped so the job gate can see it', async () => {
-  for (const file of workflowFiles) {
+  for (const file of switchWorkflowFiles) {
     const workflow = await loadWorkflow(file);
     const text = await readFile(new URL(`../../${file}`, import.meta.url), 'utf8');
     // Job-level `if` is evaluated before any environment exists. An
@@ -98,9 +103,17 @@ test('the single stage switch stays repository-scoped so the job gate can see it
     assert.equal(workflow.env?.ENABLE_BETA_MUTATION, '${{ vars.ENABLE_BETA_MUTATION }}', file);
     assert.deepEqual([...new Set(text.match(/ENABLE_[A-Z_]+/g) ?? [])], ['ENABLE_BETA_MUTATION'], `${file} switch names`);
   }
+  // The scheduled entry carries no other configuration; the account/region and role
+  // assertions above stay applied to the two files that declare them.
+  const schedule = await loadWorkflow('.github/workflows/schedule.yml');
+  for (const name of [...accountRegionNames, ...roleNames]) {
+    assert.equal(Object.hasOwn(schedule.env ?? {}, name), false, `schedule.yml workflow env must not hold ${name}`);
+  }
   const mutate = await loadWorkflow('.github/workflows/mutate.yml');
   assert.match(mutate.jobs.preflight.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
   assert.equal(mutate.jobs.deploy.if, undefined, 'the credential job keeps its needs-based scheduling');
+  assert.match(schedule.jobs.preflight.if, /vars\.ENABLE_BETA_MUTATION == 'true'/);
+  assert.equal(schedule.jobs.hold.if, undefined, 'the scheduled hold keeps its needs-based scheduling');
   const runtime = await loadWorkflow('.github/workflows/runtime.yml');
   assert.equal(/ENABLE_BETA_MUTATION/.test(runtime.jobs.state.if), false, 'state must run with the switch closed');
   for (const workflow of [mutate, runtime]) {

@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workflowOperations, operationFamilies, operationBoundary, operationRoles, families, assertOneShotAllowed,
   assertDeployAllowed, assertAwsAllowed, sessionPolicy, assertProtectedExecutor, reads, readOperations, operationReads,
-  stateReads, verifyActions, lifecycleActions } from '../../scripts/lib/operation-boundaries.mjs';
+  stateReads, verifyActions, lifecycleActions, closedReadSets } from '../../scripts/lib/operation-boundaries.mjs';
 import { REARM_COMMAND } from '../../scripts/lib/object-deletion-rearm.mjs';
 import { SIMULATE_ACTIONS } from '../../scripts/lib/authorization-preflight.mjs';
 import { apiOriginUpdateArguments } from '../../scripts/lib/runtime-deploy.mjs';
+import { CLIENT_DIST_DIRECTORY, clientInvalidationArguments, clientSyncArguments } from '../../scripts/lib/client-interface.mjs';
+import { changedStackNames } from '../../scripts/lib/operation-stacks.mjs';
 
 const infraSha = '5'.repeat(40);
 // Issue #266: the fabricated runs keep the old `git-malu` full name on purpose.
@@ -25,10 +27,12 @@ test('the workflow map and family derivation cover every operation', () => {
   assert.deepEqual(Object.keys(workflowOperations).sort(), ['.github/workflows/mutate.yml', '.github/workflows/runtime.yml']);
   assert.deepEqual(workflowOperations['.github/workflows/runtime.yml'], ['state']);
   // #213: the correct post-retirement count is 12, not the 11 the issue text says;
-  // `deploy-billing` remains.
+  // `deploy-billing` remains. #321 adds the re-arm and #344 the Client publication,
+  // so the mutate menu is fourteen operations.
   assert.deepEqual(workflowOperations['.github/workflows/mutate.yml'], ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-    'admission-status', 'add-testers', 'set-testers', 'rearm-object-deletion']);
+    'admission-status', 'add-testers', 'set-testers', 'rearm-object-deletion', 'publish-client']);
+  assert.equal(workflowOperations['.github/workflows/mutate.yml'].length, 14);
   assert.ok(!workflowOperations['.github/workflows/mutate.yml'].includes('deploy-workload'));
   for (const operation of Object.values(workflowOperations).flat()) {
     const boundary = operationBoundary(env(operation));
@@ -108,7 +112,7 @@ test('the re-arm operation is admitted only as one fenced lifecycle one-shot', (
   assert.equal(operationFamilies['rearm-object-deletion'], 'beta-schema');
   assert.equal(operationFamilies['rearm-object-deletion'], operationFamilies.migrate);
   assert.deepEqual([...new Set(Object.values(operationFamilies))].sort(),
-    ['beta-admission', 'beta-deploy', 'beta-observe', 'beta-schema']);
+    ['beta-admission', 'beta-deploy', 'beta-observe', 'beta-publish', 'beta-schema']);
   assert.deepEqual(operationRoles['rearm-object-deletion'], ['lifecycle']);
   assert.deepEqual(families(env('rearm-object-deletion'), 'operation'), ['lifecycle']);
   assert.deepEqual(lifecycleActions('rearm-object-deletion'), ['rearm-object-deletion']);
@@ -379,6 +383,112 @@ test('the deploy-session policy carries UpdateStack only for deploy-runtime', ()
     assert.equal(actionsOf(policy).includes('cloudformation:UpdateStack'), false, operation);
     assert.doesNotMatch(policy, /AnyWearPlatformStack-beta/, operation);
     assert.ok(policy.length < 2048, `${operation} deploy session policy is ${policy.length} bytes`);
+  }
+});
+
+// Issue #344: the Client publication changes no stack and runs under its own
+// session. Its read set is closed to the three calls the live-interface resolution
+// makes, its two writes are compared as whole argument vectors, and the session
+// policy it assumes grants the reads plus S3 on the resolved bucket and CloudFront
+// on the resolved distribution — inside the 2048-byte inline limit.
+test('publish-client changes no stack, reads three calls and writes exactly two', () => {
+  const publication = env('publish-client');
+  const live = { bucket: 'anywear-beta-client-bucket', distribution_id: 'E1ABC2DEF3GHIJ',
+    api_base_url: 'https://d111111abcdef8.cloudfront.net', cognito_user_pool_id: 'ap-east-1_pool',
+    cognito_client_id: 'client-id' };
+  assert.deepEqual(operationBoundary(publication),
+    { workflow: '.github/workflows/mutate.yml', family: 'beta-publish', readOnly: false });
+  assert.equal(operationFamilies['publish-client'], 'beta-publish');
+  // No stack, no one-shot family and no deploy authority: the publication writes S3
+  // and CloudFront and nothing else, so the change scope is empty.
+  assert.deepEqual(changedStackNames('publish-client'), []);
+  assert.deepEqual(operationRoles['publish-client'], []);
+  assert.deepEqual(families(publication, 'operation'), []);
+  assert.throws(() => assertDeployAllowed(publication, 'AnyWearPlatformStack-beta'), /forbidden/);
+  assert.throws(() => assertOneShotAllowed(publication, 'lifecycle', 'status'), /forbidden/);
+
+  // The closed read set, and nothing beside it.
+  assert.deepEqual(closedReadSets['publish-client'],
+    ['sts/get-caller-identity', 'cloudformation/describe-stacks', 'ssm/get-parameter']);
+  assert.deepEqual(operationReads(publication), [...closedReadSets['publish-client']]);
+  for (const pair of closedReadSets['publish-client']) {
+    assert.doesNotThrow(() => assertAwsAllowed(publication, pair.split('/'), 'operation', 'client-publish'), pair);
+  }
+  for (const forbidden of [['ssm', 'get-parameters'], ['cloudformation', 'get-template'],
+    ['cloudformation', 'list-stack-resources'], ['ecs', 'describe-services'], ['ecr', 'describe-images'],
+    ['logs', 'describe-log-groups'], ['s3', 'ls'], ['secretsmanager', 'get-secret-value'],
+    ['cloudformation', 'update-stack'], ['ecs', 'register-task-definition', '--cli-input-json', '{}']]) {
+    assert.throws(() => assertAwsAllowed(publication, forbidden, 'operation', 'client-publish'),
+      /forbidden for the client-publish session/, forbidden.join(' '));
+  }
+  // The other session refuses the same call, and a write outside its own session is
+  // never admitted by the read path.
+  assert.throws(() => assertAwsAllowed(publication, ['ssm', 'get-parameters']), /forbidden/);
+  // The runtime read table is unchanged by the closed set: another operation still
+  // reads the calls it performs.
+  assert.equal(operationReads(env('deploy-platform')).includes('ssm/get-parameters'), true);
+
+  // The two writes, exactly.
+  const sync = clientSyncArguments(live.bucket);
+  const invalidation = clientInvalidationArguments(live.distribution_id);
+  assert.doesNotThrow(() => assertAwsAllowed(publication, sync, 'operation', 'client-publish', live));
+  assert.doesNotThrow(() => assertAwsAllowed(publication, invalidation, 'operation', 'client-publish', live));
+  assert.throws(() => assertAwsAllowed(publication, sync, 'operation', 'client-publish'), /forbidden/,
+    'nothing is writable before the live interface is resolved');
+  const refused = [
+    ['s3', 'cp', CLIENT_DIST_DIRECTORY, `s3://${live.bucket}`, '--delete'],
+    ['s3', 'rm', `s3://${live.bucket}`, '--recursive'],
+    ['s3', 'sync', '.', `s3://${live.bucket}`, '--delete'],
+    ['s3', 'sync', CLIENT_DIST_DIRECTORY, 's3://another-bucket', '--delete'],
+    ['s3', 'sync', CLIENT_DIST_DIRECTORY, `s3://${live.bucket}`],
+    ['s3', 'sync', CLIENT_DIST_DIRECTORY, `s3://${live.bucket}`, '--delete', '--acl', 'public-read'],
+    ['s3', 'sync', CLIENT_DIST_DIRECTORY, `s3://${live.bucket}`, '--delete', '--delete'],
+    ['s3', 'sync', CLIENT_DIST_DIRECTORY, `s3://${live.bucket}`, '--dryrun', '--delete'],
+    ['cloudfront', 'update-distribution', '--id', live.distribution_id],
+    ['cloudfront', 'create-invalidation', '--distribution-id', 'E9ZZZZZZZZZZZZ', '--paths', '/*'],
+    ['cloudfront', 'create-invalidation', '--distribution-id', live.distribution_id, '--paths', '/index.html'],
+    ['cloudfront', 'create-invalidation', '--distribution-id', live.distribution_id, '--paths', '/*', '--paths', '/*'],
+    ['cloudfront', 'create-invalidation', '--paths', '/*', '--distribution-id', live.distribution_id],
+    [...invalidation, '--invalidation-batch', 'file://batch.json'],
+  ];
+  for (const args of refused) {
+    assert.throws(() => assertAwsAllowed(publication, args, 'operation', 'client-publish', live),
+      /forbidden for the client-publish session/, args.join(' '));
+  }
+  // The session belongs to this operation: another operation's dispatch cannot use
+  // it, and neither can a purpose other than the operation itself.
+  for (const other of ['deploy-platform', 'deploy-runtime', 'migrate', 'state']) {
+    assert.throws(() => assertAwsAllowed(env(other), sync, 'operation', 'client-publish', live),
+      /forbidden for the client-publish session/, other);
+  }
+  assert.throws(() => assertAwsAllowed(publication, sync, 'qualification', 'client-publish', live), /forbidden/);
+
+  // The resolution session is the read-only half: the same reads, no write.
+  const resolution = JSON.parse(sessionPolicy('client-publish', publication));
+  assert.deepEqual(resolution.Statement.flatMap(statement => [statement.Action].flat()).sort(),
+    ['cloudformation:DescribeStacks', 'ssm:GetParameter', 'sts:GetCallerIdentity']);
+  assert.equal(JSON.stringify(resolution).includes('s3:'), false, 'the resolution session writes nothing');
+  // The publication session is the reads plus exactly the two writes' actions.
+  const policy = sessionPolicy('client-publish', publication, 'operation', live);
+  assert.ok(policy.length < 2048, `the client-publish session policy is ${policy.length} bytes`);
+  assert.deepEqual(JSON.parse(policy).Statement.flatMap(statement => [statement.Action].flat()).sort(), [
+    'cloudformation:DescribeStacks',
+    'cloudfront:CreateInvalidation', 'cloudfront:GetInvalidation',
+    's3:DeleteObject', 's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject',
+    'ssm:GetParameter', 'sts:GetCallerIdentity',
+  ]);
+  assert.match(policy, /arn:aws:s3:::anywear-beta-client-bucket/);
+  assert.match(policy, /arn:aws:s3:::anywear-beta-client-bucket\/\*/);
+  assert.match(policy, /arn:aws:cloudfront::650880818323:distribution\/E1ABC2DEF3GHIJ/);
+  for (const forbidden of ['secretsmanager:', 'ecs:', 'iam:', 'kms:', 's3:DeleteBucket', 's3:PutBucket',
+    'cloudfront:UpdateDistribution', 'cloudformation:UpdateStack']) {
+    assert.equal(policy.includes(forbidden), false, forbidden);
+  }
+  // The session belongs to the publication operation alone.
+  for (const other of ['deploy-platform', 'deploy-runtime', 'migrate', 'state']) {
+    assert.throws(() => sessionPolicy('client-publish', env(other), 'operation', live),
+      /Client publish credentials are forbidden/, other);
+    assert.throws(() => sessionPolicy('client-publish', env(other)), /Client publish credentials are forbidden/, other);
   }
 });
 

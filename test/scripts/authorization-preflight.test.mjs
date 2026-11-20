@@ -129,10 +129,11 @@ test('the deploy session policy still grants the change-set read the CDK path pe
 // would leave the Platform deploy — the operation that installs them — blocked.
 test('only deploy-runtime simulates and is granted the bake reads', () => {
   const operations = Object.values(workflowOperations).flat();
-  // 14 operations: #207 retired `observe` with the record it produced, #213
-  // retired the admission open/close operations, and #321 added the
-  // abandoned-manifest re-arm.
-  assert.equal(operations.length, 14);
+  // 15 operations: #207 retired `observe` with the record it produced, #213
+  // retired the admission open/close operations, #321 added the abandoned-manifest
+  // re-arm, and #344 added the Client publication (`state` plus fourteen mutate
+  // operations).
+  assert.equal(operations.length, 15);
   const bakeReads = ['cloudwatch/get-metric-statistics', 'cloudwatch/describe-alarms', 'logs/filter-log-events'];
   assert.deepEqual(Object.keys(readOperations).sort(), [...bakeReads].sort());
   for (const pair of bakeReads) {
@@ -150,7 +151,14 @@ test('only deploy-runtime simulates and is granted the bake reads', () => {
       assert.equal(sessionActions.has(reads[pair]), operation === 'deploy-runtime',
         `${operation}: ${reads[pair]} in the session policy`);
     }
-    // The universal reads stay in every operation's plan.
+    // Issue #344: `publish-client` runs under its own closed read set, so the
+    // universal runtime reads do not apply to it; every other operation keeps them.
+    if (operation === 'publish-client') {
+      assert.deepEqual([...plan].sort(), ['cloudformation/describe-stacks', 'ssm/get-parameter'],
+        'the publication reads the stack outputs and the two Cognito parameters');
+      continue;
+    }
+    // The universal reads stay in every other operation's plan.
     assert.equal(plan.has('ssm/get-parameters'), true, `${operation}: the stage-contract read remains`);
     assert.equal(plan.has('cloudformation/describe-stacks'), true, `${operation}: the stack read remains`);
   }

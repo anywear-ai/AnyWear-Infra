@@ -4,18 +4,20 @@ import { normalizeTesterEmails } from './tester-allowlist.mjs';
 import { account, region } from './deployment-contract.mjs';
 import { apiOriginUpdateArguments } from './runtime-deploy.mjs';
 import { REARM_COMMAND, REARM_OBJECT_DELETION, rearmCommand, rearmRequestArgument } from './object-deletion-rearm.mjs';
+import { clientInvalidationArguments, clientSyncArguments } from './client-interface.mjs';
 
 // One dispatch surface per deployable unit. `runtime.yml` hosts the read-only
 // `state` entry; every mutation shares `mutate.yml`, including since #195 the
 // release slice's `deploy-runtime` and `stop-runtime`. Issue #207 retired the
 // `observe` operation with the record it produced; #213 retired the admission
 // open/close operations, leaving the tester allowlist surface. Issue #321 adds
-// the one operator repair for an abandoned object-deletion manifest.
+// the one operator repair for an abandoned object-deletion manifest. Issue #344
+// adds `publish-client`, the single writer of the Client's served assets.
 export const workflowOperations = Object.freeze({
   '.github/workflows/runtime.yml': ['state'],
   '.github/workflows/mutate.yml': ['deploy-foundation', 'deploy-billing', 'deploy-platform',
     'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-    'admission-status', 'add-testers', 'set-testers', REARM_OBJECT_DELETION],
+    'admission-status', 'add-testers', 'set-testers', REARM_OBJECT_DELETION, 'publish-client'],
 });
 
 // The operation -> family mapping keeps the pre-#207 families stable for the
@@ -38,10 +40,16 @@ export const operationFamilies = Object.freeze({
   // Issue #321: the abandoned-manifest re-arm has `migrate`'s shape — a one-shot
   // runtime data operation from the immutable release image under an existing task
   // role. It is not a deployment, not an admission write and not read-only
-  // observation, so it joins the schema family instead of introducing a fifth
-  // operation family; its one-shot role allow-list is the lifecycle role it
+  // observation, so it joins the schema family instead of introducing an operation
+  // family of its own; its one-shot role allow-list is the lifecycle role it
   // already has.
   'rearm-object-deletion': 'beta-schema',
+  // Issue #344: the Client publication is its own family because it changes no
+  // stack — no CDK deploy, no change set, no one-shot task. It writes S3 and
+  // CloudFront and then writes one publication record, so it cannot share the
+  // deployment family's deploy-session or one-shot rules; the family name is what
+  // makes "changes no stack" visible next to the eight operations that do.
+  'publish-client': 'beta-publish',
 });
 
 // Live entries that execute verification or deployment. Every other path is a
@@ -120,12 +128,24 @@ export const readOperations = Object.freeze({
   'cloudwatch/describe-alarms': Object.freeze(['deploy-runtime']),
   'logs/filter-log-events': Object.freeze(['deploy-runtime']),
 });
+// Issue #344: an operation whose own restricted session performs a closed set of
+// reads declares that set here. It is the same read table and the same
+// `operationReads` lookup — the universal set above is what an operation that
+// shares the runtime session reads, and `publish-client` shares nothing: its
+// session is the Client publication's, and it reads exactly the three calls the
+// live-interface resolution makes. A read absent from this list is refused for
+// the operation by the same allow-list branch every other operation uses, so the
+// entry cannot drift into a fourth read without a reviewed diff here.
+export const closedReadSets = Object.freeze({
+  'publish-client': Object.freeze(['sts/get-caller-identity', 'cloudformation/describe-stacks', 'ssm/get-parameter']),
+});
 // The reviewed read set the dispatched operation's runtime session performs. The
 // simulation plan, the generated session policy and the AWS call allow-list all
 // derive from this one function, so an operation cannot be granted a read it does
 // not perform and cannot call a read another operation's session needs.
 export function operationReads(env) {
   const operation = env?.INFRA_OPERATION;
+  if (closedReadSets[operation] !== undefined) return [...closedReadSets[operation]];
   return Object.keys(reads).filter((pair) => !(pair in readOperations) || readOperations[pair].includes(operation));
 }
 // Issue #316: the read-only `state` entry reads the same ECS steady-state facts the
@@ -163,6 +183,9 @@ export const operationRoles = Object.freeze({
   // Issue #321: one fenced repair on the existing lifecycle task role — no new
   // role and no new one-shot family.
   'rearm-object-deletion': Object.freeze(['lifecycle']),
+  // Issue #344: the Client publication launches no one-shot task and registers no
+  // task definition; its only writes go through the client-publish session.
+  'publish-client': Object.freeze([]),
 });
 const oneShotRoles = operation => operationRoles[operation];
 // The task role each one-shot family registers under. `verify` keeps the existing
@@ -243,7 +266,23 @@ function baseOriginUpdate(env, args) {
   }
   return args.length === expected.length && expected.every((token, index) => args[index] === token);
 }
-export function assertAwsAllowed(env, args, purpose = 'operation', session = 'runtime') {
+// Issue #344: the Client publication session performs exactly two writes, and both
+// are compared as whole argument vectors the way the Base origin update above is:
+// `aws s3 sync <verified tree> s3://<live bucket> --delete` and `aws
+// cloudfront create-invalidation --distribution-id <live id> --paths /*`. The
+// local directory, the bucket and the distribution are the values this run
+// resolved, so a different bucket, a different distribution, a second path, a
+// `s3 cp`, a `s3 rm`, a `cloudfront update-distribution`, an extra flag, a
+// duplicate or a reordering is refused instead of passing a flag scan. Nothing is
+// admitted before the live interface has been resolved (`resources` absent), so the
+// read-only resolution session cannot write at all.
+function clientPublishWrite(env, resources, args) {
+  if (env.INFRA_OPERATION !== 'publish-client' || resources === undefined) return false;
+  const expected = [clientSyncArguments(resources.bucket),
+    clientInvalidationArguments(resources.distribution_id)];
+  return expected.some(tokens => args.length === tokens.length && tokens.every((token, index) => args[index] === token));
+}
+export function assertAwsAllowed(env, args, purpose = 'operation', session = 'runtime', resources = undefined) {
   const boundary = operationBoundary(env);
   const key = `${args[0]}/${args[1]}`;
   const argument = flag => args[args.indexOf(flag) + 1];
@@ -262,6 +301,13 @@ export function assertAwsAllowed(env, args, purpose = 'operation', session = 'ru
     throw new Error(`AWS action ${key} is forbidden for the deploy session`);
   }
   if (reads[key] && operationReads(env).includes(key) && (!boundary.readOnly || stateReads.includes(key))) return;
+  // Issue #344: the Client publication session's two writes. The reads above are
+  // the only other calls it may make, so this branch ends the session's surface:
+  // anything else — a stack update, a task, a secret read — is refused here.
+  if (session === 'client-publish') {
+    if (purpose === 'operation' && clientPublishWrite(env, resources, args)) return;
+    throw new Error(`AWS action ${key} is forbidden for the client-publish session`);
+  }
   if (args[0] === 'ecs' && args[1] === 'wait') {
     const allowed = args[2] === 'tasks-stopped' || !boundary.readOnly && args[2] === 'services-stable';
     if (!boundary.readOnly && allowed) return;
@@ -318,7 +364,7 @@ const arn = (service, suffix, awsRegion = 'ap-east-1') => `arn:aws:${service}:${
 // `*`. The deploy session no longer simulates anything, so its copy is gone; the
 // two roles' identity grants stay (#196 owns narrowing those).
 const simulate = ['iam:SimulatePrincipalPolicy', 'iam:SimulateCustomPolicy'];
-export function sessionPolicy(kind, env, purpose = 'operation') {
+export function sessionPolicy(kind, env, purpose = 'operation', resources = undefined) {
   const boundary = operationBoundary(env);
   const statement = (Action, Resource = '*', Condition) => ({ Effect: 'Allow', Action, Resource, ...(Condition ? { Condition } : {}) });
   let statements;
@@ -360,6 +406,31 @@ export function sessionPolicy(kind, env, purpose = 'operation') {
     if (purpose === 'operation' && changedStackNames(env.INFRA_OPERATION).includes('AnyWearPlatformStack-beta')) {
       statements.push(statement('logs:PutRetentionPolicy', ['beta-anywear-pre-sign-up', 'beta-anywear-post-confirmation-sync', 'AnyWearPlatformStack-beta-*']
         .map(name => arn('logs', `log-group:/aws/lambda/${name}:*`))));
+    }
+  } else if (kind === 'client-publish') {
+    // Issue #344: the Client publication runs under `beta-client-publish-role`.
+    // Its grants are unchanged (S3 on the one client bucket, the two invalidation
+    // actions on the one distribution, DescribeStacks and the two Cognito
+    // parameter reads); this session narrows them to the exact calls the
+    // publication makes. A session policy cannot name a bucket or a distribution
+    // whose name is only known after the live read, so the run assumes the same
+    // role twice: without `resources` this is the read-only resolution session and
+    // it carries only the three reads, and with `resources` it is the publication
+    // session and it adds exactly the two writes on the resources it resolved.
+    if (purpose !== 'operation' || env.INFRA_OPERATION !== 'publish-client') {
+      throw new Error('Client publish credentials are forbidden for this operation');
+    }
+    statements = [statement(operationReads(env).map(read => reads[read]))];
+    if (resources !== undefined) {
+      const bucketArn = `arn:aws:s3:::${resources.bucket}`;
+      statements.push(
+        statement(['s3:ListBucket', 's3:GetBucketLocation'], bucketArn),
+        // The role's three object actions: `s3 sync` lists the bucket, uploads the
+        // changed files and, with `--delete`, removes the keys the verified tree no
+        // longer carries. No bucket-level write and no delete-bucket.
+        statement(['s3:GetObject', 's3:PutObject', 's3:DeleteObject'], `${bucketArn}/*`),
+        statement(['cloudfront:CreateInvalidation', 'cloudfront:GetInvalidation'],
+          `arn:aws:cloudfront::650880818323:distribution/${resources.distribution_id}`));
     }
   } else throw new Error('Unknown dedicated role');
   const policy = JSON.stringify({ Version: '2012-10-17', Statement: statements });

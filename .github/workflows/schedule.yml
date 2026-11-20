@@ -1,0 +1,152 @@
+name: Beta scheduled qualification
+# #344: the single-writer architecture's scheduled entry (ADR 0033 §10). It shares
+# the one non-cancelling `anywear-infra-runtime` group with `mutate.yml`, so a
+# nightly reconcile queues behind an in-flight mutation instead of racing it, and it
+# holds the group until the qualification it dispatched is terminal.
+#
+# The entry declares no `environment`, holds no `id-token` and no AWS credential: it
+# mints exactly one App installation token narrowed to `AnyWear-E2E` with
+# `actions: write` only, dispatches `beta-qualification.yml` and reads the created
+# run back. It creates no record and changes no AWS resource.
+#
+# The run name states the operation the entry dispatches (the schedule event names
+# none, so the default `reconcile` is rendered) and the actor.
+run-name: "Beta scheduled qualification: ${{ inputs.operation || 'reconcile' }} · by @${{ github.actor }}"
+on:
+  schedule:
+    # 03:17 UTC, the daily window ADR 0033 §10 records. A long deployment can delay
+    # one cycle: the run queues behind it in `anywear-infra-runtime` rather than
+    # being refused, and the reconcile record still names each retained identity and
+    # its own deadline.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Qualification to dispatch and hold to a terminal state
+        type: choice
+        options: [reconcile, smoke, full]
+        required: true
+      # A `full` qualification of a reviewed commit needs the commit it expects to be
+      # live. Only `full` accepts either expected commit; the other two refuse them.
+      expected_service_commit:
+        description: 40-hex Service commit the full qualification expects live; required by full, empty otherwise
+        type: string
+        default: ''
+      expected_client_commit:
+        description: 40-hex Client commit the full qualification expects live; optional with full, empty otherwise
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: anywear-infra-runtime
+  cancel-in-progress: false
+  # The same bounded, non-cancelling serialization `mutate.yml` carries: up to 100
+  # pending runs in wait order, nothing in flight cancelled. `cancel-in-progress:
+  # true` is a workflow validation error with `queue`, and actionlint 1.7.12 rejects
+  # the key before it knows it, so the reviewed ignore lives in
+  # `.github/actionlint.yaml`.
+  queue: max
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # The one stage switch, repository-scoped for the same reason `mutate.yml` keeps it
+  # there: a job-level `if` is evaluated before any environment exists.
+  ENABLE_BETA_MUTATION: ${{ vars.ENABLE_BETA_MUTATION }}
+  # The schedule event carries no inputs, so the nightly run names the operation it
+  # dispatches in the same variable a manual dispatch fills.
+  SCHEDULE_OPERATION: ${{ inputs.operation || 'reconcile' }}
+  EXPECTED_SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
+  EXPECTED_CLIENT_COMMIT: ${{ inputs.expected_client_commit }}
+  GH_TELEMETRY: disabled
+jobs:
+  # Credential-free validation: reviewed main, the open stage switch and the
+  # operation/input scope. A schedule event on a non-main branch never starts, and a
+  # `full` dispatch without its expected Service commit, or a `reconcile`/`smoke`
+  # carrying one, is refused here — before the hold job can mint a token.
+  preflight:
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Validate the scheduled operation and its input scope
+        run: node scripts/schedule-qualification.mjs validate
+  # The hold. This workflow runs no writer gate of its own — it dispatches E2E and
+  # mutates nothing. Its name is what matters: AnyWear-E2E's preflight checks the
+  # writer pair `mutate.yml` → `qualify-hold` and `schedule.yml` → `hold`, so
+  # renaming this job hides the scheduled writer from the qualification it starts.
+  #
+  # It mints the existing AnyWear-E2E `actions: write` App token — the same
+  # allocation the deploy chain's hold uses (ADR 0033 §5 allocation 3) — dispatches
+  # the qualification, then reads the created run to a terminal state under the same
+  # 55-minute ceiling, from the same `scripts/qualification-observe.mjs` that records
+  # the deploy chain's outcome. The job's 65-minute timeout outlives that ceiling, so
+  # the observation's deadline fires first and the recorder still runs. Exactly one
+  # `qualified`/`unqualified` line is recorded in the step summary and as the job
+  # output. A red qualification is a red E2E run; the entry itself creates no record
+  # and never changes a deployment verdict.
+  hold:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.observe.outputs.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # The repository-module rule: a job that runs `node scripts/...` installs the
+      # pinned dependencies first, so a module import cannot fail on a missing tree.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Create the AnyWear-E2E qualification dispatch token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-E2E
+          permission-actions: write
+      # The operation-to-trigger mapping, the pre-dispatch dedupe, the dispatch with
+      # `return_run_details: true`, the created run verified by id and the bounded
+      # run-name fallback are `scripts/schedule-qualification.mjs`'s; it exposes the
+      # created run's id and URL as its step outputs, which the observation reads.
+      - name: Dispatch the scheduled qualification and print its run
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: node scripts/schedule-qualification.mjs dispatch
+      # The observation is the job's last step and runs even when an earlier step
+      # failed, so every run leaves exactly one outcome. It records `unqualified`
+      # and exits zero when no run was created (the job is already red from the
+      # failed step), records `unqualified` and fails when a dispatched run cannot be
+      # read, and exits zero for a terminal non-success run, the ceiling and a
+      # success.
+      - name: Observe the dispatched qualification and record its one outcome
+        id: observe
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          QUALIFICATION_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          QUALIFICATION_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          # A `full` qualification names the Service commit it expects; the outcome
+          # line reports it when the entry dispatched one.
+          SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
+        run: node scripts/qualification-observe.mjs

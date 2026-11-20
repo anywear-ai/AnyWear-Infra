@@ -8,7 +8,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers, rearm-object-deletion]
+        options: [deploy-foundation, deploy-billing, deploy-platform, deploy-egress, delete-egress, deploy-runtime, stop-runtime, restore-release, migrate, admission-status, add-testers, set-testers, rearm-object-deletion, publish-client]
         required: true
       service_artifact_tag:
         description: Sealed Service artifact tag; required by deploy-platform, deploy-runtime, restore-release and migrate only
@@ -18,18 +18,36 @@ on:
         description: Service source commit the sealed artifact was built from; required with the tag
         type: string
         default: ''
-      # The deploy chain's context (#226). Only `deploy-runtime` accepts it: a merge
-      # sends `deploy` with the dispatching Service run URL, a human sends the
-      # `manual` default with no run URL, and `release` is refused in the
-      # credential-free preflight so a tag-shaped dispatch fails loudly.
+      # The deploy chain's context (#226) and the Client publication chain's (#344).
+      # Only `deploy-runtime` accepts `deploy` and only `publish-client` accepts
+      # `publish`; both accept the `manual` default with no run URL, and `release`
+      # is refused in the credential-free preflight everywhere so a tag-shaped
+      # dispatch fails loudly.
       delivery_trigger:
-        description: Entry event; deploy (the Service deploy chain) or manual, accepted only by deploy-runtime. release is refused
+        description: Entry event; deploy (the Service deploy chain) for deploy-runtime, publish (the Client publication chain) for publish-client, or manual. release is refused
         type: choice
-        options: [deploy, release, manual]
+        options: [deploy, release, manual, publish]
         default: manual
         required: true
       dispatched_by:
-        description: HTTPS run URL of the run that dispatched this one; required for delivery_trigger=deploy, empty for manual
+        description: HTTPS run URL of the run that dispatched this one; required for delivery_trigger=deploy or publish, empty for manual
+        type: string
+        default: ''
+      # Issue #344: the Client publication identity. All three belong to
+      # `publish-client` alone; every other operation refuses them in the
+      # credential-free preflight, so a publication identity cannot ride a
+      # deployment. The digest is the SHA-256 of the Client run's
+      # `dist/bundle-manifest.json` and is re-hashed here before anything is written.
+      client_run_id:
+        description: AnyWear-Client publisher run id for publish-client only; a positive integer, empty otherwise
+        type: string
+        default: ''
+      client_run_attempt:
+        description: AnyWear-Client publisher run attempt for publish-client only; a positive integer, empty otherwise
+        type: string
+        default: ''
+      client_bundle_digest:
+        description: SHA-256 of the Client run's dist/bundle-manifest.json for publish-client only; 64 lowercase hex, empty otherwise
         type: string
         default: ''
       identity_phase:
@@ -98,6 +116,17 @@ env:
   DISPATCHED_BY: ${{ inputs.dispatched_by }}
   SERVICE_ARTIFACT_TAG: ${{ inputs.service_artifact_tag }}
   SERVICE_COMMIT: ${{ inputs.service_commit }}
+  # Issue #344: the Client publication identity travels on every operation and its
+  # per-operation scope is enforced by `validateClientInputs` in the same
+  # credential-free preflight, so a stray value fails the dispatch loudly.
+  CLIENT_RUN_ID: ${{ inputs.client_run_id }}
+  CLIENT_RUN_ATTEMPT: ${{ inputs.client_run_attempt }}
+  CLIENT_BUNDLE_DIGEST: ${{ inputs.client_bundle_digest }}
+  # The publication role is a reviewed literal, the way the account and region are
+  # pinned: it resolves in every job without an environment, so the credential-free
+  # `verify` job can carry it as an inert value and no operator has to create a
+  # repository variable for this operation.
+  CLIENT_PUBLISH_ROLE_ARN: 'arn:aws:iam::650880818323:role/beta-client-publish-role'
   TESTER_EMAILS: ${{ inputs.tester_emails }}
   NAT_EIP_ALLOCATION_ID: ${{ inputs.nat_eip_allocation_id }}
   OBJECT_DELETION_MANIFEST_ID: ${{ inputs.object_deletion_manifest_id }}
@@ -126,13 +155,15 @@ jobs:
       - run: npm ci
       - name: Validate operation family and reviewed Service artifact identity
         run: node scripts/check-operation.mjs
-  # The only job that reads the Service release. It proves the release and its tag
-  # ref over the REST API, requires the asset names this operation consumes to be
-  # present, uploaded and digest-valid, and downloads only those. It holds a
-  # read-only App token (only when the operation takes a release) and never an OIDC
-  # identity or an environment. It publishes the release BYTES as the transport
-  # artifact and the PUBLISHED DIGESTS as this job's `release_assets` output; the
-  # deploy job proves both before it requests a credential.
+  # The only job that reads a published peer artifact. It proves the Service
+  # release and its tag ref over the REST API, requires the asset names this
+  # operation consumes to be present, uploaded and digest-valid, and downloads only
+  # those; and for `publish-client` it proves the AnyWear-Client publisher run and
+  # downloads that run's `client-dist` artifact through the REST artifact endpoint.
+  # It holds one read-only App token (only when the operation takes a release or a
+  # Client bundle) and never an OIDC identity or an environment. It publishes the
+  # proven BYTES as the transport artifact and the published DIGESTS as this job's
+  # outputs; the deploy job proves both before it requests a credential.
   verify:
     needs: preflight
     runs-on: ubuntu-latest
@@ -141,15 +172,62 @@ jobs:
       contents: read
     outputs:
       release_assets: ${{ steps.verify.outputs.release_assets }}
+      # Issue #344: the digest recomputed over the downloaded bundle manifest. The
+      # deploy job re-hashes the travelled bytes against it.
+      client_bundle_digest: ${{ steps.client-bundle.outputs.client_bundle_digest }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      # The repository-module rule: this job runs `node scripts/client-publication.mjs`
+      # for a Client publication, so it installs the pinned dependencies itself
+      # before its first module run. The composite below installs them too, exactly
+      # as it does inside the `deploy` job, so neither job depends on the other's
+      # tree.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
       - uses: ./.github/actions/verify-operation
         id: verify
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
+      # ADR 0033 §5 allocation 6: one App token narrowed to a read of
+      # `AnyWear-Client` with `actions: read` and nothing else. It proves the
+      # publisher run and downloads the bundle; it grants no write and no other
+      # repository.
+      - name: Create the AnyWear-Client publisher read token
+        id: client
+        if: env.INFRA_OPERATION == 'publish-client'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-Client
+          permission-actions: read
+      # The Client publisher proof and the one download. It reads the run, its jobs
+      # and its artifact list over REST, downloads `client-dist`, extracts it,
+      # recomputes the SHA-256 of `dist/bundle-manifest.json`, requires the
+      # dispatched digest, and writes the verified tree for the upload below.
+      - name: Prove the Client publisher run and recompute the bundle digest
+        id: client-bundle
+        if: env.INFRA_OPERATION == 'publish-client'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.client.outputs.token }}
+        run: node scripts/client-publication.mjs verify
+      # Infra's own transport artifact: only the verified Client tree, retained one
+      # day, one reader (the deploy job's re-hash below).
+      - name: Publish the verified Client bundle as Infra's transport artifact
+        if: env.INFRA_OPERATION == 'publish-client'
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-publish-bytes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .client-artifacts/dist
+          retention-days: 1
+          if-no-files-found: error
   # The only job that acquires AWS credentials. It is scheduled after `verify`; its
   # first work is the #338 admission read — before any AWS credential request — and
   # the `deploy-operation` composite then proves the travelled release bytes against
@@ -170,10 +248,13 @@ jobs:
     # only in this job, the one that declares `beta`. Nothing before it reads them.
     # `VERIFIED_RELEASE_ASSETS` is the verify job's output: the published digest of
     # each asset this operation consumes, and nothing else.
+    # `VERIFIED_CLIENT_BUNDLE_DIGEST` is the same job's recomputed Client manifest
+    # digest (#344), against which this job re-hashes the travelled bundle.
     env:
       INFRA_DEPLOY_ROLE_ARN: ${{ vars.INFRA_DEPLOY_ROLE_ARN }}
       INFRA_RUNTIME_ROLE_ARN: ${{ vars.INFRA_RUNTIME_ROLE_ARN }}
       VERIFIED_RELEASE_ASSETS: ${{ needs.verify.outputs.release_assets }}
+      VERIFIED_CLIENT_BUNDLE_DIGEST: ${{ needs.verify.outputs.client_bundle_digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -219,28 +300,58 @@ jobs:
           # target the same directory, or the bytes would land in the workspace
           # root and `prove-release-bytes.mjs` would fail closed on every release.
           path: .service-artifacts/selected
+      # Issue #344: the Client publication consumes no Service release, so the
+      # release-byte download and the `deploy-operation` composite are gated out
+      # above and below. Its own three steps replace them: the travelled bundle is
+      # downloaded, re-hashed under the restricted session and published, and the
+      # one publication record is uploaded. `scripts/client-publication.mjs publish`
+      # asks the session allow-list before every AWS call.
+      - name: Download the verified Client bundle that travelled from verify
+        if: env.INFRA_OPERATION == 'publish-client'
+        uses: actions/download-artifact@v4
+        with:
+          name: client-publish-bytes-${{ github.run_id }}-${{ github.run_attempt }}
+          # The upload's single search path is `.client-artifacts/dist`, so the
+          # download must target the same directory: `s3 sync` writes its contents
+          # to the bucket root and the digest is recomputed over
+          # `.client-artifacts/dist/bundle-manifest.json`.
+          path: .client-artifacts/dist
+      - name: Publish the verified Client bundle to Beta
+        if: env.INFRA_OPERATION == 'publish-client'
+        shell: bash
+        run: node scripts/client-publication.mjs publish
+      - name: Upload the Client publication record
+        if: env.INFRA_OPERATION == 'publish-client'
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-publication-record-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .client-publication/publication-record.json
+          retention-days: 90
+          if-no-files-found: error
       - uses: ./.github/actions/deploy-operation
-  # #226/#338: the deploy chain's qualification hold. It runs only after `deploy`
-  # succeeded for `deploy-runtime`. It declares no `environment`, holds no
+        if: env.INFRA_OPERATION != 'publish-client'
+  # #226/#338/#344: the qualification hold. It runs only after `deploy` succeeded for
+  # `deploy-runtime` or for `publish-client`. It declares no `environment`, holds no
   # `id-token` and no AWS permission, and mints exactly one App installation token,
   # narrowed to AnyWear-E2E with `actions: write` only; that one token both
   # dispatches the qualification and reads the dispatched run back.
   #
-  # For `delivery_trigger=deploy` the job is the hold: after the dispatch step — which
-  # exposes the created run's id and URL as its step outputs — the final step observes
-  # that run to a terminal state, so this run, and with it `anywear-infra-runtime`,
-  # stays alive for the qualification instead of releasing the environment to the next
-  # merge. The observation's ceiling is 55 minutes measured from the moment the
-  # dispatched run was created, under the one-hour lifetime of the token minted
-  # immediately before the dispatch; the job's 65-minute timeout is longer, so the
-  # deadline fires first and the recorder still runs. The hold records exactly one
-  # outcome — `qualified` or `unqualified` — in the step summary and the job output,
-  # and a red qualification leaves the deployment's own success standing.
+  # For `delivery_trigger=deploy` (Runtime) and `delivery_trigger=publish` (Client)
+  # the job is the hold: after the dispatch step — which exposes the created run's id
+  # and URL as its step outputs — the final step observes that run to a terminal
+  # state, so this run, and with it `anywear-infra-runtime`, stays alive for the
+  # qualification instead of releasing the environment to the next writer. The
+  # observation's ceiling is 55 minutes measured from the moment the dispatched run
+  # was created, under the one-hour lifetime of the token minted immediately before
+  # the dispatch; the job's 65-minute timeout is longer, so the deadline fires first
+  # and the recorder still runs. The hold records exactly one outcome — `qualified`
+  # or `unqualified` — in the step summary and the job output, and a red
+  # qualification leaves the deployment's (or publication's) own success standing.
   # `delivery_trigger=manual` dispatches a `smoke` and takes no hold. The dispatch step
   # precedes the observation and the observation is the job's last step.
   qualify-hold:
     needs: deploy
-    if: success() && inputs.operation == 'deploy-runtime'
+    if: success() && (inputs.operation == 'deploy-runtime' || inputs.operation == 'publish-client')
     runs-on: ubuntu-latest
     timeout-minutes: 65
     permissions:
@@ -288,7 +399,7 @@ jobs:
       # one outcome and exit zero. Its `outcome` is the job output above.
       - name: Observe the dispatched qualification and record its one outcome
         id: observe
-        if: always() && env.DELIVERY_TRIGGER == 'deploy'
+        if: always() && (env.INFRA_OPERATION == 'deploy-runtime' && env.DELIVERY_TRIGGER == 'deploy' || env.INFRA_OPERATION == 'publish-client' && env.DELIVERY_TRIGGER == 'publish')
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

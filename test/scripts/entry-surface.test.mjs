@@ -30,21 +30,23 @@ const credentialJobs = workflow => Object.entries(workflow.jobs ?? {})
 
 const mutateOperations = Object.freeze(['deploy-foundation', 'deploy-billing', 'deploy-platform',
   'deploy-egress', 'delete-egress', 'deploy-runtime', 'stop-runtime', 'restore-release', 'migrate',
-  'admission-status', 'add-testers', 'set-testers', 'rearm-object-deletion']);
+  'admission-status', 'add-testers', 'set-testers', 'rearm-object-deletion', 'publish-client']);
 
-test('the workflow directory is exactly the three Beta entries plus the callable', async () => {
+test('the workflow directory is exactly the four Beta entries plus the callable', async () => {
   // GitHub accepts both `.yml` and `.yaml`; the census must see either extension,
   // or a `.yaml` entry would be invisible to every assertion below.
   const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file)).sort();
-  assert.deepEqual(files, ['check.yml', 'mutate.yml', 'production.yml', 'runtime.yml']);
+  assert.deepEqual(files, ['check.yml', 'mutate.yml', 'production.yml', 'runtime.yml', 'schedule.yml']);
   const workflows = Object.fromEntries(await Promise.all(files.map(async file => [file, await loadWorkflow(file)])));
 
   const dispatchSurfaces = files.filter(file => Object.hasOwn(workflows[file].on ?? {}, 'workflow_dispatch'));
-  assert.deepEqual(dispatchSurfaces, ['mutate.yml', 'runtime.yml'], 'exactly two workflow_dispatch surfaces');
+  assert.deepEqual(dispatchSurfaces, ['mutate.yml', 'runtime.yml', 'schedule.yml'],
+    'exactly three workflow_dispatch surfaces');
 
-  // The three Beta entries: one automatic check and two manual chains.
+  // The four Beta entries: one automatic check, two manual chains and the scheduled
+  // entry that shares the runtime queue (ADR 0033 §10).
   const betaEntries = files.filter(file => file === 'check.yml' || dispatchSurfaces.includes(file));
-  assert.deepEqual(betaEntries, ['check.yml', 'mutate.yml', 'runtime.yml']);
+  assert.deepEqual(betaEntries, ['check.yml', 'mutate.yml', 'runtime.yml', 'schedule.yml']);
 
   // `check.yml` is the automatic entry: PR plus main pushes, no dispatch surface.
   assert.deepEqual(Object.keys(workflows['check.yml'].on).sort(), ['pull_request', 'push']);
@@ -103,23 +105,46 @@ test('mutate.yml keeps one preflight → verify → deploy → qualify-hold chai
   assert.equal(Object.hasOwn(mutate.jobs, 'observe'), false);
   assert.equal(Object.hasOwn(mutate.jobs, 'record'), false);
 
-  // Exactly two things cross from `verify` to `deploy`: the release bytes as the
-  // transport artifact, and the published digest set as this job output.
-  assert.deepEqual(verify.outputs, { release_assets: '${{ steps.verify.outputs.release_assets }}' });
+  // Exactly three things cross from `verify` to `deploy` (#344 added the Client
+  // publication digest beside the release bytes and their published digests).
+  assert.deepEqual(verify.outputs, { release_assets: '${{ steps.verify.outputs.release_assets }}',
+    client_bundle_digest: '${{ steps.client-bundle.outputs.client_bundle_digest }}' });
   assert.equal(deploy.env.VERIFIED_RELEASE_ASSETS, '${{ needs.verify.outputs.release_assets }}');
+  assert.equal(deploy.env.VERIFIED_CLIENT_BUNDLE_DIGEST, '${{ needs.verify.outputs.client_bundle_digest }}');
 
   assert.deepEqual(mutate.on.workflow_dispatch.inputs.operation.options, mutateOperations);
   assert.equal(mutate.on.workflow_dispatch.inputs.operation.required, true);
-  // #226: the deploy chain's two context inputs. `release` is representable and
-  // refused in the credential-free preflight; `release_version` never shipped and
-  // has no producer because no tag reaches Infra.
+  // #226/#344: the two chain context inputs. `release` is representable and refused
+  // everywhere; `publish` is the Client publication chain's event and belongs to
+  // `publish-client` alone.
   const deliveryTrigger = mutate.on.workflow_dispatch.inputs.delivery_trigger;
   assert.equal(deliveryTrigger.type, 'choice');
-  assert.deepEqual(deliveryTrigger.options, ['deploy', 'release', 'manual']);
+  assert.deepEqual(deliveryTrigger.options, ['deploy', 'release', 'manual', 'publish']);
   assert.equal(deliveryTrigger.default, 'manual');
   assert.equal(deliveryTrigger.required, true);
   assert.equal(mutate.on.workflow_dispatch.inputs.dispatched_by.type, 'string');
   assert.equal(mutate.on.workflow_dispatch.inputs.dispatched_by.default, '');
+  // #344: the Client publication identity, three optional strings whose
+  // per-operation scope is enforced in the credential-free preflight.
+  for (const [name, description] of [
+    ['client_run_id', /publish-client only/],
+    ['client_run_attempt', /publish-client only/],
+    ['client_bundle_digest', /publish-client only/],
+  ]) {
+    const input = mutate.on.workflow_dispatch.inputs[name];
+    assert.equal(input.type, 'string', name);
+    assert.equal(input.default, '', name);
+    assert.match(input.description, description, name);
+    assert.equal(Object.hasOwn(input, 'pattern'), false, name);
+  }
+  assert.match(mutate.on.workflow_dispatch.inputs.client_bundle_digest.description, /64 lowercase hex/);
+  assert.equal(mutate.env.CLIENT_RUN_ID, '${{ inputs.client_run_id }}');
+  assert.equal(mutate.env.CLIENT_RUN_ATTEMPT, '${{ inputs.client_run_attempt }}');
+  assert.equal(mutate.env.CLIENT_BUNDLE_DIGEST, '${{ inputs.client_bundle_digest }}');
+  // The publication role is a reviewed workflow literal, the way the account and
+  // region are pinned: no operator creates a repository variable for this PR.
+  assert.equal(mutate.env.CLIENT_PUBLISH_ROLE_ARN, 'arn:aws:iam::650880818323:role/beta-client-publish-role');
+  assert.equal(/vars\.CLIENT_PUBLISH_ROLE_ARN/.test(await readFile(workflowFile('mutate.yml'), 'utf8')), false);
   assert.equal(Object.hasOwn(mutate.on.workflow_dispatch.inputs, 'release_version'), false,
     'release_version never shipped; no tag reaches Infra');
   assert.equal(mutate.env.DELIVERY_TRIGGER, '${{ inputs.delivery_trigger }}');
@@ -229,9 +254,10 @@ test('the qualification hold is credential-free, single-token and observes last'
   const mutate = await loadWorkflow('mutate.yml');
   const hold = mutate.jobs['qualify-hold'];
   assert.ok(hold, 'mutate.yml carries the deploy chain qualification hold');
-  // Only the operation that deploys a Runtime tuple, and only after `deploy`
+  // The two operations that change Beta's served tuple, and only after `deploy`
   // succeeded. A schema-boundary refusal fails `deploy`, so the hold never runs.
-  assert.equal(hold.if, "success() && inputs.operation == 'deploy-runtime'");
+  assert.equal(hold.if,
+    "success() && (inputs.operation == 'deploy-runtime' || inputs.operation == 'publish-client')");
   assert.equal(declaresEnvironment(hold), false, 'the hold declares no environment');
   assert.equal(holdsIdToken(hold), false, 'the hold holds no OIDC identity');
   assert.deepEqual(hold.permissions, { contents: 'read' }, 'the hold holds contents: read only');
@@ -264,7 +290,11 @@ test('the qualification hold is credential-free, single-token and observes last'
   assert.equal(observationIndex, hold.steps.length - 1, 'nothing runs after the observation');
   assert.equal(hold.steps[dispatchIndex].id, 'dispatch', 'the dispatch exposes the created run as a step output');
   const observation = hold.steps[observationIndex];
-  assert.equal(observation.if, "always() && env.DELIVERY_TRIGGER == 'deploy'",
+  // #344: the observation must also run for the Client publication, whose hold is
+  // `delivery_trigger=publish`; a manual dispatch of either operation takes none.
+  assert.equal(observation.if,
+    "always() && (env.INFRA_OPERATION == 'deploy-runtime' && env.DELIVERY_TRIGGER == 'deploy'"
+    + " || env.INFRA_OPERATION == 'publish-client' && env.DELIVERY_TRIGGER == 'publish')",
     'the observation records an outcome even when the dispatch step failed');
   assert.equal(observation.env.GH_TOKEN, '${{ steps.app.outputs.token }}');
   assert.equal(observation.env.QUALIFICATION_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
@@ -325,9 +355,9 @@ test('the deploy job admits the mutation before any credential and mints one rea
   assert.ok(steps.indexOf(token) < admissionIndex, 'the read runs only after its token exists');
 });
 
-// ADR 0033 §5 moved the census from four App-token allocations to five; this file
-// owns `mutate.yml`'s two and proves no third appears in it.
-test('mutate.yml holds exactly two App-token allocations and no third', async () => {
+// ADR 0033 §5 allocates seven App tokens across the four repositories; this file
+// owns the three that live in `mutate.yml` and proves no fourth appears in it.
+test('mutate.yml holds exactly three App-token allocations and no fourth', async () => {
   const mutate = await loadWorkflow('mutate.yml');
   const allocations = [];
   for (const [jobName, job] of Object.entries(mutate.jobs)) {
@@ -340,32 +370,57 @@ test('mutate.yml holds exactly two App-token allocations and no third', async ()
     }
   }
   assert.deepEqual(allocations, [
+    // Allocation 6 (#344): the Client publisher proof and the `client-dist` download.
+    { jobName: 'verify', permissions: ['permission-actions'], actionPermission: 'read', repositories: 'AnyWear-Client' },
+    // Allocation 5: the pre-mutation admission read.
     { jobName: 'deploy', permissions: ['permission-actions'], actionPermission: 'read', repositories: 'AnyWear-E2E' },
+    // Allocation 3: the qualification dispatch and the read-back of the same run.
     { jobName: 'qualify-hold', permissions: ['permission-actions'], actionPermission: 'write', repositories: 'AnyWear-E2E' },
-  ], 'two allocations: the deploy job reads, the hold writes, both narrowed to AnyWear-E2E with actions only');
+  ], 'three allocations: verify reads the Client, deploy reads E2E, the hold writes E2E — actions only, one repository each');
+  // The Client token is gated to the one operation that publishes.
+  const clientToken = mutate.jobs.verify.steps
+    .find(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
+  assert.equal(clientToken.if, "env.INFRA_OPERATION == 'publish-client'");
+  // It is minted after the credential-free admission composite, so a refused
+  // operation never reaches the Client REST read.
+  const verifySteps = mutate.jobs.verify.steps;
+  assert.ok(verifySteps.findIndex(step => step.uses === './.github/actions/verify-operation')
+    < verifySteps.indexOf(clientToken));
+  // `runtime.yml` stays token-free, and the scheduled entry's one token is counted
+  // in its own test.
+  const runtime = await loadWorkflow('runtime.yml');
+  assert.equal(JSON.stringify(runtime).includes('create-github-app-token'), false);
 });
 
 // #226: `queue: max` beside `cancel-in-progress: false`, and the reviewed actionlint
 // ignore the pinned 1.7.12 needs because it predates the key.
 test('the runtime queue is bounded and the pinned linter rejection is reviewed', async () => {
   const mutate = await loadWorkflow('mutate.yml');
+  const schedule = await loadWorkflow('schedule.yml');
   assert.deepEqual(mutate.concurrency, { group: 'anywear-infra-runtime', 'cancel-in-progress': false, queue: 'max' });
+  // #344: the scheduled entry joins the same non-cancelling group, so a nightly
+  // reconcile queues behind an in-flight mutation instead of racing it.
+  assert.deepEqual(schedule.concurrency, { group: 'anywear-infra-runtime', 'cancel-in-progress': false, queue: 'max' });
   const config = await actionlintConfig();
-  const ignore = config.paths['.github/workflows/mutate.yml']?.ignore;
-  assert.ok(Array.isArray(ignore), 'mutate.yml carries the reviewed queue ignore');
-  assert.equal(ignore.length, 1);
-  assert.match(ignore[0], /unexpected key "queue" for "concurrency" section/);
+  for (const file of ['.github/workflows/mutate.yml', '.github/workflows/schedule.yml']) {
+    const ignore = config.paths[file]?.ignore;
+    assert.ok(Array.isArray(ignore), `${file} carries the reviewed queue ignore`);
+    assert.equal(ignore.length, 1);
+    assert.match(ignore[0], /unexpected key "queue" for "concurrency" section/);
+  }
   // The ignore names one file and one message: no other workflow uses `queue`.
   const files = (await readdir(workflowDirectory)).filter(file => /\.ya?ml$/.test(file));
   const queueHolders = [];
   for (const file of files) {
     if (Object.hasOwn((await loadWorkflow(file)).concurrency ?? {}, 'queue')) queueHolders.push(file);
   }
-  assert.deepEqual(queueHolders, ['mutate.yml']);
+  assert.deepEqual(queueHolders, ['mutate.yml', 'schedule.yml']);
+  assert.deepEqual(Object.keys(config.paths).sort(),
+    ['.github/workflows/mutate.yml', '.github/workflows/production.yml', '.github/workflows/schedule.yml']);
   assert.equal(Object.hasOwn(config.paths, '.github/workflows/runtime.yml'), false);
 });
 
-test('the only artifact a protected mutating run publishes is the release bytes, retained one day', async () => {
+test('a protected mutating run publishes only its transport bytes and the Client record', async () => {
   const mutate = await loadWorkflow('mutate.yml');
   const verify = await loadAction('verify-operation');
   const uploads = verify.runs.steps.filter(step => String(step.uses ?? '').startsWith('actions/upload-artifact'));
@@ -389,10 +444,41 @@ test('the only artifact a protected mutating run publishes is the release bytes,
   // workspace root and every release run would fail closed at the byte proof.
   const downloads = mutate.jobs.deploy.steps
     .filter(step => String(step.uses ?? '').startsWith('actions/download-artifact'));
-  assert.equal(downloads.length, 1);
-  assert.equal(downloads[0].with.name, 'service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}');
+  assert.deepEqual(downloads.map(step => step.with.name), [
+    'service-release-bytes-${{ github.run_id }}-${{ github.run_attempt }}',
+    // #344: the Client publication's own transport artifact, retained one day and
+    // read only by the re-hash in `client-publication.mjs publish`.
+    'client-publish-bytes-${{ github.run_id }}-${{ github.run_attempt }}',
+  ]);
   assert.equal(downloads[0].with.path, upload.with.path,
     'the download path must equal the single upload search path, which is the artifact root');
+  assert.equal(downloads[1].with.path, '.client-artifacts/dist');
+  assert.equal(downloads[1].if, "env.INFRA_OPERATION == 'publish-client'");
+  // The publication's own uploads: the transport is workflow-owned (not a
+  // composite), retains one day, and the record artifact retains ninety.
+  const clientUpload = mutate.jobs.verify.steps
+    .find(step => String(step.uses ?? '').startsWith('actions/upload-artifact'));
+  assert.equal(clientUpload.with.name, 'client-publish-bytes-${{ github.run_id }}-${{ github.run_attempt }}');
+  assert.equal(clientUpload.with.path, '.client-artifacts/dist');
+  assert.equal(clientUpload.with['retention-days'], 1);
+  assert.equal(clientUpload.with['if-no-files-found'], 'error');
+  assert.equal(clientUpload.if, "env.INFRA_OPERATION == 'publish-client'");
+  const recordUpload = mutate.jobs.deploy.steps
+    .find(step => String(step.uses ?? '').startsWith('actions/upload-artifact'));
+  assert.equal(recordUpload.with.name, 'client-publication-record-${{ github.run_id }}-${{ github.run_attempt }}');
+  // Issue #344's `## Data Models` names the file `publication-record.json`.
+  assert.equal(recordUpload.with.path, '.client-publication/publication-record.json');
+  assert.equal(recordUpload.with['retention-days'], 90);
+  assert.equal(recordUpload.if, "env.INFRA_OPERATION == 'publish-client'");
+  // The mutating composite runs for every operation except the one that consumes no
+  // Service release and performs its own publication instead.
+  const composite = mutate.jobs.deploy.steps.find(step => step.uses === './.github/actions/deploy-operation');
+  assert.equal(composite.if, "env.INFRA_OPERATION != 'publish-client'");
+  // The publication's steps follow the admission read like every other operation's.
+  const steps = mutate.jobs.deploy.steps;
+  const admission = steps.findIndex(step => step.run === 'node scripts/qualification-admission.mjs');
+  assert.ok(admission < steps.indexOf(composite));
+  assert.ok(admission < steps.findIndex(step => step.run === 'node scripts/client-publication.mjs publish'));
 
   // No protected operation workflow or composite publishes an `infra-` evidence
   // artifact any more. `check.yml` is the automatic source-check entry, not a
@@ -429,6 +515,86 @@ test('every workflow gate on the release identity names exactly RELEASE_IDENTITY
   // The only input description that enumerates the operations names each of them.
   const description = mutate.on.workflow_dispatch.inputs.service_artifact_tag.description;
   for (const operation of RELEASE_IDENTITY_OPERATIONS) assert.ok(description.includes(operation), operation);
+});
+
+// #344: the scheduled entry. It is the single writer's scheduled qualification
+// starter (ADR 0033 §10): a nightly reconcile plus a manual smoke/full, dispatched
+// and held with the one AnyWear-E2E token the deploy chain's hold also uses. It
+// declares no environment, no OIDC identity and no AWS credential.
+test('schedule.yml is a two-job, credential-free hold with the fixed job name', async () => {
+  const schedule = await loadWorkflow('schedule.yml');
+  const text = await readFile(workflowFile('schedule.yml'), 'utf8');
+  assert.deepEqual(Object.keys(schedule.jobs), ['preflight', 'hold'],
+    'the E2E admission read keys on schedule.yml → hold, so neither job may be renamed away');
+  const { preflight, hold } = schedule.jobs;
+  assert.equal(preflight.needs, undefined);
+  assert.equal(hold.needs, 'preflight');
+  // Exactly one schedule and the manual dispatch surface.
+  assert.deepEqual(Object.keys(schedule.on).sort(), ['schedule', 'workflow_dispatch']);
+  assert.deepEqual(schedule.on.schedule, [{ cron: '17 3 * * *' }]);
+  const inputs = schedule.on.workflow_dispatch.inputs;
+  assert.deepEqual(inputs.operation.options, ['reconcile', 'smoke', 'full']);
+  assert.equal(inputs.operation.required, true);
+  assert.equal(inputs.operation.type, 'choice');
+  for (const name of ['expected_service_commit', 'expected_client_commit']) {
+    assert.equal(inputs[name].type, 'string', name);
+    assert.equal(inputs[name].default, '', name);
+    assert.equal(inputs[name].required, undefined, name);
+  }
+  // Credential-free: no environment, no OIDC identity, no AWS credential name, and
+  // no write permission. `contents: read` is the most it holds.
+  assert.deepEqual(credentialJobs(schedule), []);
+  for (const [jobName, job] of Object.entries(schedule.jobs)) {
+    assert.equal(declaresEnvironment(job), false, `${jobName} declares no environment`);
+    assert.equal(holdsIdToken(job), false, `${jobName} holds no OIDC identity`);
+    assert.equal(JSON.stringify(job).includes('id-token'), false, `${jobName} must not name id-token`);
+  }
+  for (const name of ['AWS_ACCOUNT_ID', 'AWS_REGION', 'CDK_DEFAULT_ACCOUNT', 'CDK_DEFAULT_REGION',
+    'INFRA_DEPLOY_ROLE_ARN', 'INFRA_RUNTIME_ROLE_ARN', 'CLIENT_PUBLISH_ROLE_ARN', 'configure-aws-credentials']) {
+    assert.equal(text.includes(name), false, `schedule.yml must not carry ${name}`);
+  }
+  assert.deepEqual(schedule.permissions, { contents: 'read' });
+  assert.equal(preflight.if, "github.ref == 'refs/heads/main' && vars.ENABLE_BETA_MUTATION == 'true'");
+  assert.equal(schedule.env.ENABLE_BETA_MUTATION, '${{ vars.ENABLE_BETA_MUTATION }}');
+  // The switch gates the entry; the schedule event names the default operation.
+  assert.equal(schedule.env.SCHEDULE_OPERATION, "${{ inputs.operation || 'reconcile' }}");
+  assert.equal(schedule.env.EXPECTED_SERVICE_COMMIT, '${{ inputs.expected_service_commit }}');
+  assert.equal(schedule.env.EXPECTED_CLIENT_COMMIT, '${{ inputs.expected_client_commit }}');
+  // The preflight validates before any token; the hold installs the pinned
+  // dependencies before its first module run.
+  assert.match(text, /node scripts\/schedule-qualification\.mjs validate/);
+  const holdSteps = hold.steps;
+  const install = holdSteps.findIndex(step => step.run === 'npm ci');
+  const dispatch = holdSteps.findIndex(step => step.run === 'node scripts/schedule-qualification.mjs dispatch');
+  assert.ok(install >= 0 && dispatch > install, 'the hold installs dependencies before its first module run');
+  // One App token, narrowed to AnyWear-E2E with `actions: write` and nothing else.
+  const tokens = holdSteps.filter(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
+  assert.equal(tokens.length, 1, 'the scheduled hold mints exactly one App installation token');
+  assert.equal(tokens[0].with['app-id'], 3346940);
+  assert.equal(tokens[0].with['private-key'], '${{ secrets.APP_PRIVATE_KEY }}');
+  assert.equal(tokens[0].with.repositories, 'AnyWear-E2E');
+  assert.equal(tokens[0].with['permission-actions'], 'write');
+  assert.deepEqual(Object.keys(tokens[0].with).filter(name => name.startsWith('permission-')), ['permission-actions']);
+  // The dispatch precedes the observation and nothing follows the observation; the
+  // observation reuses the deploy chain's recorder.
+  const observe = holdSteps.findIndex(step => step.run === 'node scripts/qualification-observe.mjs');
+  assert.ok(observe > dispatch, 'the dispatch precedes the observation');
+  assert.equal(observe, holdSteps.length - 1, 'nothing runs after the observation');
+  assert.equal(holdSteps[dispatch].id, 'dispatch');
+  const observation = holdSteps[observe];
+  assert.equal(observation.if, 'always()', 'every scheduled run leaves exactly one outcome');
+  assert.equal(observation.id, 'observe');
+  assert.equal(observation.env.GH_TOKEN, '${{ steps.app.outputs.token }}');
+  assert.equal(observation.env.QUALIFICATION_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
+  assert.equal(observation.env.QUALIFICATION_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
+  assert.deepEqual(hold.outputs, { outcome: '${{ steps.observe.outputs.outcome }}' });
+  assert.equal(hold['timeout-minutes'], 65, 'the 65-minute job outlives the 55-minute observation ceiling');
+  // The entry dispatches E2E only: it runs no writer gate of its own and launches
+  // no operation. #338's admission read lives in `mutate.yml`'s `deploy` job alone,
+  // so this file must not even name it.
+  assert.equal(text.includes('admission'), false);
+  assert.equal(text.includes('runtime-operation'), false);
+  assert.equal(text.includes('CLIENT_BUNDLE_DIGEST'), false);
 });
 
 test('runtime.yml keeps state runnable with the switch closed and publishes no evidence', async () => {

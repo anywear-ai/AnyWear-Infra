@@ -13,7 +13,7 @@
   "fixture_sha256": "7c5167d74e7c40bd2fbd34fac545cb171c99c927d96a6c6aa8759c7cd66550a1",
   "dedicated_source_sha": "1365f77b87ea0affed47141456d17b0df056e5d4",
   "dedicated_candidate_canonical_sha256": "9e399b24b2c7fa30ba76da874689b811fb968d45e7c5d69a16b5f9b22bf483d1",
-  "dedicated_additions_sha256": "567b5a3e2cdc3da85ecfb5cfd590a301b3406e0c8009e2c4685ec6cee011ee7f",
+  "dedicated_additions_sha256": "2ee514f88024f975d9c83f6f6b013422c503d7143a2e70cdcd343bee3efaf143",
   "addition_allowlist": [
     "BetaClientPublishRoleBA62A451",
     "BetaE2EQualificationRoleF86AA0D7",
@@ -111,6 +111,13 @@
       "source_branch": "issue/266-narrow-trust",
       "scope": "anywear-ai-only owner subjects on the six dedicated Beta role trusts; the retired `git-malu@11473072` owner is gone from every trust",
       "detail": "Step 24 completes the #266 owner transfer now that every repository is owned by `anywear-ai@352675702`. Each of the six dedicated Beta role trusts (beta-infra-deploy-role, beta-infra-runtime-role, beta-service-data-role, beta-service-artifact-role, beta-client-publish-role, beta-e2e-qualification-role) carries exactly one subject, `repo:anywear-ai@352675702/<Repository>@<id>:environment:<stage>`, with the repository half unchanged (`@1158460323` Service, `@1317091305` E2E, `@1176104200` Client, `@1409047265` Infra). A repository id still appears once per role, so no trust can be satisfied by a subject that cannot match. The additions fixture was re-recorded from this source synthesis and its `dedicated_additions_sha256` recomputed over the new raw bytes; `original_canonical_sha256`, `fixture_sha256`, `addition_allowlist` and the recorded `dedicated_candidate_canonical_sha256`/`dedicated_source_sha` pair stay the historical authenticated capture. Source-side only, not live: the second `deploy-foundation` run installs this narrowing, and publication_verified and deployment_qualified stay false."
+    },
+    {
+      "issue": 344,
+      "recorded_at": "2026-11-20",
+      "source_branch": "issue/344-infra-single-writer",
+      "scope": "beta-client-publish-role trust retargeted from the AnyWear-Client environment subject to the AnyWear-Infra environment subject; its grants are unchanged",
+      "detail": "The single-writer architecture (ADR 0033 §9, §11) moves the Client publication into AnyWear-Infra mutate.yml operation publish-client, so the publication role trusts repo:anywear-ai@352675702/AnyWear-Infra@1409047265:environment:beta instead of repo:anywear-ai@352675702/AnyWear-Client@1176104200:environment:beta. The capability stays confined to this role: it is not added to beta-infra-deploy-role, no other grant changes, and the Client holds no AWS principal. This is the one IAM trust change in the delivery, and it is retargeted from the Client subject the additions fixture previously recorded. The additions fixture was re-recorded from this source synthesis and its dedicated_additions_sha256 recomputed over the new raw bytes; original_canonical_sha256, fixture_sha256, addition_allowlist and the recorded dedicated_candidate_canonical_sha256/dedicated_source_sha pair stay the historical authenticated capture. The legacy beta-github-actions-pipeline-role fixture keeps its AnyWear-Client subject: that Service-source identity is outside this issue. Source-side only, not live: publication_verified and deployment_qualified stay false until a separately authorized deploy-foundation run installs the retargeted trust, and effective deployed trust needs #54 evidence before the first publish-client run."
     }
   ]
 }
