@@ -80,9 +80,10 @@ jobs:
       - run: npm ci
       - name: Validate the scheduled operation and its input scope
         run: node scripts/schedule-qualification.mjs validate
-  # The hold. Its name is fixed: the AnyWear-E2E admission read keys on the writer
-  # pair `mutate.yml` → `qualify-hold` and `schedule.yml` → `hold`, so renaming this
-  # job hides the scheduled writer from the qualification it starts.
+  # The hold. This workflow runs no writer gate of its own — it dispatches E2E and
+  # mutates nothing. Its name is what matters: AnyWear-E2E's preflight checks the
+  # writer pair `mutate.yml` → `qualify-hold` and `schedule.yml` → `hold`, so
+  # renaming this job hides the scheduled writer from the qualification it starts.
   #
   # It mints the existing AnyWear-E2E `actions: write` App token — the same
   # allocation the deploy chain's hold uses (ADR 0033 §5 allocation 3) — dispatches

@@ -588,9 +588,10 @@ test('schedule.yml is a two-job, credential-free hold with the fixed job name', 
   assert.equal(observation.env.QUALIFICATION_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
   assert.deepEqual(hold.outputs, { outcome: '${{ steps.observe.outputs.outcome }}' });
   assert.equal(hold['timeout-minutes'], 65, 'the 65-minute job outlives the 55-minute observation ceiling');
-  // The entry dispatches E2E only: it holds no admission read of its own and
-  // launches no operation.
-  assert.equal(text.includes('qualification-admission'), false);
+  // The entry dispatches E2E only: it runs no writer gate of its own and launches
+  // no operation. #338's admission read lives in `mutate.yml`'s `deploy` job alone,
+  // so this file must not even name it.
+  assert.equal(text.includes('admission'), false);
   assert.equal(text.includes('runtime-operation'), false);
   assert.equal(text.includes('CLIENT_BUNDLE_DIGEST'), false);
 });
