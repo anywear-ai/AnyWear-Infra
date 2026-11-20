@@ -57,13 +57,29 @@ async function readApi({ run, token }, endpoint) {
   return parseJson((await run('gh', ['api', endpoint], { env, ...GH_OPTIONS })).stdout);
 }
 
+/** The two bundle jobs' conclusions, as the refusals name them. */
+const publisherJobState = jobs => ['build', 'verify']
+  .map(name => `${name} ${jobs.find(job => job?.name === name)?.conclusion ?? 'absent'}`).join(', ');
+
 /**
  * Prove the Client publisher run: the repository id (immutable across the owner
- * transfer), the workflow path, the branch, a successful conclusion, the attempt
- * the dispatch named, and the two jobs that build and verify the bundle. Nothing
- * about the artifact is read before this succeeds.
+ * transfer), the workflow path, the branch, the attempt the dispatch named, the
+ * two jobs that build and verify the bundle, the run's state, and the source
+ * commit. Nothing about the artifact is read before this succeeds.
+ *
+ * Issue #344 fix: the run's own `completed/success` is not the proof. The Client
+ * `handoff` job dispatches this Infra run and then polls the Infra `deploy` job
+ * until its conclusion is non-null, so while this `verify` job runs the Client
+ * publisher run is necessarily `in_progress` — requiring the whole run to be
+ * complete was circular and refused every normal publication (Infra run
+ * 44741083609 refused Client run 44739908276 that way). The proof is instead the
+ * state of the two jobs that produce and verify the bundle: `in_progress` with
+ * `conclusion` null is accepted once `build` and `verify` have both concluded
+ * `success`, and `completed` is accepted only as `success`. Any other status, and
+ * a `completed` run with any other conclusion, is refused naming the status, the
+ * conclusion and the two job states.
  */
-export function assertPublisherRun(publisherRun, { client_run_id: runId, client_run_attempt: attempt }) {
+export function assertPublisherRun(publisherRun, { client_run_id: runId, client_run_attempt: attempt }, jobs) {
   if (!publisherRun || typeof publisherRun !== 'object' || Array.isArray(publisherRun)) {
     throw new Error('The Client publisher run response is malformed');
   }
@@ -79,19 +95,36 @@ export function assertPublisherRun(publisherRun, { client_run_id: runId, client_
   if (publisherRun.run_attempt !== attempt) {
     throw new Error(`Client run ${runId} is attempt ${String(publisherRun.run_attempt)}, not the dispatched attempt ${attempt}`);
   }
-  if (publisherRun.status !== 'completed' || publisherRun.conclusion !== 'success') {
-    throw new Error(`Client run ${runId} is ${String(publisherRun.status)}/${String(publisherRun.conclusion)}, not a completed success`);
+  // The jobs are proven before any conclusion-dependent message, so a refused
+  // publication always names which of the two jobs did not succeed.
+  assertPublisherJobs(jobs, runId, publisherRun);
+  const status = publisherRun.status;
+  const conclusion = publisherRun.conclusion;
+  if (status === 'completed') {
+    if (conclusion !== 'success') {
+      throw new Error(`Client run ${runId} is completed/${String(conclusion)} with `
+        + `${publisherJobState(jobs)}, not a completed success`);
+    }
+  } else if (status !== 'in_progress' || conclusion !== null) {
+    throw new Error(`Client run ${runId} is ${String(status)}/${String(conclusion)} with `
+      + `${publisherJobState(jobs)}, not in progress with build and verify successful or a completed success`);
   }
   return matches(publisherRun.head_sha, SHA, `Client run ${runId} source commit`);
 }
 
-/** Both publisher jobs that produce and verify the bundle must have succeeded. */
-export function assertPublisherJobs(jobs, runId) {
+/**
+ * Both publisher jobs that produce and verify the bundle must have succeeded. The
+ * run's own state is named beside them when the caller has it, so a refusal says
+ * what the run was doing as well as which job stopped it.
+ */
+export function assertPublisherJobs(jobs, runId, publisherRun = undefined) {
   if (!Array.isArray(jobs)) throw new Error(`The Client run ${runId} job list is malformed`);
   const conclusionOf = name => jobs.find(job => job?.name === name)?.conclusion;
+  const state = publisherRun === undefined
+    ? '' : ` (run ${String(publisherRun.status)}/${String(publisherRun.conclusion)})`;
   for (const name of ['build', 'verify']) {
     if (conclusionOf(name) !== 'success') {
-      throw new Error(`Client run ${runId} job ${name} is ${String(conclusionOf(name) ?? 'absent')}, not a success`);
+      throw new Error(`Client run ${runId} job ${name} is ${String(conclusionOf(name) ?? 'absent')}, not a success${state}`);
     }
   }
 }
@@ -270,13 +303,15 @@ export async function verifyClientBundle({ env = process.env, run = execute, req
   const { client_run_id: runId, client_run_attempt: attempt, client_bundle_digest: digest } = inputs.client_publication;
   const token = env.GH_TOKEN;
   const publisherRun = await readApi({ run, token }, restPath(`actions/runs/${runId}`));
-  const headSha = assertPublisherRun(publisherRun, inputs.client_publication);
   const jobs = await readApi({ run, token }, restPath(`actions/runs/${runId}/jobs`));
-  assertPublisherJobs(jobs?.jobs, runId);
+  // The run's state and both bundle jobs are one proof: `in_progress` is the normal
+  // path, because the Client handoff polls this Infra run before it can finish.
+  const headSha = assertPublisherRun(publisherRun, inputs.client_publication, jobs?.jobs);
   const artifacts = await readApi({ run, token }, restPath(`actions/runs/${runId}/artifacts`));
   const artifact = findClientDistArtifact(artifacts?.artifacts, runId);
   out.write(`Client publisher run ${clientRunUrl(runId)} attempt ${attempt} is ${CLIENT_WORKFLOW_PATH} on ${CLIENT_REF}:`
-    + ` ${String(publisherRun.conclusion)}, jobs build and verify succeeded, source ${headSha}.\n`);
+    + ` ${publisherRun.status === 'in_progress' ? 'in progress' : 'completed success'},`
+    + ` jobs build and verify succeeded, source ${headSha}.\n`);
 
   const zipUrl = `https://api.github.com/repos/${CLIENT_REPOSITORY}/actions/artifacts/${artifact.id}/zip`;
   const response = await request(zipUrl, { headers: {

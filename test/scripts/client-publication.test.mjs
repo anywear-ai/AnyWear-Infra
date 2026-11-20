@@ -106,9 +106,16 @@ const env = (overrides = {}) => ({
   ...overrides,
 });
 
+// The normal publication path: the Client `handoff` job dispatches this Infra run
+// and polls the Infra `deploy` job before it can finish, so while `verify` runs the
+// publisher run is `in_progress` with a null conclusion. Infra run 44741083609
+// refused Client run 44739908276 because the old proof demanded `completed/success`;
+// that is the defect this fixture encodes.
 const publisherRun = (overrides = {}) => ({ id: Number(runId), repository: { id: 1176104200 },
   path: '.github/workflows/release.yml', head_branch: 'main', head_sha: clientSource,
-  status: 'completed', conclusion: 'success', run_attempt: Number(attempt), ...overrides });
+  status: 'in_progress', conclusion: null, run_attempt: Number(attempt), ...overrides });
+const completedPublisherRun = (overrides = {}) => publisherRun({ status: 'completed', conclusion: 'success', ...overrides });
+const bundleJobs = (overrides = {}) => [{ name: 'build', conclusion: 'success' }, { name: 'verify', conclusion: 'success', ...overrides }];
 
 // A fake `gh api` for the three REST reads the verify mode makes.
 function fakeGh({ run: runBody = publisherRun(), jobs, artifacts } = {}) {
@@ -121,8 +128,7 @@ function fakeGh({ run: runBody = publisherRun(), jobs, artifacts } = {}) {
       return { stdout: JSON.stringify(runBody), stderr: '' };
     }
     if (endpoint === `repos/anywear-ai/AnyWear-Client/actions/runs/${runId}/jobs`) {
-      return { stdout: JSON.stringify({ jobs: jobs ?? [
-        { name: 'build', conclusion: 'success' }, { name: 'verify', conclusion: 'success' }] }), stderr: '' };
+      return { stdout: JSON.stringify({ jobs: jobs ?? bundleJobs() }), stderr: '' };
     }
     if (endpoint === `repos/anywear-ai/AnyWear-Client/actions/runs/${runId}/artifacts`) {
       return { stdout: JSON.stringify({ artifacts: artifacts ?? [
@@ -166,8 +172,66 @@ test('verify proves the publisher run, downloads the artifact and recomputes the
     assert.equal(await readFile(output, 'utf8'),
       `client_bundle_digest=${digest}\nclient_source_commit=${clientSource}\n`);
     assert.match(streams.text(), new RegExp(`${digest} equals the dispatched client_bundle_digest`));
-    assert.match(streams.text(), /jobs build and verify succeeded/);
+    // The success line states what was actually proved: the run was still in
+    // progress and both bundle jobs had succeeded.
+    assert.match(streams.text(), /in progress, jobs build and verify succeeded/);
   });
+});
+
+// The two accepted states, and the refusal for every other one.
+test('the publisher run is accepted in progress or completed success, and refused otherwise', async () => {
+  const verify = async ({ gh, directory, tree, output }) =>
+    verifyClientBundle({ env: env({ GH_TOKEN: 'ghs_client_read', GITHUB_OUTPUT: output }),
+      run: gh.run, request: downloadResponse(), directory, tree, out: sink().out });
+  // (1) in progress with both bundle jobs successful — the normal path, recorded
+  // from Infra run 44741083609 / Client run 44739908276.
+  await withTemporary(async ({ directory, tree, output }) => {
+    const result = await verify({ gh: fakeGh({ run: publisherRun() }), directory, tree, output });
+    assert.equal(result.digest, digest);
+  });
+  // (2) completed success.
+  await withTemporary(async ({ directory, tree, output }) => {
+    const result = await verify({ gh: fakeGh({ run: completedPublisherRun() }), directory, tree, output });
+    assert.equal(result.digest, digest);
+  });
+  // (3) every other state is refused, naming the status, the conclusion and both
+  // job conclusions.
+  for (const [label, runBody, expectation] of [
+    ['completed failure', completedPublisherRun({ conclusion: 'failure' }),
+      /is completed\/failure with build success, verify success, not a completed success/],
+    ['completed cancelled', completedPublisherRun({ conclusion: 'cancelled' }),
+      /is completed\/cancelled with build success, verify success, not a completed success/],
+    ['completed without a conclusion', publisherRun({ status: 'completed', conclusion: null }),
+      /is completed\/null with build success, verify success, not a completed success/],
+    ['queued', publisherRun({ status: 'queued' }),
+      /is queued\/null with build success, verify success, not in progress with build and verify successful or a completed success/],
+    ['requested', publisherRun({ status: 'requested' }),
+      /is requested\/null with build success, verify success, not in progress/],
+    ['waiting', publisherRun({ status: 'waiting' }),
+      /is waiting\/null with build success, verify success, not in progress/],
+    ['pending', publisherRun({ status: 'pending' }),
+      /is pending\/null with build success, verify success, not in progress/],
+    ['in progress carrying a conclusion', publisherRun({ conclusion: 'success' }),
+      /is in_progress\/success with build success, verify success, not in progress/],
+  ]) {
+    await withTemporary(async ({ directory, tree, output }) => {
+      await assert.rejects(verify({ gh: fakeGh({ run: runBody }), directory, tree, output }), expectation, label);
+    });
+  }
+  // (4) in progress with a bundle job that did not succeed is refused by the job
+  // proof, which also names the run state.
+  for (const [label, jobs, expectation] of [
+    ['verify failed', [{ name: 'build', conclusion: 'success' }, { name: 'verify', conclusion: 'failure' }],
+      /job verify is failure, not a success \(run in_progress\/null\)/],
+    ['verify absent', [{ name: 'build', conclusion: 'success' }],
+      /job verify is absent, not a success \(run in_progress\/null\)/],
+    ['build failed', [{ name: 'build', conclusion: 'failure' }, { name: 'verify', conclusion: 'success' }],
+      /job build is failure, not a success \(run in_progress\/null\)/],
+  ]) {
+    await withTemporary(async ({ directory, tree, output }) => {
+      await assert.rejects(verify({ gh: fakeGh({ jobs }), directory, tree, output }), expectation, label);
+    });
+  }
 });
 
 test('verify accepts a bundle nested under dist/ and normalises it to the transport tree', async () => {
@@ -182,7 +246,7 @@ test('verify accepts a bundle nested under dist/ and normalises it to the transp
   });
 });
 
-test('verify refuses a run or artifact that is not the Client publisher it names', async () => {
+test('verify refuses a run that is not the Client publisher it names', async () => {
   const verify = async ({ gh, env: overrides = {}, request = downloadResponse(), tree, directory, output } = {}) =>
     verifyClientBundle({ env: env({ GH_TOKEN: 'ghs_client_read', GITHUB_OUTPUT: output, ...overrides }),
       run: gh.run, request, directory, tree, out: sink().out });
@@ -191,20 +255,12 @@ test('verify refuses a run or artifact that is not the Client publisher it names
     ['workflow path', publisherRun({ path: '.github/workflows/check.yml' }), /ran .*check\.yml, not .github\/workflows\/release\.yml/],
     ['branch', publisherRun({ head_branch: 'feature' }), /ran on feature, not main/],
     ['attempt', publisherRun({ run_attempt: 1 }), /is attempt 1, not the dispatched attempt 2/],
-    ['conclusion', publisherRun({ conclusion: 'failure' }), /not a completed success/],
-    ['status', publisherRun({ status: 'in_progress' }), /not a completed success/],
+    ['head sha', publisherRun({ head_sha: 'short' }), /source commit/],
   ]) {
     await withTemporary(async ({ directory, tree, output }) => {
       await assert.rejects(verify({ gh: fakeGh({ run: runBody }), directory, tree, output }), expectation, label);
     });
   }
-  await withTemporary(async ({ directory, tree, output }) => {
-    await assert.rejects(verify({ gh: fakeGh({ jobs: [{ name: 'build', conclusion: 'success' },
-      { name: 'verify', conclusion: 'failure' }] }), directory, tree, output }),
-    /job verify is failure, not a success/);
-    await assert.rejects(verify({ gh: fakeGh({ jobs: [{ name: 'build', conclusion: 'success' }] }), directory, tree, output }),
-      /job verify is absent, not a success/);
-  });
 });
 
 test('verify refuses a missing, expired or duplicated client-dist artifact', async () => {
@@ -286,10 +342,13 @@ test('the bundle tree must carry exactly one bundle root with both required file
 });
 
 test('the publisher proof and the artifact lookup are also unit-checkable', () => {
-  assert.equal(assertPublisherRun(publisherRun(), { client_run_id: runId, client_run_attempt: Number(attempt) }),
-    clientSource);
-  assert.doesNotThrow(() => assertPublisherJobs([{ name: 'build', conclusion: 'success' },
-    { name: 'verify', conclusion: 'success' }], runId));
+  const expected = { client_run_id: runId, client_run_attempt: Number(attempt) };
+  // The normal path: in progress, both bundle jobs done.
+  assert.equal(assertPublisherRun(publisherRun(), expected, bundleJobs()), clientSource);
+  // A completed success is equally accepted.
+  assert.equal(assertPublisherRun(completedPublisherRun(), expected, bundleJobs()), clientSource);
+  assert.doesNotThrow(() => assertPublisherJobs(bundleJobs(), runId));
+  assert.throws(() => assertPublisherJobs(null, runId), /artifact list is malformed|job list is malformed/);
   assert.deepEqual(findClientDistArtifact([{ id: 9001, name: 'client-dist', expired: false }], runId),
     { id: 9001, size: undefined });
   assert.throws(() => findClientDistArtifact(null, runId), /artifact list is malformed/);
