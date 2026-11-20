@@ -958,7 +958,7 @@ to `smoke`, which is not a qualification record.
 | --- | --- | --- |
 | Deployment authorization and credential boundaries | `scripts/lib/authorization-preflight.mjs`, `scripts/lib/operation-boundaries.mjs`, `scripts/lib/operation-stacks.mjs`, `scripts/lib/one-writer.mjs` | A dispatch must not touch a stack, role, one-shot family or AWS action its operation was not reviewed for, and the job that may read the private Service release must never be the job that may change the account. |
 | Schema boundary gate | `scripts/lib/schema-gate.mjs`, `scripts/lib/schema-asset.mjs` | A deployment must not replace a runtime whose database the release image cannot read; the refusal names the release's expectation and the database's state before CloudFormation changes anything. |
-| 300-second six-signal bake | `scripts/lib/bake-gate.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs`, the shared ECS verdict from `scripts/lib/ecs-rollout.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. Since #316 its `ecs_running_not_desired` signal judges the deployment half on every sample — one `COMPLETED` deployment whose `PRIMARY` id is one the deploy proof settled — while the running-count half stays on its own 120-second continuous tolerance. |
+| 300-second six-signal bake | `scripts/lib/bake-gate.mjs`, the failure record in `scripts/lib/bake-failure.mjs`; thresholds, alarm and signal names from `lib/contracts.mjs`, the shared ECS verdict from `scripts/lib/ecs-rollout.mjs` | A green CloudFormation update is not evidence of a working runtime; a bake breach must leave the deployment unqualified and the run failed. Since #316 its `ecs_running_not_desired` signal judges the deployment half on every sample — one `COMPLETED` deployment whose `PRIMARY` id is one the deploy proof settled — while the running-count half stays on its own 120-second continuous tolerance. Since #336 a failed bake prints one labelled line per failed signal — `signal`, `state`, the judged `value`, the `threshold` and the queue, metric or log `target`, plus `reason` for an `insufficient` signal — then one count summary line; `reads` and the deployed alarm states stay on the gate block and in CloudWatch, and the whole record is capped at 2048 bytes. |
 | Pre-credential byte and identity check | `scripts/lib/release-inputs.mjs` + `scripts/prove-release-bytes.mjs` | The bytes about to be deployed must be the bytes the reviewed release published, and that must be true before an AWS credential exists. |
 
 **The deployed age alarms' calibration (issue #220)**
@@ -1147,7 +1147,26 @@ No step uses `continue-on-error`. A refusal before any mutation leaves a red run
 and an untouched stack: the failing step's message names the boundary — the
 operation is forbidden for this workflow; the release tag does not resolve to the
 dispatched commit; the schema boundary expected version X and observed Y; the bake
-failed on these signals.
+printed one labelled line per failed signal and then the count summary (see the
+`300-second six-signal bake` control row).
+
+A failed bake's record is that shape in the step log: one line per signal whose
+state is not `not-breaching`, in `DEPLOYMENT_GATE_SIGNAL_NAMES` order,
+
+```text
+<signal> state=<state> value=<k=v[,k=v]|null> threshold=<k=v[,k=v]> target=<queue, metric or log>[ reason=<text>]
+```
+
+followed by `The 300-second bake failed (<n> of 6 signals): <names>`. The judged
+`value` sits beside the `threshold` it missed, and `target` names the deployed
+queue or queues, the ALB dimension, the ECS cluster and the failing service, or the
+log group and filter pattern — so a breach is readable without opening CloudWatch.
+`value=null` means the gate judged no number; `reason` then carries the read error
+or the count shortfall that made the signal `insufficient`, while a signal that
+judged a number keeps it. `reads` and the deployed alarm states are not printed:
+they stay on the gate block and in CloudWatch. The whole record is capped at 2048
+bytes (the incident's single breach measured 244 bytes, six signals 1.2–1.4 KB),
+and no signal, judged value or threshold is dropped to fit it.
 
 A mutation that landed and then failed a later gate still ends with a non-success
 run, and the failing step appends one line to `$GITHUB_STEP_SUMMARY`:

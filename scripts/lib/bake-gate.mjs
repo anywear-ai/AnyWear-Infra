@@ -513,32 +513,38 @@ export function evaluateBake({
           const delayed = Number(attributes.ApproximateNumberOfMessagesDelayed ?? 0);
           if (visible + inFlight + delayed !== 0) idle = false;
         }
-        if (ages.error) return { error: `${queue} oldest-message age metric was not read: ${ages.error}` };
+        // Issue #336: every queue-scoped sentence names the deployed queue, not
+        // the internal purpose label, so a printed reason names the resource a
+        // reader can look up. Verdict-neutral: only the text changes.
+        if (ages.error) return { error: `${queueNames[queue]} oldest-message age metric was not read: ${ages.error}` };
         const metric = ages[queue];
         // Exactly one 300-second period is the whole-window read. Two or more
         // periods would straddle the window boundary and include pre-deployment
         // time, so the signal is insufficient evidence even when the aggregate
         // would look healthy or breaching.
         if (metric !== undefined && metric.datapoints > 1) {
-          return { error: `${queue} ApproximateAgeOfOldestMessage returned ${metric.datapoints} periods; exactly 1 whole-window period is required` };
+          return { error: `${queueNames[queue]} ApproximateAgeOfOldestMessage returned ${metric.datapoints} periods; exactly 1 whole-window period is required` };
         }
         if (metric !== undefined && metric.datapoints === 1) {
           const age = Number(metric.seconds);
-          if (!Number.isFinite(age) || age < 0) return { error: `${queue} returned an invalid oldest-message age` };
+          if (!Number.isFinite(age) || age < 0) return { error: `${queueNames[queue]} returned an invalid oldest-message age` };
           return { maximum: age, idle: idle && age === 0 };
         }
         if (idle) return { maximum: 0, idle: true };
-        return { error: `${queue} has active messages but no ApproximateAgeOfOldestMessage datapoint` };
+        return { error: `${queueNames[queue]} has active messages but no ApproximateAgeOfOldestMessage datapoint` };
       };
       const vto = ageOf('vto');
       const autoTagging = ageOf('auto_tagging');
+      // Issue #336: the errored side of a two-queue value is `null`, never a
+      // zero-fill that reads as a measured age. The error branch below reaches
+      // `insufficient` before any comparison, so no verdict moves.
       const ageValue = {
-        vto_seconds: vto.error ? 0 : vto.maximum,
-        auto_tagging_seconds: autoTagging.error ? 0 : autoTagging.maximum,
+        vto_seconds: vto.error ? null : vto.maximum,
+        auto_tagging_seconds: autoTagging.error ? null : autoTagging.maximum,
       };
       const ageExceptions = [];
       for (const [queue, result] of [['vto', vto], ['auto_tagging', autoTagging]]) {
-        if (result.idle) ageExceptions.push(`${queue} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`);
+        if (result.idle) ageExceptions.push(`${queueNames[queue]} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`);
       }
       if (vto.error || autoTagging.error) {
         signals.push(failSignal('sqs_oldest_message_age', vto.error ?? autoTagging.error, ageValue, ageReads, ageExceptions));
@@ -557,18 +563,20 @@ export function evaluateBake({
         for (const sample of samples) {
           const attributes = sample.queues[queue];
           const raw = attributes.ApproximateNumberOfMessages;
-          if (raw === undefined) return { error: `${queue} returned no ApproximateNumberOfMessages` };
+          if (raw === undefined) return { error: `${queueNames[queue]} returned no ApproximateNumberOfMessages` };
           const depth = Number(raw);
-          if (!Number.isSafeInteger(depth) || depth < 0) return { error: `${queue} returned an invalid message depth` };
+          if (!Number.isSafeInteger(depth) || depth < 0) return { error: `${queueNames[queue]} returned an invalid message depth` };
           maximum = Math.max(maximum, depth);
         }
         return { maximum };
       };
       const vtoDepth = depthOf('vto_dlq');
       const autoTaggingDepth = depthOf('auto_tagging_dlq');
+      // Issue #336: as with the age pair above, an unread DLQ side is `null`, and
+      // the error branch reaches `insufficient` before the sum is compared.
       const depthValue = {
-        vto_depth: vtoDepth.error ? 0 : vtoDepth.maximum,
-        auto_tagging_depth: autoTaggingDepth.error ? 0 : autoTaggingDepth.maximum,
+        vto_depth: vtoDepth.error ? null : vtoDepth.maximum,
+        auto_tagging_depth: autoTaggingDepth.error ? null : autoTaggingDepth.maximum,
       };
       if (vtoDepth.error || autoTaggingDepth.error) {
         signals.push(failSignal('sqs_dlq_depth', vtoDepth.error ?? autoTaggingDepth.error, depthValue, dlqReads));
