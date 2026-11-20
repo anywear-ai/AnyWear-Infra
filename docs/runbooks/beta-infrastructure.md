@@ -312,13 +312,16 @@ A `publish-client` run additionally takes the Client publication identity:
 refused on every other one, so a publication identity cannot ride a deployment.
 The `verify` job proves the named run over REST — repository id `1176104200`,
 `.github/workflows/release.yml`, `main`, the dispatched attempt, and the run state:
-`in_progress` is the accepted normal path once its `build` and `verify` jobs have
-both concluded `success`, because the Client `handoff` job holds that run open
-until it has polled this Infra run's `deploy` job; `completed` is accepted only as
-`success`, and any other status or conclusion is refused naming the status, the
-conclusion and both job states — before it downloads the
-`client-dist` artifact, recomputes the digest and publishes the verified tree. The
-`deploy` job re-hashes that tree, assumes `beta-client-publish-role` under a
+`in_progress` is the accepted normal path once its two bundle jobs have both
+concluded `success`, because the Client `handoff` job holds that run open until it
+has polled this Infra run's `deploy` job. The jobs are matched by the display names
+the REST jobs API reports — `Build the reviewed Beta web client` and
+`Verify the built Beta web client`, the Client workflow's `name:` values, not its
+`build`/`verify` keys — and a refusal names the expected display name.
+`completed` is accepted only as `success`, and any other status or conclusion is
+refused naming the status, the conclusion and both job states — before it downloads
+the `client-dist` artifact, recomputes the digest and publishes the verified tree.
+The `deploy` job re-hashes that tree, assumes `beta-client-publish-role` under a
 read-only session, resolves the live interface and refuses a mismatch before the
 first write. Nothing is written before both proofs pass.
 
