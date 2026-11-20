@@ -67,15 +67,16 @@ test('the workflow directory is exactly the three Beta entries plus the callable
   }
 });
 
-test('mutate.yml keeps one preflight → verify → deploy → qualify-hook chain and no workload deploy', async () => {
+test('mutate.yml keeps one preflight → verify → deploy → qualify-hold chain and no workload deploy', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'qualify-hook']);
+  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'qualify-hold']);
   const { preflight, verify, deploy } = mutate.jobs;
+  const hold = mutate.jobs['qualify-hold'];
 
   assert.equal(preflight.needs, undefined);
   assert.equal(verify.needs, 'preflight');
   assert.equal(deploy.needs, 'verify', 'credentials are acquired only after verification');
-  assert.equal(mutate.jobs['qualify-hook'].needs, 'deploy', 'the qualification follows a successful deployment');
+  assert.equal(hold.needs, 'deploy', 'the qualification follows a successful deployment');
 
   // One credential job, and it is the only one: `preflight` and `verify` have no
   // environment and no OIDC identity.
@@ -86,7 +87,7 @@ test('mutate.yml keeps one preflight → verify → deploy → qualify-hook chai
   assert.deepEqual(roleHolders('INFRA_RUNTIME_ROLE_ARN'), ['deploy']);
   assert.equal(deploy.environment, 'beta');
   assert.equal(holdsIdToken(deploy), true);
-  for (const job of [preflight, verify, mutate.jobs['qualify-hook']]) {
+  for (const job of [preflight, verify, hold]) {
     assert.equal(declaresEnvironment(job), false);
     assert.equal(holdsIdToken(job), false);
   }
@@ -221,29 +222,32 @@ test('no AWS credential precedes the release identity and travelled-byte checks'
     'nothing runs after the credential-requesting operation: no record step');
 });
 
-// #226: the deploy chain's qualification hop. Its whole credential surface is one
-// App installation token narrowed to `AnyWear-E2E` with `actions: write`; it holds
-// no environment, no OIDC identity and no AWS role, and it dispatches last.
-test('the qualification hook is credential-free, single-token and dispatches last', async () => {
+// #226/#338: the deploy chain's qualification hold. Its whole credential surface is
+// one App installation token narrowed to `AnyWear-E2E` with `actions: write`; it
+// holds no environment, no OIDC identity and no AWS role, and it observes last.
+test('the qualification hold is credential-free, single-token and observes last', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  const hook = mutate.jobs['qualify-hook'];
-  assert.ok(hook, 'mutate.yml carries the deploy chain qualification hook');
+  const hold = mutate.jobs['qualify-hold'];
+  assert.ok(hold, 'mutate.yml carries the deploy chain qualification hold');
   // Only the operation that deploys a Runtime tuple, and only after `deploy`
-  // succeeded. A schema-boundary refusal fails `deploy`, so the hook never runs.
-  assert.equal(hook.if, "success() && inputs.operation == 'deploy-runtime'");
-  assert.equal(declaresEnvironment(hook), false, 'the hook declares no environment');
-  assert.equal(holdsIdToken(hook), false, 'the hook holds no OIDC identity');
-  assert.deepEqual(hook.permissions, { contents: 'read' }, 'the hook holds contents: read only');
-  // The census is the proof: the hook adds no credential job.
+  // succeeded. A schema-boundary refusal fails `deploy`, so the hold never runs.
+  assert.equal(hold.if, "success() && inputs.operation == 'deploy-runtime'");
+  assert.equal(declaresEnvironment(hold), false, 'the hold declares no environment');
+  assert.equal(holdsIdToken(hold), false, 'the hold holds no OIDC identity');
+  assert.deepEqual(hold.permissions, { contents: 'read' }, 'the hold holds contents: read only');
+  // #338: the 65-minute job timeout outlives the 55-minute observation ceiling, so
+  // the observation's own deadline fires first and the recorder still runs.
+  assert.equal(hold['timeout-minutes'], 65);
+  // The census is the proof: the hold adds no credential job.
   assert.deepEqual(credentialJobs(mutate), ['deploy']);
-  const jobText = JSON.stringify(hook);
+  const jobText = JSON.stringify(hold);
   for (const name of ['INFRA_DEPLOY_ROLE_ARN', 'INFRA_RUNTIME_ROLE_ARN', 'AWS_ACCOUNT_ID', 'id-token']) {
-    assert.equal(jobText.includes(name), false, `the qualification hook must not carry ${name}`);
+    assert.equal(jobText.includes(name), false, `the qualification hold must not carry ${name}`);
   }
 
   // Exactly one token, for one repository, with exactly one permission.
-  const tokens = hook.steps.filter(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
-  assert.equal(tokens.length, 1, 'the hook mints exactly one App installation token');
+  const tokens = hold.steps.filter(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
+  assert.equal(tokens.length, 1, 'the hold mints exactly one App installation token');
   const token = tokens[0];
   assert.equal(token.with['app-id'], 3346940);
   assert.equal(token.with['private-key'], '${{ secrets.APP_PRIVATE_KEY }}');
@@ -252,13 +256,82 @@ test('the qualification hook is credential-free, single-token and dispatches las
   assert.deepEqual(Object.keys(token.with).filter(name => name.startsWith('permission-')), ['permission-actions'],
     'actions: write is the token\'s only permission');
 
-  // The dispatch is the job's last step: nothing may follow it.
-  const dispatchIndex = hook.steps.findIndex(step => step.run === 'node scripts/qualification-dispatch.mjs');
-  assert.ok(dispatchIndex > 0, 'the hook dispatches the qualification');
-  assert.equal(dispatchIndex, hook.steps.length - 1, 'nothing runs after the dispatch');
-  assert.equal(hook.steps.indexOf(token) < dispatchIndex, true, 'the token exists before the dispatch');
-  assert.equal(hook.steps[dispatchIndex].env.GH_TOKEN, '${{ steps.app.outputs.token }}');
+  // #338: the dispatch precedes the observation and nothing follows the observation.
+  const dispatchIndex = hold.steps.findIndex(step => step.run === 'node scripts/qualification-dispatch.mjs');
+  const observationIndex = hold.steps.findIndex(step => step.run === 'node scripts/qualification-observe.mjs');
+  assert.ok(dispatchIndex > 0, 'the hold dispatches the qualification');
+  assert.ok(observationIndex > dispatchIndex, 'the dispatch step precedes the observation step');
+  assert.equal(observationIndex, hold.steps.length - 1, 'nothing runs after the observation');
+  assert.equal(hold.steps[dispatchIndex].id, 'dispatch', 'the dispatch exposes the created run as a step output');
+  const observation = hold.steps[observationIndex];
+  assert.equal(observation.if, "always() && env.DELIVERY_TRIGGER == 'deploy'",
+    'the observation records an outcome even when the dispatch step failed');
+  assert.equal(observation.env.GH_TOKEN, '${{ steps.app.outputs.token }}');
+  assert.equal(observation.env.QUALIFICATION_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
+  assert.equal(observation.env.QUALIFICATION_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
+  assert.equal(hold.steps.indexOf(token) < dispatchIndex, true, 'the token exists before the dispatch');
+  assert.equal(hold.steps[dispatchIndex].env.GH_TOKEN, '${{ steps.app.outputs.token }}');
 });
+
+// #338: the pre-mutation admission read is the deploy job's first work after
+// checkout and the dependency install, so a refusal fails the job before any AWS
+// credential request — the composite that requests the OIDC session comes later.
+test('the deploy job admits the mutation before any credential and mints one read-only token', async () => {
+  const mutate = await loadWorkflow('mutate.yml');
+  const steps = mutate.jobs.deploy.steps;
+  const index = predicate => steps.findIndex(predicate);
+  const checkoutIndex = index(step => step.uses === 'actions/checkout@v4');
+  const setupNodeIndex = index(step => step.uses === 'actions/setup-node@v4');
+  const installIndex = index(step => step.run === 'npm ci');
+  const admissionIndex = index(step => step.run === 'node scripts/qualification-admission.mjs');
+  const compositeIndex = index(step => step.uses === './.github/actions/deploy-operation');
+  assert.ok(checkoutIndex >= 0, 'the deploy job checks out the source');
+  assert.ok(setupNodeIndex >= 0, 'the deploy job sets up the pinned Node');
+  assert.ok(installIndex >= 0, 'the deploy job installs the pinned dependencies');
+  assert.ok(admissionIndex > checkoutIndex, 'the admission follows checkout');
+  assert.ok(admissionIndex > setupNodeIndex, 'the admission follows setup-node');
+  assert.ok(admissionIndex > installIndex, 'the admission follows the dependency install');
+  assert.ok(admissionIndex < compositeIndex,
+    'the admission precedes the credential-requesting composite, so no AWS credential exists at a refusal');
+  assert.equal(steps[admissionIndex].env.GH_TOKEN, '${{ steps.admission.outputs.token }}');
+  assert.equal(Object.hasOwn(steps[admissionIndex], 'continue-on-error'), false,
+    'a refusal is a normal failing step, not a tolerated one');
+
+  // Exactly one token mint in `deploy`, read-only on AnyWear-E2E.
+  const tokens = steps.filter(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
+  assert.equal(tokens.length, 1, 'the deploy job mints exactly one App installation token');
+  const token = tokens[0];
+  assert.equal(token.id, 'admission');
+  assert.equal(token.with['app-id'], 3346940);
+  assert.equal(token.with['private-key'], '${{ secrets.APP_PRIVATE_KEY }}');
+  assert.equal(token.with.owner, '${{ github.repository_owner }}');
+  assert.equal(token.with.repositories, 'AnyWear-E2E');
+  assert.equal(token.with['permission-actions'], 'read');
+  assert.deepEqual(Object.keys(token.with).filter(name => name.startsWith('permission-')), ['permission-actions'],
+    'actions: read is the token\'s only permission');
+  assert.ok(steps.indexOf(token) < admissionIndex, 'the read runs only after its token exists');
+});
+
+// ADR 0033 §5 moved the census from four App-token allocations to five; this file
+// owns `mutate.yml`'s two and proves no third appears in it.
+test('mutate.yml holds exactly two App-token allocations and no third', async () => {
+  const mutate = await loadWorkflow('mutate.yml');
+  const allocations = [];
+  for (const [jobName, job] of Object.entries(mutate.jobs)) {
+    for (const step of job.steps ?? []) {
+      if (!String(step.uses ?? '').startsWith('actions/create-github-app-token@')) continue;
+      allocations.push({ jobName,
+        permissions: Object.keys(step.with).filter(name => name.startsWith('permission-')),
+        actionPermission: step.with['permission-actions'],
+        repositories: step.with.repositories });
+    }
+  }
+  assert.deepEqual(allocations, [
+    { jobName: 'deploy', permissions: ['permission-actions'], actionPermission: 'read', repositories: 'AnyWear-E2E' },
+    { jobName: 'qualify-hold', permissions: ['permission-actions'], actionPermission: 'write', repositories: 'AnyWear-E2E' },
+  ], 'two allocations: the deploy job reads, the hold writes, both narrowed to AnyWear-E2E with actions only');
+});
+
 
 // #226: `queue: max` beside `cancel-in-progress: false`, and the reviewed actionlint
 // ignore the pinned 1.7.12 needs because it predates the key.

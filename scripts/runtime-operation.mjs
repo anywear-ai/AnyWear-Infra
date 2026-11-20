@@ -617,7 +617,7 @@ export async function runOperation(env = process.env, {
       }
     }
     // Issue #316: a `deploy-runtime` that changed the Runtime stack and then failed
-    // never reached `qualify-hook`, so this run dispatched no qualification. The
+    // never reached `qualify-hold`, so this run dispatched no qualification. The
     // incident's retry was a new manual dispatch, which produces only `smoke` — not
     // the `full` the commit still owes — and nothing in the run said so. One line,
     // with both remedies, in the job that already reports the landed change. No new

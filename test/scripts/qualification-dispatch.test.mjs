@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { dispatchArguments, dispatchQualification, FALLBACK_WAIT_MS, findDispatchedRun,
-  qualificationPayload } from '../../scripts/qualification-dispatch.mjs';
+  HOLD_CEILING_MS, observeQualification, OBSERVATION_INTERVAL_MS, qualificationOutcomeLine,
+  qualificationPayload, recordQualificationOutcome } from '../../scripts/qualification-dispatch.mjs';
 
 // #226: the deploy chain's qualification hop. The payloads are the two rows of the
 // design's E2E dispatch table; the pre-dispatch dedupe and the post-dispatch
@@ -101,6 +105,7 @@ test('the dispatch goes through the REST endpoint with return_run_details and pr
   assert.ok(gh.calls.some(args => args[1] === 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242'));
   assert.ok(gh.output().includes(createdUrl));
   assert.equal(result.run_url, createdUrl);
+  assert.equal(result.run_id, 4242, 'the created run id is returned for the observation step');
 });
 
 test('a dispatch response naming the run id is verified by id, never by the run title', async () => {
@@ -110,6 +115,7 @@ test('a dispatch response naming the run id is verified by id, never by the run 
   const result = await dispatchQualification({ env: dispatchEnv(), run: gh.run, out: gh.out });
   assert.equal(result.dispatched, true);
   assert.equal(result.run_url, createdUrl);
+  assert.equal(result.run_id, 4242);
   const postIndex = gh.calls.findIndex(args => args.includes('--method'));
   assert.ok(postIndex > -1, 'the qualification is dispatched');
   assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'the dispatch happens once');
@@ -122,14 +128,16 @@ test('a dispatch response naming the run id is verified by id, never by the run 
   const ignored = await dispatchQualification({ env: dispatchEnv(), run: foreign.run, out: foreign.out });
   assert.equal(ignored.dispatched, true, 'a title that does not name this run does not fail the hook');
   assert.equal(ignored.run_url, createdUrl);
+  assert.equal(ignored.run_id, 4242);
 });
 
 test('a re-run whose key is already in an active run name dispatches nothing', async () => {
   const existingUrl = 'https://github.com/git-malu/AnyWear-E2E/actions/runs/999';
-  const gh = fakeGh({ queued: [{ display_title: runName(), html_url: existingUrl }] });
+  const gh = fakeGh({ queued: [{ id: 999, display_title: runName(), html_url: existingUrl }] });
   const result = await dispatchQualification({ env: dispatchEnv(), run: gh.run, out: gh.out });
   assert.equal(result.dispatched, false);
   assert.equal(result.run_url, existingUrl);
+  assert.equal(result.run_id, 999, 'the skipped run is still the run the observation must read');
   assert.equal(gh.calls.some(args => args.includes('--method')), false, 'no dispatch when the key already exists');
   assert.ok(gh.output().includes(existingUrl), 'the skipped run URL is printed');
   // The in-progress list is part of the pre-dispatch read.
@@ -137,7 +145,7 @@ test('a re-run whose key is already in an active run name dispatches nothing', a
 });
 
 test('without a run id the hook polls the active-run list instead of reading it once', async () => {
-  const matching = { display_title: runName(), html_url: createdUrl };
+  const matching = { id: 4242, display_title: runName(), html_url: createdUrl };
   const empty = { queued: [], in_progress: [] };
   // The pre-dispatch lookup and the first fallback attempt are empty; the second
   // fallback attempt carries the run the dispatch created.
@@ -147,6 +155,7 @@ test('without a run id the hook polls the active-run list instead of reading it 
     wait: async milliseconds => waits.push(milliseconds) });
   assert.equal(result.dispatched, true);
   assert.equal(result.run_url, createdUrl);
+  assert.equal(result.run_id, 4242);
   const postIndex = gh.calls.findIndex(args => args.includes('--method'));
   const after = gh.calls.slice(postIndex + 1).filter(args => /\?status=/.test(String(args[1])));
   assert.equal(after.filter(args => String(args[1]).includes('status=queued')).length, 2,
@@ -195,4 +204,202 @@ test('the dispatch arguments carry exactly the payload inputs and the verbatim k
   // A run name only matches when it carries the whole key.
   assert.equal(findDispatchedRun([{ display_title: `by ${dispatchedBy}` }], key), undefined);
   assert.deepEqual(findDispatchedRun([{ display_title: runName(), html_url: createdUrl }], key).html_url, createdUrl);
+});
+
+// #338: the hold. The dispatched run is read to a terminal state on a fixed
+// interval and never past `created_at + HOLD_CEILING_MS`; the outcome is exactly
+// `qualified` or `unqualified`, the failed jobs are named only when the run is a
+// non-success, and the recorder writes one summary line and the step output. The
+// fake clock moves only when the injected wait does, so no test sleeps and the
+// ceiling is proven arithmetically.
+const clockStart = 1_700_000_000_000;
+const runState = (status, conclusion = null, extra = {}) => ({ id: 4242, status, conclusion,
+  html_url: createdUrl, created_at: new Date(clockStart).toISOString(), ...extra });
+
+function observationGh({ reads, jobs = { jobs: [] } }) {
+  const calls = [];
+  let index = 0;
+  const run = async (command, args) => {
+    assert.equal(command, 'gh');
+    calls.push([...args]);
+    const path = String(args[1]);
+    if (path.endsWith('/jobs')) {
+      if (jobs instanceof Error) throw jobs;
+      return { stdout: JSON.stringify(jobs), stderr: '' };
+    }
+    assert.equal(path, 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242');
+    const entry = reads[Math.min(index, reads.length - 1)];
+    index += 1;
+    if (entry instanceof Error) throw entry;
+    return { stdout: JSON.stringify(entry), stderr: '' };
+  };
+  return { calls, run };
+}
+
+const observationClock = () => {
+  let current = clockStart;
+  const waits = [];
+  return { waits, now: () => current, wait: async milliseconds => { waits.push(milliseconds); current += milliseconds; } };
+};
+
+const sinkOf = () => {
+  const chunks = [];
+  return { out: { write: chunk => chunks.push(chunk) }, text: () => chunks.join('') };
+};
+
+const observe = async ({ reads, jobs, clock = observationClock(), runId, runUrl = createdUrl }) => {
+  const gh = observationGh({ reads, jobs });
+  const sink = sinkOf();
+  const result = await observeQualification({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
+    wait: clock.wait, now: clock.now, out: sink.out, runId, runUrl });
+  return { result, clock, gh, text: sink.text() };
+};
+
+const withOutputFiles = async body => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'anywear-qualification-'));
+  try {
+    return await body({ directory, summary: path.join(directory, 'summary.md'), output: path.join(directory, 'output') });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+};
+
+test('the dispatch exposes the created run URL and id through GITHUB_OUTPUT', async () => {
+  await withOutputFiles(async ({ output }) => {
+    const gh = fakeGh();
+    const result = await dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out });
+    assert.equal(result.run_id, 4242);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`,
+      'the workflow step receives exactly the two values the observation reads');
+  });
+  // The values are published before the read-back that verifies them, so a run the
+  // dispatcher created but could not verify is still observed rather than misread as
+  // "no run was created".
+  await withOutputFiles(async ({ output }) => {
+    const gh = fakeGh({ created: { id: 999 } });
+    await assert.rejects(dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out }),
+      /was not returned by id/);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
+  });
+});
+
+test('a success run is qualified at its first terminal read and polling stops there', async () => {
+  const clock = observationClock();
+  const gh = observationGh({ reads: [runState('in_progress'), runState('completed', 'success')] });
+  const sink = sinkOf();
+  // No run id is passed: the trailing `/runs/<id>` of the dispatched URL is enough.
+  const result = await observeQualification({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
+    wait: clock.wait, now: clock.now, out: sink.out, runUrl: createdUrl });
+  assert.deepEqual({ outcome: result.outcome, run_url: result.run_url, conclusion: result.conclusion,
+    failed_jobs: result.failed_jobs }, { outcome: 'qualified', run_url: createdUrl, conclusion: 'success', failed_jobs: [] });
+  assert.deepEqual(clock.waits, [OBSERVATION_INTERVAL_MS], 'one interval between the two reads');
+  assert.equal(gh.calls.length, 2, 'the terminal read is the last read');
+  assert.equal(gh.calls.some(args => String(args[1]).endsWith('/jobs')), false,
+    'a successful run names no failed jobs and reads no job list');
+});
+
+test('a failure run is unqualified with the names of the jobs that were neither success nor skipped', async () => {
+  const clock = observationClock();
+  const gh = observationGh({ reads: [runState('completed', 'failure')], jobs: { jobs: [
+    { name: 'preflight', conclusion: 'success' },
+    { name: 'reconcile', conclusion: 'skipped' },
+    { name: 'full', conclusion: 'failure' },
+    { name: 'record', conclusion: 'failure' },
+  ] } });
+  const sink = sinkOf();
+  const result = await observeQualification({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
+    wait: clock.wait, now: clock.now, out: sink.out, runId: 4242 });
+  assert.equal(result.outcome, 'unqualified');
+  assert.equal(result.conclusion, 'failure');
+  assert.deepEqual(result.failed_jobs, ['full', 'record'], 'API order, and skipped is not a failure');
+  assert.equal(clock.waits.length, 0, 'a run that is already terminal needs no wait');
+  assert.equal(gh.calls.filter(args => String(args[1]).endsWith('/jobs')).length, 1);
+});
+
+test('a cancelled or timed-out run is unqualified', async () => {
+  for (const conclusion of ['cancelled', 'timed_out']) {
+    const { result } = await observe({ reads: [runState('completed', conclusion)] });
+    assert.equal(result.outcome, 'unqualified', conclusion);
+    assert.equal(result.conclusion, conclusion);
+    assert.deepEqual(result.failed_jobs, []);
+  }
+});
+
+test('the ceiling returns unqualified without waiting past the deadline', async () => {
+  const clock = observationClock();
+  const gh = observationGh({ reads: [runState('in_progress')] });
+  const sink = sinkOf();
+  const result = await observeQualification({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
+    wait: clock.wait, now: clock.now, out: sink.out, runId: 4242 });
+  assert.equal(result.outcome, 'unqualified');
+  assert.equal(result.ceiling, true, 'the recorder writes a warning, never an error');
+  assert.match(result.reason, /the 55-minute hold ceiling was reached/);
+  assert.equal(clock.waits.reduce((total, value) => total + value, 0), HOLD_CEILING_MS,
+    'the wait sums to exactly the ceiling, never past it');
+  assert.ok(clock.waits.every(milliseconds => milliseconds <= OBSERVATION_INTERVAL_MS),
+    'no single wait is longer than the interval');
+  assert.equal(gh.calls.length, clock.waits.length + 1, 'one read per interval plus the first');
+});
+
+test('an authentication failure inside the final interval is recorded as the ceiling', async () => {
+  const authentication = new Error('gh: HTTP 401 Bad credentials');
+  const reads = [...Array(109).fill(runState('in_progress')), authentication];
+  const clock = observationClock();
+  const { result, gh } = await observe({ reads, clock });
+  assert.equal(result.outcome, 'unqualified');
+  assert.equal(result.ceiling, true, 'a token that outlived its margin must not turn a named state red');
+  assert.match(result.reason, /final read failed: gh: HTTP 401 Bad credentials/);
+  assert.equal(clock.waits.reduce((total, value) => total + value, 0), HOLD_CEILING_MS - OBSERVATION_INTERVAL_MS,
+    'the failure happened inside the last interval before the ceiling');
+  assert.equal(gh.calls.at(-1)[1], 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242');
+});
+
+test('a read failure is an observation failure unless it is authentication near the ceiling', async () => {
+  await assert.rejects(observe({ reads: [new Error('gh: HTTP 401 Bad credentials')] }),
+    /could not be read: gh: HTTP 401 Bad credentials/);
+  await assert.rejects(observe({ reads: [runState('in_progress'), new Error('gh: HTTP 502 Bad Gateway')] }),
+    /could not be read: gh: HTTP 502 Bad Gateway/);
+});
+
+test('a non-success run whose job list cannot be read fails the observation instead of guessing', async () => {
+  await assert.rejects(observe({ reads: [runState('completed', 'failure')], jobs: new Error('gh: HTTP 502 Bad Gateway') }),
+    /concluded non-success but its jobs could not be read: gh: HTTP 502/);
+});
+
+test('the one outcome line names the run, the conclusion and the failed jobs, or the reason none ran', async () => {
+  assert.equal(qualificationOutcomeLine({ outcome: 'qualified', run_url: createdUrl, conclusion: 'success' }),
+    `Qualification qualified: ${createdUrl} concluded success.`);
+  assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: 'failure',
+    failed_jobs: ['full', 'record'] }),
+  `Qualification unqualified: ${createdUrl} concluded failure; failed job(s): full, record.`);
+  assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: null,
+    failed_jobs: [], ceiling_ms: HOLD_CEILING_MS }),
+  `Qualification unqualified: ${createdUrl} had not reached a terminal state when the 55-minute hold ceiling was reached.`);
+  assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', service_commit: serviceCommit,
+    reason: 'the dispatch step failed and created no qualification run, so the deployed tuple carries no qualification record' }),
+  `Qualification unqualified: the dispatch step failed and created no qualification run, so the deployed tuple carries no `
+    + `qualification record for Service commit ${serviceCommit}.`);
+});
+
+test('the recorder writes exactly one summary line, the step outcome and a warning only for the ceiling', async () => {
+  await withOutputFiles(async ({ summary, output }) => {
+    const sink = sinkOf();
+    const unqualified = { outcome: 'unqualified', run_url: createdUrl, conclusion: 'failure',
+      failed_jobs: ['full', 'record'], service_commit: serviceCommit };
+    const line = await recordQualificationOutcome({ env: { GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: output },
+      result: unqualified, out: sink.out });
+    assert.equal(await readFile(summary, 'utf8'), `${line}\n`, 'exactly one outcome line');
+    assert.equal(await readFile(output, 'utf8'), 'outcome=unqualified\n');
+    assert.match(line, new RegExp(`^Qualification unqualified: ${createdUrl.replaceAll('/', '\\/')} concluded failure`));
+    assert.equal(sink.text(), `${line}\n`, 'a terminal non-success is not an error annotation');
+
+    const warn = sinkOf();
+    const ceilingLine = await recordQualificationOutcome({ env: { GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: output },
+      result: { outcome: 'unqualified', run_url: createdUrl, conclusion: null, failed_jobs: [], ceiling: true },
+      out: warn.out });
+    assert.equal(warn.text(), `::warning::${ceilingLine}\n`, 'the ceiling carries a ::warning');
+    assert.equal(await readFile(summary, 'utf8'), `${line}\n${ceilingLine}\n`,
+      'the ceiling appends one more line, never a second line for the same outcome');
+    assert.equal(await readFile(output, 'utf8'), 'outcome=unqualified\noutcome=unqualified\n');
+  });
 });
