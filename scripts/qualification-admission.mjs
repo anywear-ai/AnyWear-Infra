@@ -16,6 +16,24 @@ import { E2E_REPOSITORY, QUALIFICATION_WORKFLOW } from './qualification-dispatch
 // operator `release-qualify` dispatch leaves a live qualification run with no run
 // holding `anywear-infra-runtime`, and this is what sees it before the next
 // mutation. Neither mechanism can see a qualification that starts after the read.
+//
+// The read is one unfiltered snapshot per poll, plus a by-id re-read of every run it
+// has ever observed as a holder. The earlier shape queried the five nonterminal
+// statuses sequentially and unioned the answers, which is not a snapshot: on
+// 2026-11-20, `mutate.yml` run 44719591457 read E2E `full` run 44719510520 as absent
+// from both the early `waiting` query and the late `in_progress` query because the
+// run moved between jobs in between, so the union came back empty and the gate
+// opened while that run was still in flight — even though the same run had already
+// been seen as a holder earlier in the wait. A holder is therefore never forgotten:
+// an identity seen once is re-read by id until it reports `completed`, and its
+// absence from the snapshot is exactly the failure this read must not mistake for
+// clear. A failed read is not clear either.
+//
+// A clear poll is confirmed by one immediate second poll — no interval-sized delay —
+// because ADR 0033 §7 and the issue's User Journey promise that an idle gate
+// "proceeds immediately when none is nonterminal", and a spaced confirmation would
+// turn that promise into a wait. The immediate confirmation still catches a run
+// created between the two reads.
 const execute = promisify(execFile);
 
 // The `full` filter is the run-name prefix, not the run's own operation output: the
@@ -30,10 +48,10 @@ const execute = promisify(execFile);
 // #338), because that file is not in this checkout.
 export const QUALIFICATION_FULL_RUN_NAME_PREFIX = 'Beta qualification: full';
 
-// The runs API accepts all five as a `status` filter. `ACTIVE_RUN_STATUSES` in
-// `qualification-dispatch.mjs` is a strict subset used by the dispatcher's own
-// dedupe lookup; an admission read that reused it would read "empty" while a run
-// waits for approval or sits pending, so the full set is listed here explicitly.
+// The runs API's documented nonterminal status names. The read does not query them:
+// it takes one unfiltered snapshot and filters on the complement of `completed`, so
+// a status this list does not name — or one the API adds later — is still occupied.
+// The list stays exported and pinned as the set the design reasons about.
 export const QUALIFICATION_NONTERMINAL_STATUSES = Object.freeze([
   'requested', 'waiting', 'pending', 'queued', 'in_progress',
 ]);
@@ -42,6 +60,8 @@ export const ADMISSION_BUDGET_MS = 30 * 60 * 1000;
 /** Poll the run list on a fixed interval; the budget, not the interval, is the bound. */
 export const ADMISSION_INTERVAL_MS = 30_000;
 const WORKFLOW_PATH = `repos/${E2E_REPOSITORY}/actions/workflows/${QUALIFICATION_WORKFLOW}`;
+const RUNS_PATH = `${WORKFLOW_PATH}/runs?per_page=100`;
+const runPath = id => `repos/${E2E_REPOSITORY}/actions/runs/${id}`;
 const MAX_BUFFER = 10 * 1024 * 1024;
 const GH_OPTIONS = { timeout: 60_000, maxBuffer: MAX_BUFFER };
 
@@ -54,32 +74,49 @@ export const isFullQualificationRun = entry => typeof entry?.display_title === '
   && entry.display_title.startsWith(QUALIFICATION_FULL_RUN_NAME_PREFIX);
 
 /**
- * Every nonterminal `full` qualification run, across the full status set, deduped by
- * id. A status listing that fails makes the whole read incomplete: the result keeps
- * the runs it did see and the last error, and the caller must treat the environment
- * as not proven clear rather than as empty.
+ * The newest run page, read once and filtered client-side: one unfiltered call per
+ * poll is the whole point, so no status transition can fall between two
+ * status-filtered queries. A failed or malformed read throws, and the caller keeps
+ * the gate closed.
  */
 export async function listNonterminalFullRuns(run, env) {
-  const holders = new Map();
-  let lastError;
-  for (const status of QUALIFICATION_NONTERMINAL_STATUSES) {
+  const response = parseJson((await run('gh', ['api', RUNS_PATH], { env, ...GH_OPTIONS })).stdout);
+  if (!Array.isArray(response?.workflow_runs)) throw new Error('The qualification run list is malformed');
+  return response.workflow_runs.filter(entry => isFullQualificationRun(entry) && entry.status !== 'completed');
+}
+
+/**
+ * One poll: the single snapshot, then every known holder by id. Nonterminal `full`
+ * runs from the snapshot join the holder set; a holder leaves it only when its
+ * by-id read reports `completed`; a failed read keeps the holder and is carried to
+ * the refusal. Occupied means "a holder exists or this poll failed", never "the
+ * snapshot was empty".
+ */
+async function pollOnce({ run, env, holders, state }) {
+  let thisPollHadAnError = false;
+  try {
+    for (const entry of await listNonterminalFullRuns(run, env)) {
+      if (entry.id === undefined) continue;
+      holders.set(entry.id, entry);
+    }
+  } catch (error) {
+    thisPollHadAnError = true;
+    state.lastError = error;
+  }
+  for (const id of [...holders.keys()]) {
     try {
-      const response = parseJson((await run('gh', ['api', `${WORKFLOW_PATH}/runs?status=${status}&per_page=100`],
-        { env, ...GH_OPTIONS })).stdout);
-      if (!Array.isArray(response?.workflow_runs)) throw new Error(`The ${status} qualification run list is malformed`);
-      for (const entry of response.workflow_runs) {
-        if (!isFullQualificationRun(entry) || entry.status === 'completed') continue;
-        const key = entry.id ?? entry.html_url;
-        if (key === undefined) continue;
-        holders.set(key, entry);
+      const read = parseJson((await run('gh', ['api', runPath(id)], { env, ...GH_OPTIONS })).stdout);
+      if (read?.status === 'completed') {
+        holders.delete(id);
+        continue;
       }
+      holders.set(id, { ...holders.get(id), ...read, id });
     } catch (error) {
-      // The first failure already makes the read incomplete; a later one replaces it
-      // so the refusal names the most recent cause.
-      lastError = error;
+      thisPollHadAnError = true;
+      state.lastError = error;
     }
   }
-  return { holders: [...holders.values()], error: lastError };
+  return holders.size > 0 || thisPollHadAnError;
 }
 
 const describeHolder = holder => {
@@ -89,9 +126,9 @@ const describeHolder = holder => {
 };
 
 /**
- * Wait while any `full` qualification run is nonterminal, and proceed only when a
- * complete read proves there is none. A failed listing keeps waiting instead of
- * opening the gate; the budget, never a silent empty read, ends the wait.
+ * Wait while any `full` qualification run is known to be nonterminal, and proceed
+ * only after two consecutive clear polls. A failed read keeps the gate closed
+ * instead of opening it; the budget, never a silent empty read, ends the wait.
  */
 export async function main({ env = process.env, run = execute, wait = sleep, now = Date.now,
   out = process.stdout, budgetMs = ADMISSION_BUDGET_MS, intervalMs = ADMISSION_INTERVAL_MS } = {}) {
@@ -103,26 +140,31 @@ export async function main({ env = process.env, run = execute, wait = sleep, now
   const budgetMinutes = Math.round(budgetMs / 60_000);
   const startedAt = now();
   const deadline = startedAt + budgetMs;
-  let lastError;
+  const holders = new Map();
+  const state = { lastError: undefined };
   for (;;) {
-    const { holders, error } = await listNonterminalFullRuns(run, env);
-    if (error !== undefined) lastError = error;
-    if (holders.length === 0 && error === undefined) {
-      const waitedSeconds = Math.round((now() - startedAt) / 1000);
-      out.write(`No full qualification run is nonterminal; the admission check proceeds`
-        + `${waitedSeconds > 0 ? ` after ${waitedSeconds} s` : ''}.\n`);
-      return 0;
+    let occupied = await pollOnce({ run, env, holders, state });
+    if (!occupied) {
+      // Immediate confirmation, not an interval-sized delay: an idle gate still
+      // proceeds at once, and a run created between the two reads is caught here.
+      occupied = await pollOnce({ run, env, holders, state });
+      if (!occupied) {
+        const waitedSeconds = Math.round((now() - startedAt) / 1000);
+        out.write(`No full qualification run is nonterminal; the admission check proceeds`
+          + `${waitedSeconds > 0 ? ` after ${waitedSeconds} s` : ''}.\n`);
+        return 0;
+      }
     }
     const remaining = deadline - now();
     if (remaining <= 0) {
       const parts = [];
-      if (holders.length > 0) {
-        parts.push(`${holders.length} full qualification run(s) were still nonterminal after the`
-          + ` ${budgetMinutes}-minute admission budget: ${holders.map(describeHolder).join(', ')}`);
+      if (holders.size > 0) {
+        parts.push(`${holders.size} full qualification run(s) were still nonterminal after the`
+          + ` ${budgetMinutes}-minute admission budget: ${[...holders.values()].map(describeHolder).join(', ')}`);
         parts.push('cancel the qualification run to release the environment — never the deployment run');
       }
-      if (lastError !== undefined) {
-        parts.push(`the run list could not be read completely; the last read failed: ${lastError?.message ?? lastError}`);
+      if (state.lastError !== undefined) {
+        parts.push(`a qualification read failed; the last read failed: ${state.lastError?.message ?? state.lastError}`);
       }
       out.write(`Refusing the mutation: ${parts.join('; ')}.\n`);
       return 1;
