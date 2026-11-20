@@ -25,6 +25,19 @@ export const CLIENT_REPOSITORY_ID = 1176104200;
 // this file on `main`, so a dispatch naming a check run is refused.
 export const CLIENT_WORKFLOW_PATH = '.github/workflows/release.yml';
 export const CLIENT_REF = 'main';
+// The two Client jobs that produce and verify the bundle, by the name the REST jobs
+// API reports. That API returns a job's `name:` display name, never its workflow
+// key: AnyWear-Client/.github/workflows/release.yml declares
+// `build: name: Build the reviewed Beta web client` and
+// `verify: name: Verify the built Beta web client`, and the run object offers no
+// id or key that would resolve them. Infra run 44743538352 refused Client run
+// 44743036410 with 'job build is absent' because the proof matched the bare keys;
+// these literals are the pin. Change them only with that workflow, and keep them
+// as the one definition: the job proof, the refusals and the tests match them.
+export const CLIENT_BUILD_JOB_NAME = 'Build the reviewed Beta web client';
+export const CLIENT_VERIFY_JOB_NAME = 'Verify the built Beta web client';
+/** The bundle jobs in proof order, as the job proof and the refusals name them. */
+export const CLIENT_BUNDLE_JOB_NAMES = Object.freeze([CLIENT_BUILD_JOB_NAME, CLIENT_VERIFY_JOB_NAME]);
 // The artifact the Client build job publishes and the only bytes Infra syncs.
 export const CLIENT_ARTIFACT_NAME = 'client-dist';
 // The two files the publication needs from inside that artifact. `bundle-manifest`

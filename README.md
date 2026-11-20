@@ -195,9 +195,12 @@ E2E qualification executor's one-shot family.
 `publish-client` is Infra's one Client write (#344). It changes no stack and runs
 no one-shot task: `verify` proves the Client publisher run over REST with a
 read-only `AnyWear-Client` App token — its identity, the dispatched attempt, and
-the run state: `in_progress` with its `build` and `verify` jobs both successful is
+the run state: `in_progress` with both bundle jobs successful is
 the normal path (the Client `handoff` job holds that run open until it has polled
-this Infra run), and `completed` is accepted only as `success` — then downloads
+this Infra run), and `completed` is accepted only as `success`. The two jobs are
+matched by the display names the REST jobs API reports — `Build the reviewed Beta
+web client` and `Verify the built Beta web client`, the Client workflow's `name:`
+values, not its `build`/`verify` keys — then it downloads
 `client-dist`, recomputes the
 bundle-manifest digest and publishes the verified tree; `deploy` re-hashes it,
 assumes `beta-client-publish-role` under a session policy that carries only

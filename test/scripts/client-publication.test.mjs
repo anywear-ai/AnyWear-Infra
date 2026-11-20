@@ -115,7 +115,14 @@ const publisherRun = (overrides = {}) => ({ id: Number(runId), repository: { id:
   path: '.github/workflows/release.yml', head_branch: 'main', head_sha: clientSource,
   status: 'in_progress', conclusion: null, run_attempt: Number(attempt), ...overrides });
 const completedPublisherRun = (overrides = {}) => publisherRun({ status: 'completed', conclusion: 'success', ...overrides });
-const bundleJobs = (overrides = {}) => [{ name: 'build', conclusion: 'success' }, { name: 'verify', conclusion: 'success', ...overrides }];
+// The REST jobs API reports each job's `name:` display name, never its workflow key.
+// These two are AnyWear-Client/.github/workflows/release.yml's `build` and `verify`
+// names; Infra run 44743538352 refused Client run 44743036410 with "job build is
+// absent" because the fixtures (and the proof) used the bare keys.
+const BUILD_JOB = 'Build the reviewed Beta web client';
+const VERIFY_JOB = 'Verify the built Beta web client';
+const bundleJobs = (overrides = {}) => [{ name: BUILD_JOB, conclusion: 'success' },
+  { name: VERIFY_JOB, conclusion: 'success', ...overrides }];
 
 // A fake `gh api` for the three REST reads the verify mode makes.
 function fakeGh({ run: runBody = publisherRun(), jobs, artifacts } = {}) {
@@ -172,9 +179,9 @@ test('verify proves the publisher run, downloads the artifact and recomputes the
     assert.equal(await readFile(output, 'utf8'),
       `client_bundle_digest=${digest}\nclient_source_commit=${clientSource}\n`);
     assert.match(streams.text(), new RegExp(`${digest} equals the dispatched client_bundle_digest`));
-    // The success line states what was actually proved: the run was still in
-    // progress and both bundle jobs had succeeded.
-    assert.match(streams.text(), /in progress, jobs build and verify succeeded/);
+    // The success line states what was actually proved, by the display names the
+    // job proof matched.
+    assert.match(streams.text(), /in progress, jobs 'Build the reviewed Beta web client' and 'Verify the built Beta web client' succeeded/);
   });
 });
 
@@ -198,35 +205,41 @@ test('the publisher run is accepted in progress or completed success, and refuse
   // job conclusions.
   for (const [label, runBody, expectation] of [
     ['completed failure', completedPublisherRun({ conclusion: 'failure' }),
-      /is completed\/failure with build success, verify success, not a completed success/],
+      /is completed\/failure with Build the reviewed Beta web client success, Verify the built Beta web client success, not a completed success/],
     ['completed cancelled', completedPublisherRun({ conclusion: 'cancelled' }),
-      /is completed\/cancelled with build success, verify success, not a completed success/],
+      /is completed\/cancelled with Build the reviewed Beta web client success, Verify the built Beta web client success, not a completed success/],
     ['completed without a conclusion', publisherRun({ status: 'completed', conclusion: null }),
-      /is completed\/null with build success, verify success, not a completed success/],
+      /is completed\/null with Build the reviewed Beta web client success, Verify the built Beta web client success, not a completed success/],
     ['queued', publisherRun({ status: 'queued' }),
-      /is queued\/null with build success, verify success, not in progress with build and verify successful or a completed success/],
+      /is queued\/null with Build the reviewed Beta web client success, Verify the built Beta web client success, not in progress with both bundle jobs successful or a completed success/],
     ['requested', publisherRun({ status: 'requested' }),
-      /is requested\/null with build success, verify success, not in progress/],
+      /is requested\/null with Build the reviewed Beta web client success, Verify the built Beta web client success, not in progress/],
     ['waiting', publisherRun({ status: 'waiting' }),
-      /is waiting\/null with build success, verify success, not in progress/],
+      /is waiting\/null with Build the reviewed Beta web client success, Verify the built Beta web client success, not in progress/],
     ['pending', publisherRun({ status: 'pending' }),
-      /is pending\/null with build success, verify success, not in progress/],
+      /is pending\/null with Build the reviewed Beta web client success, Verify the built Beta web client success, not in progress/],
     ['in progress carrying a conclusion', publisherRun({ conclusion: 'success' }),
-      /is in_progress\/success with build success, verify success, not in progress/],
+      /is in_progress\/success with Build the reviewed Beta web client success, Verify the built Beta web client success, not in progress/],
   ]) {
     await withTemporary(async ({ directory, tree, output }) => {
       await assert.rejects(verify({ gh: fakeGh({ run: runBody }), directory, tree, output }), expectation, label);
     });
   }
   // (4) in progress with a bundle job that did not succeed is refused by the job
-  // proof, which also names the run state.
+  // proof, which names the expected display name and the run state.
   for (const [label, jobs, expectation] of [
-    ['verify failed', [{ name: 'build', conclusion: 'success' }, { name: 'verify', conclusion: 'failure' }],
-      /job verify is failure, not a success \(run in_progress\/null\)/],
-    ['verify absent', [{ name: 'build', conclusion: 'success' }],
-      /job verify is absent, not a success \(run in_progress\/null\)/],
-    ['build failed', [{ name: 'build', conclusion: 'failure' }, { name: 'verify', conclusion: 'success' }],
-      /job build is failure, not a success \(run in_progress\/null\)/],
+    ['verify failed', [{ name: BUILD_JOB, conclusion: 'success' }, { name: VERIFY_JOB, conclusion: 'failure' }],
+      /job 'Verify the built Beta web client' is failure, not a success \(run in_progress\/null\)/],
+    ['verify absent', [{ name: BUILD_JOB, conclusion: 'success' }],
+      /job 'Verify the built Beta web client' is absent, not a success \(run in_progress\/null\)/],
+    ['build failed', [{ name: BUILD_JOB, conclusion: 'failure' }, { name: VERIFY_JOB, conclusion: 'success' }],
+      /job 'Build the reviewed Beta web client' is failure, not a success \(run in_progress\/null\)/],
+    // The defect this branch fixes: a job list carrying the workflow keys and not
+    // the display names is refused, and the refusal names the expected display name.
+    ['bare workflow keys', [{ name: 'build', conclusion: 'success' }, { name: 'verify', conclusion: 'success' }],
+      /job 'Build the reviewed Beta web client' is absent, not a success \(run in_progress\/null\)/],
+    ['only the build job by key', [{ name: 'build', conclusion: 'success' }, { name: VERIFY_JOB, conclusion: 'success' }],
+      /job 'Build the reviewed Beta web client' is absent, not a success/],
   ]) {
     await withTemporary(async ({ directory, tree, output }) => {
       await assert.rejects(verify({ gh: fakeGh({ jobs }), directory, tree, output }), expectation, label);
