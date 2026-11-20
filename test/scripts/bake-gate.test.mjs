@@ -153,7 +153,10 @@ test('a healthy 300-second bake passes, records the six fixed signals and their 
   assert.equal(signalOf(gate, 'alb_p95_latency').value.p95_milliseconds, 120);
   assert.equal(signalOf(gate, 'ecs_running_not_desired').value.samples, 10);
   assert.equal(signalOf(gate, 'sqs_oldest_message_age').value.vto_seconds, 0);
-  assert.match(signalOf(gate, 'sqs_oldest_message_age').exceptions.join('; '), /vto queue is idle/);
+  // Issue #336: the idle note names the deployed queue, not the purpose label.
+  assert.ok(signalOf(gate, 'sqs_oldest_message_age').exceptions.includes(
+    `${QUEUES.vto} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`),
+  'the idle note names the deployed vto queue');
   assert.match(signalOf(gate, 'outbox_oldest_age').exceptions.join('; '), /oldest age is null by construction/);
   assert.equal(signalOf(gate, 'outbox_oldest_age').value.lines_observed, 5);
   assert.deepEqual(signalOf(gate, 'sqs_dlq_depth').alarms.map((alarm) => alarm.name),
@@ -350,11 +353,70 @@ test('an idle queue with no age datapoint is recorded as age 0', () => {
     assert.equal(gate.result, 'passed');
     assert.equal(signal.state, 'not-breaching');
     assert.equal(signal.value.auto_tagging_seconds, 0);
-    assert.match(signal.exceptions.join('; '), /auto_tagging queue is idle/);
+    assert.ok(signal.exceptions.includes(
+      `${QUEUES.auto_tagging} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`),
+    'the idle note names the deployed auto-tagging queue');
     const read = signal.reads.find((candidate) => candidate.metric_name === 'ApproximateAgeOfOldestMessage'
       && candidate.dimensions.QueueName === QUEUES.auto_tagging);
     assert.equal(read.datapoints, 0);
   }
+});
+
+// Issue #336: every queue-scoped sentence names the deployed queue, so a printed
+// reason names the resource a reader can look up. The age read's three error
+// shapes and the DLQ read's two each state the queue they describe; the purpose
+// labels (`vto`, `vto_dlq`) never appear as the subject.
+test('an idle queue exception names the deployed queue, not the purpose label', () => {
+  const unread = baseObservations();
+  unread.sqs.ages = { error: 'AccessDenied' };
+  assert.equal(signalOf(evaluate(unread), 'sqs_oldest_message_age').exceptions[0],
+    `${QUEUES.vto} oldest-message age metric was not read: AccessDenied`);
+
+  const invalid = baseObservations();
+  invalid.sqs.ages.vto = { datapoints: 1, seconds: -1 };
+  assert.equal(signalOf(evaluate(invalid), 'sqs_oldest_message_age').exceptions[0],
+    `${QUEUES.vto} returned an invalid oldest-message age`);
+
+  const active = baseObservations();
+  delete active.sqs.ages.vto;
+  active.sqs.samples[2].queues.vto = {
+    ...active.sqs.samples[2].queues.vto,
+    ApproximateNumberOfMessages: '1',
+  };
+  assert.equal(signalOf(evaluate(active), 'sqs_oldest_message_age').exceptions[0],
+    `${QUEUES.vto} has active messages but no ApproximateAgeOfOldestMessage datapoint`);
+
+  const missingDepth = baseObservations();
+  delete missingDepth.sqs.samples[0].queues.vto_dlq.ApproximateNumberOfMessages;
+  assert.equal(signalOf(evaluate(missingDepth), 'sqs_dlq_depth').exceptions[0],
+    `${QUEUES.vto_dlq} returned no ApproximateNumberOfMessages`);
+
+  const invalidDepth = baseObservations();
+  invalidDepth.sqs.samples[0].queues.auto_tagging_dlq.ApproximateNumberOfMessages = 'x';
+  assert.equal(signalOf(evaluate(invalidDepth), 'sqs_dlq_depth').exceptions[0],
+    `${QUEUES.auto_tagging_dlq} returned an invalid message depth`);
+
+  // The idle note is the sentence #336's incident line printed; it names the
+  // deployed queue too.
+  assert.equal(signalOf(evaluate(baseObservations()), 'sqs_oldest_message_age').exceptions[0],
+    `${QUEUES.vto} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`);
+});
+
+// Issue #336: the errored side of a two-queue value is `null`, never a zero-fill
+// that reads as a measured age. The error branch reaches `insufficient` before any
+// threshold comparison, so the other queue's number still prints beside it.
+test("an unread queue age records null and keeps the other queue's number", () => {
+  const observations = baseObservations();
+  observations.sqs.ages.vto = { datapoints: 1 };
+  observations.sqs.ages.auto_tagging = { datapoints: 1, seconds: 45 };
+  const gate = evaluate(observations);
+  const signal = signalOf(gate, 'sqs_oldest_message_age');
+  assert.equal(gate.result, 'failed');
+  assert.equal(signal.state, 'insufficient');
+  assert.deepEqual(signal.value, { vto_seconds: null, auto_tagging_seconds: 45 });
+  assert.equal(signal.exceptions[0], `${QUEUES.vto} returned an invalid oldest-message age`);
+  assert.equal(Object.values(signal.value).includes(0), false, 'the unread side is not a zero-fill');
+  assert.equal(signalOf(gate, 'sqs_dlq_depth').state, 'not-breaching', 'the depth signal is unaffected');
 });
 
 test('one whole-window age period for both work queues is the healthy read', () => {
@@ -376,7 +438,8 @@ test('two age periods for one queue are insufficient, record the count and do no
     const gate = evaluate(observations);
     assertFailedWith(gate, 'sqs_oldest_message_age', 'insufficient');
     const signal = signalOf(gate, 'sqs_oldest_message_age');
-    assert.match(signal.exceptions[0], new RegExp(`${queue} ApproximateAgeOfOldestMessage returned 2 periods`));
+    assert.equal(signal.exceptions[0],
+      `${QUEUES[queue]} ApproximateAgeOfOldestMessage returned 2 periods; exactly 1 whole-window period is required`);
     const ageReads = signal.reads.filter((read) => read.metric_name === 'ApproximateAgeOfOldestMessage');
     assert.equal(ageReads.find((read) => read.dimensions.QueueName === QUEUES[queue]).datapoints, 2);
     assert.equal(ageReads.find((read) => read.dimensions.QueueName === QUEUES[other]).datapoints, 1);
@@ -400,7 +463,8 @@ test('the live runner rejects a two-period age read instead of aggregating it', 
   assert.equal(gate.result, 'failed');
   const signal = signalOf(gate, 'sqs_oldest_message_age');
   assert.equal(signal.state, 'insufficient');
-  assert.match(signal.exceptions[0], /vto ApproximateAgeOfOldestMessage returned 2 periods/);
+  assert.equal(signal.exceptions[0],
+    `${QUEUES.vto} ApproximateAgeOfOldestMessage returned 2 periods; exactly 1 whole-window period is required`);
   const read = signal.reads.find((candidate) => candidate.metric_name === 'ApproximateAgeOfOldestMessage'
     && candidate.dimensions.QueueName === QUEUES.vto);
   assert.equal(read.datapoints, 2);
@@ -430,8 +494,10 @@ test('the live runner records a zero-datapoint idle queue as age 0 with the idle
   const signal = signalOf(gate, 'sqs_oldest_message_age');
   assert.equal(signal.state, 'not-breaching');
   assert.deepEqual(signal.value, { vto_seconds: 0, auto_tagging_seconds: 0 });
-  assert.match(signal.exceptions.join('; '), /vto queue is idle/);
-  assert.match(signal.exceptions.join('; '), /auto_tagging queue is idle/);
+  assert.ok(signal.exceptions.includes(
+    `${QUEUES.vto} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`));
+  assert.ok(signal.exceptions.includes(
+    `${QUEUES.auto_tagging} queue is idle (no visible, in-flight or delayed messages); its oldest age is recorded as 0`));
   for (const read of signal.reads.filter((candidate) => candidate.metric_name === 'ApproximateAgeOfOldestMessage')) {
     assert.equal(read.datapoints, 0);
   }
@@ -498,7 +564,11 @@ test('the live runner reads the four queues only by their full https://sqs. URLs
 test('a missing DLQ depth is insufficient and zero is a real value', () => {
   const observations = baseObservations();
   delete observations.sqs.samples[0].queues.auto_tagging_dlq.ApproximateNumberOfMessages;
-  assertFailedWith(evaluate(observations), 'sqs_dlq_depth', 'insufficient');
+  const gate = evaluate(observations);
+  assertFailedWith(gate, 'sqs_dlq_depth', 'insufficient');
+  // Issue #336: the unread DLQ side is null, not 0; the read side's zero is real
+  // and must survive.
+  assert.deepEqual(signalOf(gate, 'sqs_dlq_depth').value, { vto_depth: 0, auto_tagging_depth: null });
 });
 
 test('a three-line outbox read is insufficient', () => {

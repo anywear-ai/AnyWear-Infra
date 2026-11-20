@@ -41,7 +41,7 @@ import { runOperation, validateOperationInputs } from '../../scripts/runtime-ope
 import { sha256 } from '../../scripts/lib/json-contract.mjs';
 import { failedGate } from '../../scripts/lib/bake-gate.mjs';
 import { SchemaBoundaryError, SCHEMA_READER_EXITS, runSchemaBoundaryGate } from '../../scripts/lib/schema-gate.mjs';
-import { taskDefinitionContentHash } from '../../lib/contracts.mjs';
+import { DEPLOYMENT_GATE_SIGNAL_NAMES, taskDefinitionContentHash } from '../../lib/contracts.mjs';
 import { gateBlock, IMAGE_DIGEST, SERVICE_SHA } from '../contracts/gate-fixture.mjs';
 
 // Credential-free tests for the `deploy-runtime` operation (#195, #194). The
@@ -839,6 +839,12 @@ test('a change-set execute failure fails the run before the bake', async () => {
   assert.equal(captured.baked.length, 0, 'the bake never runs after a failed execution');
 });
 
+// Issue #336: a failed bake writes one labelled line per failing signal, then
+// throws the count summary. This pattern is the line grammar, not a copy of any
+// one signal's text.
+const RECORD_LINE = /^[a-z0-9_]+ state=(breaching|insufficient) value=\S+ threshold=\S+ target=.+$/;
+const recordLines = (stdout) => stdout.split('\n').filter((line) => RECORD_LINE.test(line));
+
 test('a breaching or insufficient-data bake fails the run', async () => {
   const healthy = gateBlock();
   const breaching = { ...healthy, result: 'failed', signals: healthy.signals.map((signal, index) => (index === 3
@@ -848,15 +854,62 @@ test('a breaching or insufficient-data bake fails the run', async () => {
     logGroup: '/anywear/beta/worker', serviceSha: SERVICE_SHA, imageDigest: IMAGE_DIGEST });
   assert.equal(insufficient.result, 'failed');
   assert.ok(insufficient.signals.every((signal) => signal.state === 'insufficient'));
-  for (const [label, gate] of [['breaching', breaching], ['insufficient', insufficient]]) {
+  const cases = [
+    ['breaching', breaching, 1, 'The 300-second bake failed (1 of 6 signals): sqs_oldest_message_age'],
+    ['insufficient', insufficient, 6,
+      'The 300-second bake failed (6 of 6 signals): alb_5xx_rate, alb_p95_latency, ecs_running_not_desired, '
+        + 'sqs_oldest_message_age, sqs_dlq_depth, outbox_oldest_age'],
+  ];
+  for (const [label, gate, count, summary] of cases) {
     const { io, calls } = fakeIo({ changeSet: { Status: 'FAILED',
       StatusReason: "The submitted information didn't contain changes. Submit different information to create a change set." } });
-    await assert.rejects(deploy({ env: env(), release, io,
+    let thrown;
+    // Parse the printed record and the thrown summary: the failure message alone is
+    // no longer the whole evidence, and the exact count belongs to the record.
+    const captured = await captureStdout(() => assert.rejects(deploy({ env: env(), release, io,
       synthesize: async () => SYNTHESIZED, health: HEALTH, bake: async () => gate }),
-    /The 300-second bake failed/, label);
+    (error) => { thrown = error; return /The 300-second bake failed/.test(error.message); }, label));
+    const lines = recordLines(captured.stdout);
+    assert.equal(lines.length, count, label);
+    for (const line of lines) assert.match(line, RECORD_LINE, label);
+    assert.equal(thrown.message, summary, label);
+    if (label === 'breaching') {
+      assert.deepEqual(lines, ['sqs_oldest_message_age state=breaching '
+        + 'value=vto_seconds=0,auto_tagging_seconds=0 threshold=max_seconds=150 '
+        + 'target=vto=beta-anywear-vto,auto_tagging=beta-anywear-auto-tagging']);
+    } else {
+      assert.deepEqual(lines.map((line) => line.split(' ')[0]), [...DEPLOYMENT_GATE_SIGNAL_NAMES]);
+      for (const line of lines) {
+        assert.match(line, / value=null /, label);
+        assert.match(line, / reason=The bake could not be evaluated$/, label);
+      }
+    }
     // A converged no-op still never executes a change set before a failed bake.
     assert.equal(calls.some((call) => call.args?.includes('execute-change-set')), false, label);
   }
+});
+
+test('a passing bake writes its unchanged eight-key result line', async () => {
+  const { io } = fakeIo();
+  const captured = await captureStdout(() => deploy({ env: env(), release, io,
+    synthesize: async () => SYNTHESIZED, health: HEALTH, bake: BAKE }));
+  const objects = captured.stdout.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+  const bakeLines = objects.filter((line) => line.gate === 'beta-anywear-deployment-bake');
+  assert.equal(bakeLines.length, 1, 'the only beta-anywear-deployment-bake line is the passing result');
+  const line = bakeLines[0];
+  assert.deepEqual(Object.keys(line), ['gate', 'result', 'duration_seconds', 'probes_sent', 'service_sha',
+    'image_digest', 'minimum_client_version', 'template_sha256']);
+  assert.equal(line.gate, 'beta-anywear-deployment-bake');
+  assert.equal(line.result, 'passed');
+  assert.equal(line.duration_seconds, 300);
+  assert.equal(line.probes_sent, 20);
+  assert.equal(line.service_sha, SERVICE_SHA);
+  assert.equal(line.image_digest, IMAGE_DIGEST);
+  assert.equal(line.minimum_client_version, 0);
+  assert.equal(line.template_sha256, SYNTHESIZED.expected);
+  const nonEmpty = captured.stdout.split('\n').filter((text) => text !== '');
+  assert.equal(nonEmpty[nonEmpty.length - 1], JSON.stringify(line), 'the bake result is the last stdout line');
+  assert.equal(recordLines(captured.stdout).length, 0, 'a passing bake writes no failure record');
 });
 
 test('an absent Runtime stack is an Add-only create that executes, and stop of an absent stack is a no-op', async () => {
