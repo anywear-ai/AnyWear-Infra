@@ -1039,12 +1039,17 @@ describe('Platform safety controls', () => {
     const subject = (repository: string, id: number, stage: string): string =>
       `repo:anywear-ai@352675702/${repository}@${id}:environment:${stage}`;
     // The six dedicated Beta identities, each bound to its one repository id.
+    // Issue #344: `beta-client-publish-role`'s trust moved to the Infra environment
+    // with the publication; the role's grants are unchanged and the Client holds no
+    // AWS principal. The legacy Beta pipeline trust below keeps its Client subject:
+    // that fixture is the Service source's `beta-github-actions-pipeline-role`, which
+    // is outside this issue.
     const dedicated: Record<string, string> = {
       'beta-infra-deploy-role': subject('AnyWear-Infra', 1409047265, 'beta'),
       'beta-infra-runtime-role': subject('AnyWear-Infra', 1409047265, 'beta'),
       'beta-service-data-role': subject('AnyWear-Service', 1158460323, 'beta'),
       'beta-service-artifact-role': subject('AnyWear-Service', 1158460323, 'service-artifacts'),
-      'beta-client-publish-role': subject('AnyWear-Client', 1176104200, 'beta'),
+      'beta-client-publish-role': subject('AnyWear-Infra', 1409047265, 'beta'),
       'beta-e2e-qualification-role': subject('AnyWear-E2E', 1317091305, 'beta'),
     };
     // The three legacy pipeline identities keep their exact subject sets.
