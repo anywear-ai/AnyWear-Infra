@@ -14,6 +14,9 @@ import { describeStack, runtimeExists, runtimeStack, terminalStackStatuses } fro
 import { synthStage } from './recovery-contract.mjs';
 import { readRuntimeDeployValues, readRuntimeStageContract, runtimeBakeQueueUrls, runtimeEcsClusterName } from './runtime-stage-inputs.mjs';
 import { runBakeGate } from './bake-gate.mjs';
+// Issue #336: the failed bake's step-log record — one labelled line per failing
+// signal, then the count summary the step throws.
+import { bakeFailureLines, bakeFailureSummary } from './bake-failure.mjs';
 import {
   boundedServiceEvents, DEPLOYMENT_READ_SEQUENCE_LIMIT, DEPLOYMENT_SETTLE_MAX_READS,
   DEPLOYMENT_SETTLE_POLL_SECONDS, DEPLOYMENT_SETTLE_SECONDS, ecsServiceObservation, isRefusal,
@@ -789,9 +792,12 @@ export async function deployRuntime({ io, env, release,
     baselineDeploymentIds: ecs.primaryDeploymentIds,
     now: io.now, sleep: io.sleep, fetchImpl: fetch, runAws: await io.runtimeAwsRunner() });
   if (gate.result !== 'passed') {
-    const failures = gate.signals.filter((signal) => signal.state !== 'not-breaching')
-      .map((signal) => ({ signal: signal.name, state: signal.state, exceptions: signal.exceptions }));
-    throw new Error(`The 300-second bake failed: ${JSON.stringify(failures)}`);
+    // Issue #336: the failing signals are the step-log record — their names and
+    // states alone could not say what breached, by how much or where. Each line
+    // carries the signal, its state, the judged value, its threshold and the
+    // queue, metric or log it came from; the thrown summary keeps the count.
+    for (const line of bakeFailureLines(gate)) process.stdout.write(`${line}\n`);
+    throw new Error(bakeFailureSummary(gate));
   }
   // The bake's verdict is a run fact: the deploy step log carries it, and no
   // record member does.
