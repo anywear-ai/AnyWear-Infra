@@ -120,12 +120,18 @@ and must not be relabeled as an Infra-produced deployment.
   and rejects cross-family or out-of-scope inputs before credentials. Since #207
   every mutation runs `preflight` → `verify` → `deploy` in one run and has no
   `observe` or `record` job: `deploy` is the only job that holds an AWS
-  credential, and its first step proves the travelled release bytes against the
-  published digests before the first OIDC request. Since #226 a `deploy-runtime`
-  run adds `qualify-hook` after a successful `deploy`: no environment, no
-  `id-token`, no AWS permission, `contents: read` and one App installation token
-  narrowed to `AnyWear-E2E` with `actions: write` only, dispatching the E2E
-  qualification without waiting for it. `delivery_trigger` and `dispatched_by` are
+  credential; its first work after checkout and `npm ci` is a read-only
+  `AnyWear-E2E` admission check that waits while a `full` qualification run is
+  nonterminal and refuses at a 30-minute budget naming the holder, before any AWS
+  credential request, and the `deploy-operation` composite then proves the
+  travelled release bytes against the published digests before the first OIDC
+  request. Since #226 a `deploy-runtime` run adds `qualify-hold` after a
+  successful `deploy`: no environment, no `id-token`, no AWS permission,
+  `contents: read` and one App installation token narrowed to `AnyWear-E2E` with
+  `actions: write` only, dispatching the E2E qualification and — for
+  `delivery_trigger=deploy` — reading it to a terminal state under a 55-minute
+  ceiling, recording exactly one `qualified`/`unqualified` outcome.
+  `delivery_trigger` and `dispatched_by` are
   accepted only by `deploy-runtime` and proved in the same credential-free
   preflight: `deploy` requires the dispatching run's HTTPS URL, `manual` requires
   no URL, `release` is refused there because the release chain never deploys, and

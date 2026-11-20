@@ -150,13 +150,14 @@ jobs:
         id: verify
         with:
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-  # The only job that acquires AWS credentials. It is scheduled after `verify` and
-  # its first step proves the travelled release bytes against the published digests
-  # and strictly loads the schema asset or runtime policy; only then does
-  # `runtime-operation.mjs` request the restricted session. A failed or partial
-  # mutation leaves a non-success run with no gate step using `continue-on-error`,
-  # and a mutation that landed before a later refusal appends one summary line
-  # naming the stack it already changed.
+  # The only job that acquires AWS credentials. It is scheduled after `verify`; its
+  # first work is the #338 admission read — before any AWS credential request — and
+  # the `deploy-operation` composite then proves the travelled release bytes against
+  # the published digests and strictly loads the schema asset or runtime policy;
+  # only then does `runtime-operation.mjs` request the restricted session. A failed
+  # or partial mutation leaves a non-success run with no gate step using
+  # `continue-on-error`, and a mutation that landed before a later refusal appends one
+  # summary line naming the stack it already changed.
   deploy:
     needs: verify
     environment: beta
@@ -178,6 +179,35 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      # The repository-module rule: a job that runs `node scripts/...` installs the
+      # pinned dependencies first, so a module import cannot fail on a missing tree.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      # #338: the pre-mutation admission read. It is the first work after checkout and
+      # the dependency install, so it precedes the release-byte download and
+      # `./.github/actions/deploy-operation`, and a refusal happens before any AWS
+      # credential request. Exactly one read-only App installation token is minted,
+      # narrowed to AnyWear-E2E with `actions: read` and nothing else; `deploy` holds
+      # the other mutating credential and no part of it is shared with this read.
+      - name: Create the AnyWear-E2E qualification admission token
+        id: admission
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: 3346940
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: AnyWear-E2E
+          permission-actions: read
+      # A refusal is a normal failing step: the mutation does not run, and the
+      # operator either cancels the qualification run that holds the environment or
+      # waits and re-runs the deployment. A 30-minute budget bounds the wait.
+      - name: Refuse to mutate while a full qualification run is nonterminal
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.admission.outputs.token }}
+        run: node scripts/qualification-admission.mjs
       - name: Download the Service release bytes that travelled from verify
         if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime' || env.INFRA_OPERATION == 'migrate'
         uses: actions/download-artifact@v4
@@ -190,20 +220,35 @@ jobs:
           # root and `prove-release-bytes.mjs` would fail closed on every release.
           path: .service-artifacts/selected
       - uses: ./.github/actions/deploy-operation
-  # #226: the deploy chain's qualification hop. It runs only after `deploy`
+  # #226/#338: the deploy chain's qualification hold. It runs only after `deploy`
   # succeeded for `deploy-runtime`. It declares no `environment`, holds no
   # `id-token` and no AWS permission, and mints exactly one App installation token,
-  # narrowed to AnyWear-E2E with `actions: write` only. It dispatches the
-  # qualification and does not wait for it: a red E2E run is a red E2E run and
-  # leaves the deployment's success standing. The dispatch step is the last step in
-  # the job, so nothing runs after the dispatch.
-  qualify-hook:
+  # narrowed to AnyWear-E2E with `actions: write` only; that one token both
+  # dispatches the qualification and reads the dispatched run back.
+  #
+  # For `delivery_trigger=deploy` the job is the hold: after the dispatch step — which
+  # exposes the created run's id and URL as its step outputs — the final step observes
+  # that run to a terminal state, so this run, and with it `anywear-infra-runtime`,
+  # stays alive for the qualification instead of releasing the environment to the next
+  # merge. The observation's ceiling is 55 minutes measured from the moment the
+  # dispatched run was created, under the one-hour lifetime of the token minted
+  # immediately before the dispatch; the job's 65-minute timeout is longer, so the
+  # deadline fires first and the recorder still runs. The hold records exactly one
+  # outcome — `qualified` or `unqualified` — in the step summary and the job output,
+  # and a red qualification leaves the deployment's own success standing.
+  # `delivery_trigger=manual` dispatches a `smoke` and takes no hold. The dispatch step
+  # precedes the observation and the observation is the job's last step.
+  qualify-hold:
     needs: deploy
     if: success() && inputs.operation == 'deploy-runtime'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 65
     permissions:
       contents: read
+    # ADR 0033 §7's "job output": the one `qualified`/`unqualified` verdict this run
+    # records, readable from the workflow run without opening the step summary.
+    outputs:
+      outcome: ${{ steps.observe.outputs.outcome }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -226,9 +271,27 @@ jobs:
           permission-actions: write
       # Pre-dispatch dedupe, the dispatch with `return_run_details: true`, the
       # created run verified by id and the run-name poll used only when the response
-      # names no run id are one step: nothing may follow the dispatch.
+      # names no run id are one step. It exposes the created run's id and URL as its
+      # step outputs, which the observation below reads.
       - name: Dispatch the deploy chain's qualification and print its run
+        id: dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: node scripts/qualification-dispatch.mjs
+      # #338: the observation is the job's last step and runs even when an earlier
+      # step failed, so every hold that ran leaves exactly one outcome. With no run id
+      # and no run URL it records `unqualified` saying that no qualification run was
+      # created and exits zero (the job is already red from the step that failed); a
+      # dispatched run it cannot read is recorded `unqualified` and fails the job; a
+      # terminal non-success run, the 55-minute ceiling and `qualified` record their
+      # one outcome and exit zero. Its `outcome` is the job output above.
+      - name: Observe the dispatched qualification and record its one outcome
+        id: observe
+        if: always() && env.DELIVERY_TRIGGER == 'deploy'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          QUALIFICATION_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          QUALIFICATION_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+        run: node scripts/qualification-observe.mjs

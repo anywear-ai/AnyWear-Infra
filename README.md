@@ -147,7 +147,7 @@ says when to use each, including the hand stop and start of Beta.
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks, no mutation and no artifact |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (13 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` run adds `qualify-hook` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime`, and the hook dispatches the E2E qualification without waiting for it. The run's job and step conclusions are the verdict |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (13 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` run adds `qualify-hold` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime`, and the hold dispatches the E2E qualification and, for `delivery_trigger=deploy`, reads it to a terminal state under a 55-minute ceiling, recording exactly one `qualified`/`unqualified` outcome (`manual` dispatches a `smoke` and does not wait). The run's job and step conclusions are the verdict |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -196,13 +196,17 @@ publishes those bytes as `service-release-bytes-<run_id>-<run_attempt>` and
 publishes the digests as its `release_assets` output) → `deploy` (**the only job**
 that holds an AWS
 credential: `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN` and
-`INFRA_RUNTIME_ROLE_ARN`, scheduled after `verify`; its first step is
-`prove-release-bytes.mjs`, which re-derives the dispatch, requires the digest
-output to be exactly the operation's asset set, hashes each travelled file and
-strictly loads the schema asset or runtime policy **before** the step that
-requests the OIDC token) → `qualify-hook` (**a `deploy-runtime` run only, after
-`deploy` succeeded**: it declares no environment, holds no `id-token` and no AWS
-permission, keeps `contents: read` and mints exactly one App installation token
+`INFRA_RUNTIME_ROLE_ARN`, scheduled after `verify`; its first work is the read-only
+`AnyWear-E2E` admission check — the job mints one `actions: read` token, waits while
+any nonterminal `full` qualification run exists and refuses at a 30-minute budget
+naming the holder's run URL, after checkout and `npm ci` and before the release-byte
+download, so no AWS credential exists at a refusal; `prove-release-bytes.mjs`, the
+first step of the `deploy-operation` composite, then re-derives the dispatch,
+requires the digest output to be exactly the operation's asset set, hashes each
+travelled file and strictly loads the schema asset or runtime policy **before** the
+step that requests the OIDC token) → `qualify-hold` (**a `deploy-runtime` run only,
+after `deploy` succeeded**: it declares no environment, holds no `id-token` and no
+AWS permission, keeps `contents: read` and mints exactly one App installation token
 narrowed to `AnyWear-E2E` with `actions: write` only; it lists the target's
 `queued` and `in_progress` runs and dispatches nothing when this run's URL already
 appears in one of their names, otherwise it calls the REST dispatch endpoint with
@@ -211,12 +215,14 @@ run by the id the response names; only when that id is absent does it poll the
 active-run names for this run's URL a bounded number of attempts before failing.
 `delivery_trigger=deploy` sends E2E `full`
 with `trigger=deploy-qualify`, `expected_service_commit=<service_commit>` and
-`worker_slot_offset=0`; `manual` sends `smoke` with `trigger=deploy-smoke`, no
-expected commits and `worker_slot_offset=0`; both carry `dispatched_by=<this run
-URL>`, and neither waits). `runtime.yml` is `preflight` → `state`, where `state` is
+`worker_slot_offset=0`, then reads the dispatched run to a terminal state under a
+55-minute ceiling and records exactly one `qualified`/`unqualified` outcome;
+`manual` sends `smoke` with `trigger=deploy-smoke`, no expected commits and
+`worker_slot_offset=0` and does not wait; both carry `dispatched_by=<this run
+URL>`). `runtime.yml` is `preflight` → `state`, where `state` is
 the one credential job and runs with the stage switch closed.
 
-Neither entry has an observation or record job. A mutation that landed and then
+Neither entry has a separate observation or record job. A mutation that landed and then
 failed a later gate leaves a red run, and the failing step appends one
 `$GITHUB_STEP_SUMMARY` line naming the stack it already changed, so "changed but
 unqualified" is readable from the run itself; the [Beta

@@ -14,7 +14,7 @@ is the declaration a reviewer audits; the check is what keeps it true.
 
 ## Entry manifest
 
-One row per (entry, caller) pair, 19 rows over 15 entries. The file name is
+One row per (entry, caller) pair, 21 rows over 17 entries. The file name is
 relative to this directory.
 
 | Entry | Caller | Credential | Proof |
@@ -33,8 +33,10 @@ relative to this directory.
 | `migrate-beta-split.mjs` | `runbook:docs/runbooks/beta-split-migration.md` | operator | The one-time MOVE is validation-only unless `--apply`; each stage prints its plan, refuses a dirty preview and moves exactly one CloudFront distribution under a separate authorization. |
 | `production-preflight.mjs` | `workflow:.github/workflows/production.yml@promotion` | none | Resolves and verifies the Production release identity, stable release and Beta qualification record before any Production credential; no environment, no `id-token`. |
 | `promote-production.mjs` | `workflow:.github/workflows/production.yml@promotion` | none | The source blocker: fails before `npm ci`, the App token or any credential, so no activation variable can enable Production. |
-| `prove-release-bytes.mjs` | `action:.github/actions/deploy-operation/action.yml` | oidc-session | The deploy job's first step: re-derives the dispatch, requires the digest set to equal the operation's consumed set, hashes each travelled byte once and strictly loads the schema asset or policy before the step that requests an OIDC token. |
-| `qualification-dispatch.mjs` | `workflow:.github/workflows/mutate.yml@qualify-hook` | none | Dispatches the E2E qualification with exactly one App token narrowed to AnyWear-E2E `actions: write`; no environment, no OIDC, no AWS permission; the dispatch is the job's last step. |
+| `prove-release-bytes.mjs` | `action:.github/actions/deploy-operation/action.yml` | oidc-session | The `deploy-operation` composite's first step: re-derives the dispatch, requires the digest set to equal the operation's consumed set, hashes each travelled byte once and strictly loads the schema asset or policy before the step that requests an OIDC token. |
+| `qualification-admission.mjs` | `workflow:.github/workflows/mutate.yml@deploy` | oidc-session | The pre-mutation admission read: lists nonterminal `full` qualification runs across the full status set and waits while any exists, refusing at a 30-minute budget by naming the holder's run URL; a failed listing never opens the gate, and the read runs before the release-byte download and the mutating composite. |
+| `qualification-dispatch.mjs` | `workflow:.github/workflows/mutate.yml@qualify-hold` | none | Dispatches the E2E qualification with exactly one App token narrowed to AnyWear-E2E `actions: write`; no environment, no OIDC, no AWS permission. It exposes the created run's id and URL to the observation step that follows it, which is the job's last step. |
+| `qualification-observe.mjs` | `workflow:.github/workflows/mutate.yml@qualify-hold` | none | The hold's last step: reads the dispatched E2E run to a terminal state under a 55-minute ceiling and records exactly one `qualified`/`unqualified` line in the step summary and the step output, exiting non-zero only for an unread run. |
 | `runtime-operation.mjs` | `action:.github/actions/deploy-operation/action.yml` | oidc-session | The only program that reads the Actions OIDC token and calls `sts assume-role-with-web-identity` with an operation-specific session policy; it executes after the byte proof. |
 | `synth-matrix.mjs` | `workflow:.github/workflows/check.yml@source` | none | Compares dev/Beta/prod syntheses across the three identity phases with the preserved baselines; an unexpected resource/output/endpoint/topology change fails. |
 | `verify-operation-inputs.mjs` | `action:.github/actions/verify-operation/action.yml` | none | The only pre-credential reader of the Service release: read-only App token, exactly the consumed names, bytes published and `release_assets` written; no environment, no OIDC. |

@@ -200,10 +200,10 @@ identities with the release digest each was compared with, the bake result and t
 minimum Client version floor in its step log; there is no deployment record to
 write or read.
 `APP_PRIVATE_KEY` stays in protected secrets and is used only by the four
-operations that take a release and by the `deploy-runtime` qualification hook,
-which mints a write-scoped `AnyWear-E2E` token from the same App after the
-deployment succeeds. Publication ZIP/receipt/handshake ceremony stays
-retired.
+operations that take a release, by the `deploy` job's read-only `AnyWear-E2E`
+admission token, and by the `deploy-runtime` qualification hold, which mints a
+write-scoped `AnyWear-E2E` token from the same App after the deployment succeeds.
+Publication ZIP/receipt/handshake ceremony stays retired.
 
 The former `stack-sources/<reviewed-name>.json` map (four rows: `stack_name`,
 `region`, `source_repository`, `source_sha`) was deleted in #158 step C with the
@@ -259,7 +259,7 @@ gates.
 | --- | --- | --- |
 | [check.yml](../../.github/workflows/check.yml) | none (PR / push main) | Source checks only; no dispatch surface |
 | [runtime.yml](../../.github/workflows/runtime.yml) | `state` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed, publishes no artifact |
-| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers` | Chain: `preflight` (no credentials) → `verify` (read-only release token only; publishes the bytes as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as its `release_assets` output) → `deploy` (the only job holding an AWS credential; `prove-release-bytes` runs first) → `qualify-hook` (`deploy-runtime` only, after `deploy` succeeded: no environment, no `id-token`, no AWS permission, one write-scoped `AnyWear-E2E` App token, dispatches the E2E qualification and does not wait). No observation or record job. `delivery_trigger`/`dispatched_by` are accepted only by `deploy-runtime`; explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
+| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers` | Chain: `preflight` (no credentials) → `verify` (read-only release token only; publishes the bytes as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as its `release_assets` output) → `deploy` (the only job holding an AWS credential; the read-only `AnyWear-E2E` admission check runs after checkout and `npm ci`, before the release-byte download and the mutating composite, and refuses before any AWS credential request; `prove-release-bytes` then runs first inside that composite) → `qualify-hold` (`deploy-runtime` only, after `deploy` succeeded: no environment, no `id-token`, no AWS permission, one write-scoped `AnyWear-E2E` App token, which also reads the dispatched run back; for `delivery_trigger=deploy` it dispatches the E2E qualification and observes it to a terminal state under a 55-minute ceiling, recording exactly one `qualified`/`unqualified` outcome, while `manual` dispatches a `smoke` and ends). No separate observation or record job. `delivery_trigger`/`dispatched_by` are accepted only by `deploy-runtime`; explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
 | [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
 `deploy-platform`, `deploy-runtime`, `restore-release` and `migrate` require the
@@ -283,7 +283,7 @@ Runtime deploy sets the API origin parameter on the Platform stack before its
 stopped Platform template. Source delivery alone does not grant an environment
 writer or establish runtime acceptance.
 
-### The deploy chain receiver and its qualification hook (#226)
+### The deploy chain receiver and its qualification hold (#226, #338)
 
 A `deploy-runtime` run accepts two context inputs that no other operation takes:
 `delivery_trigger` (choice `deploy | release | manual`, default `manual`, required)
@@ -296,19 +296,27 @@ OIDC identity. The other twelve operations refuse a trigger that names an entry
 event. `release_version` does not exist: no tag reaches Infra, so the input has no
 producer and no tag-to-commit proof runs here.
 
-After a successful `deploy-runtime`, `qualify-hook` dispatches the E2E
+After a successful `deploy-runtime`, `qualify-hold` dispatches the E2E
 qualification. It declares no `environment`, holds no `id-token` and no AWS
 permission, keeps `contents: read`, and mints exactly one App installation token
-narrowed to `AnyWear-E2E` with `actions: write` only. It does not wait for the
-qualification: a red E2E run leaves the deployment's success standing and the
-commit unqualified, and the dispatch is the job's last step.
+narrowed to `AnyWear-E2E` with `actions: write` only; the same token reads the
+dispatched run back. For `delivery_trigger=deploy` the job is the hold: its final
+step reads the dispatched run to a terminal state, so this run — and with it
+`anywear-infra-runtime` — stays alive for the qualification instead of releasing
+the environment to the next merge, and it records exactly one `qualified` or
+`unqualified` outcome in the step summary and the job output. The observation's
+ceiling is 55 minutes from the moment the dispatched run was created, under the
+token's one-hour lifetime; the job's `timeout-minutes` is 65, so the deadline fires
+first and the recorder still runs. A red E2E run leaves the deployment's own success
+standing and the commit unqualified. A `delivery_trigger=manual` dispatch keeps the
+no-wait shape: a `smoke` seals no record, so it is dispatched and the job ends.
 
 | `delivery_trigger` | E2E `operation` | `trigger` | `expected_service_commit` | `worker_slot_offset` | `dispatched_by` |
 | --- | --- | --- | --- | --- | --- |
 | `deploy` | `full` | `deploy-qualify` | the deployed Service commit | `0` | this Infra run URL |
 | `manual` | `smoke` | `deploy-smoke` | — | `0` | this Infra run URL |
 
-Before dispatching, the hook lists the target's `queued` and `in_progress` runs
+Before dispatching, the job lists the target's `queued` and `in_progress` runs
 and skips when this run's URL already appears in one of their names, printing that
 run's URL. A failed listing dispatches anyway and says so: a duplicate
 qualification wastes a run, while a skipped legitimate one would hide a release.
@@ -316,11 +324,11 @@ That lookup runs before the dispatch because an existing run's name has settled 
 the time it appears. The dispatch calls the workflow-dispatch REST endpoint with
 `return_run_details: true` through `gh api` (`gh workflow run` does not expose the
 flag) and prints the created run's URL from the response. When the response carries
-a positive `workflow_run_id`, the hook reads
+a positive `workflow_run_id`, the job reads
 `repos/anywear-ai/AnyWear-E2E/actions/runs/<id>` once and accepts the run when the
 returned `id` equals that id; it does not read `display_title`, so a run whose
 title has not propagated yet is not a failure. Only when the response carries no
-run id does the hook poll the target's active runs for this run's URL in their
+run id does the job poll the target's active runs for this run's URL in their
 names — the E2E `run-name` still renders `dispatched_by` — a fixed small number of
 attempts with a short wait between them, and it fails only after those attempts are
 exhausted, naming the marker and the attempt count; that path still catches a
@@ -357,6 +365,48 @@ Service baseline matrices and cannot substitute for the live Original comparison
 | `state` | Print the Platform/Runtime status, Runtime existence and the tester allowlist count and hash to the step log and summary; no DB/schema/policy qualification and no admission state |
 | `admission-status` | Read the tester allowlist count and hash through the deployed Service lifecycle `status` command and compare them with one SSM read-back of `/anywear/beta/tester_allowlist`. Prints `{"operation":"admission-status","tester_count":N,"tester_allowlist_hash":"<64 hex>","matches":true}`; no mode field |
 | `add-testers`, `set-testers` | Replace the exact normalized tester list through the deployed Service lifecycle `set-testers` command. There is no admission or lifecycle precondition: the operation is one SSM write, then one read-back compares the persisted list's count and hash with the Service status line. Prints the same count/hash proof for the list it persisted |
+
+### Qualification outcomes and recovery (#338)
+
+A `deploy-runtime` run that took the hold ends with exactly one outcome line in its
+step summary and its `outcome` step output. `qualified` means the dispatched `full`
+run concluded `success`, which only the E2E `record` job produces after it has
+verified and attached `beta-qualification-<run_id>-<run_attempt>`. `unqualified`
+means the deployed tuple carries no qualification record, in any of three ways: the
+dispatched `full` run reached a terminal state as `failure`, `cancelled` or
+`timed_out`; it had not reached a terminal state when the 55-minute hold ceiling was
+reached (recorded as a `::warning`, never an error); or the dispatch step itself
+failed and created no run. The `deploy` job's own success stands in every case — a
+red qualification is a red E2E run, never a failed deployment — so do not redeploy
+to recover. Re-qualify the live tuple instead, with one `AnyWear-E2E`
+`beta-qualification.yml` dispatch carrying all five inputs:
+
+- `operation=full`
+- `trigger=release-qualify`
+- `expected_service_commit=<the live Service commit>`
+- `worker_slot_offset=0`
+- `dispatched_by=<URL of the deployment run whose summary recorded unqualified>`
+
+Those are the workflow's own inputs and its `release-qualify` validation accepts
+nothing else: the operation must be `full`, the expected Service commit is required,
+the worker slot offset must be `0`, and a non-manual trigger is the only place
+`dispatched_by` (an HTTPS run URL) is accepted. Only a `full` run seals a record
+when its `record` job attaches the artifact, so neither a `smoke` dispatch nor a
+re-run of the failed E2E run recovers the tuple.
+
+The escape from a stuck hold — or from a refused admission — is to cancel the
+**qualification** run, never the deployment run. Cancelling the qualification makes
+the observed run terminal, so the hold records `unqualified` and ends at once, and
+it empties the admission check immediately. Cancelling the deployment run releases
+`anywear-infra-runtime` but leaves the child qualification running against a tuple
+nobody is holding.
+
+The admission read gates every `mutate.yml` operation, not only `deploy-runtime`. It
+is the first work in the `deploy` job, after checkout and `npm ci` and before the
+release-byte download and the mutating composite, so a refusal is a normal failing
+step that names the qualification run holding the environment and happens before any
+AWS credential is requested. Wait for the named run, or cancel it and re-dispatch
+the deployment.
 
 ### Schema-boundary gate and applied evidence
 
@@ -880,15 +930,15 @@ never fails on a merely-settling service, and the `Beta state:` summary line sta
 each service's verdict and counts. A stopped Beta (no Runtime stack) prints no
 `ecs` block and reads no ECS.
 
-**A deploy that needed a retry still owes its qualification.** `qualify-hook` runs
+**A deploy that needed a retry still owes its qualification.** `qualify-hold` runs
 only after a successful `deploy`, so a `deploy-runtime` run that changed
 `AnyWearRuntimeStack-beta` and then failed dispatched no qualification: the
 Service commit still owes a `full`. The failed run's summary states that in one
 line, with both remedies:
 
 - **Re-run all jobs of the failed run.** This keeps `delivery_trigger=deploy`, so
-  the hook dispatches `full · deploy-qualify · <commit>`. Re-run **all** jobs, not
-  only the failed jobs: `qualify-hook` is `skipped` in the failed attempt, so a
+  the hold dispatches `full · deploy-qualify · <commit>`. Re-run **all** jobs, not
+  only the failed jobs: `qualify-hold` is `skipped` in the failed attempt, so a
   failed-jobs-only re-run never runs it and produces no record. The retry needs no
   change-set rename: the CDK deploy step deletes a previous attempt's same-named
   change set before creating its own, and because the release is already live the
