@@ -84,7 +84,7 @@ const withTemporary = async body => {
   const root = await mkdtemp(path.join(tmpdir(), 'anywear-client-publication-'));
   try {
     return await body({ root, directory: path.join(root, 'download'), tree: path.join(root, 'dist'),
-      record: path.join(root, 'publication', 'client-publication-record.json'),
+      record: path.join(root, 'publication', 'publication-record.json'),
       output: path.join(root, 'output'), summary: path.join(root, 'summary.md') });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -236,8 +236,8 @@ test('verify refuses a digest that is not the dispatched one, or a bundle from a
     // The bundle names a source commit that is not the run's head sha.
     await assert.rejects(verifyClientBundle({ env: envFor(), run: fakeGh().run,
       request: downloadResponse(zipBytes({ 'bundle-manifest.json': manifest,
-        'build-metadata.json': JSON.stringify({ component: 'AnyWear-Client', source_commit: 'e'.repeat(40),
-          interface: interfaceValues }) })), directory, tree, out: sink().out }),
+        'build-metadata.json': JSON.stringify({ schema_version: 3, component: 'AnyWear-Client',
+          source_commit: 'e'.repeat(40), interface: interfaceValues }) })), directory, tree, out: sink().out }),
     /was built from e{40}, not the publisher run's source c{40}/);
     // A failed download is a refusal.
     await assert.rejects(verifyClientBundle({ env: envFor(), run: fakeGh().run,
@@ -362,8 +362,9 @@ test('publish resolves the live interface, refuses nothing, and performs exactly
     await prepareTree(tree);
     const aws = fakeAws();
     const result = await publish({ aws, directory: tree, recordPath: record });
-    assert.equal(result.bundle_digest, digest);
+    assert.equal(result.publisher.bundle_manifest_sha256, digest);
     assert.equal(result.invalidation_id, invalidationId);
+    assert.equal(result.operation, 'publish-client');
     // Two assumptions of the one role: the read-only resolution and the narrowed
     // publication. The first carries only the three reads.
     const assumptions = aws.calls.filter(args => args[1] === 'assume-role-with-web-identity');
@@ -383,21 +384,32 @@ test('publish resolves the live interface, refuses nothing, and performs exactly
       assert.deepEqual(args.slice(-4), ['--region', 'ap-east-1', '--output', 'json']);
     }
     assert.ok(aws.calls.indexOf(aws.writes()[0]) > aws.calls.findIndex(args => args[1] === 'describe-stacks'));
-    // The one publication record.
+    // The one publication record, in the v2 contract: the Client run is named in
+    // `publisher`, and `run_id`/`run_attempt` are this Infra run.
     const written = JSON.parse(await readFile(record, 'utf8'));
+    assert.equal(path.basename(record), 'publication-record.json');
     assert.deepEqual(written, {
-      schema_version: 1,
+      schema_version: 2,
       component: 'AnyWear-Client',
       source_commit: clientSource,
-      client_run_id: Number(runId),
-      client_run_attempt: Number(attempt),
-      bundle_digest: digest,
+      publisher: {
+        repository: 'anywear-ai/AnyWear-Client',
+        run_id: Number(runId),
+        run_attempt: Number(attempt),
+        bundle_manifest_sha256: digest,
+        build_metadata_schema_version: 3,
+      },
+      run_id: 77,
+      run_attempt: 1,
+      operation: 'publish-client',
       bucket,
       distribution_id: distributionId,
       invalidation_id: invalidationId,
       interface: interfaceValues,
       published_at: '2026-11-20T00:00:00.000Z',
     });
+    assert.deepEqual(Object.keys(written), ['schema_version', 'component', 'source_commit', 'publisher', 'run_id',
+      'run_attempt', 'operation', 'bucket', 'distribution_id', 'invalidation_id', 'interface', 'published_at']);
   });
 });
 
@@ -462,11 +474,16 @@ test('publish refuses a session that is not the dedicated role, and an invalidat
 
 test('the resolution and the record builders are unit-checkable', async () => {
   const session = { Account: '650880818323', Arn: 'arn:aws:sts::650880818323:assumed-role/beta-client-publish-role/x' };
+  // The v2 record: `publisher` names the Client run, `run_id`/`run_attempt` name
+  // this Infra run, and `operation` names the write.
   assert.deepEqual(publicationRecord({ env: env(), digest, source: clientSource,
+    buildMetadataSchemaVersion: 3,
     live: { ...interfaceValues, bucket, distribution_id: distributionId }, invalidationId,
     publishedAt: '2026-11-20T00:00:00.000Z' }),
-  { schema_version: 1, component: 'AnyWear-Client', source_commit: clientSource,
-    client_run_id: Number(runId), client_run_attempt: Number(attempt), bundle_digest: digest, bucket,
+  { schema_version: 2, component: 'AnyWear-Client', source_commit: clientSource,
+    publisher: { repository: 'anywear-ai/AnyWear-Client', run_id: Number(runId), run_attempt: Number(attempt),
+      bundle_manifest_sha256: digest, build_metadata_schema_version: 3 },
+    run_id: 77, run_attempt: 1, operation: 'publish-client', bucket,
     distribution_id: distributionId, invalidation_id: invalidationId, interface: interfaceValues,
     published_at: '2026-11-20T00:00:00.000Z' });
   // A stack with no outputs, and a parameter that is absent, are named refusals.
@@ -492,17 +509,24 @@ test('the resolution and the record builders are unit-checkable', async () => {
   // The metadata reader is the one place the bundle's interface is parsed.
   await withTemporary(async ({ tree }) => {
     await prepareTree(tree);
-    assert.deepEqual(await readBuildMetadata(tree), { source_commit: clientSource, interface: interfaceValues });
+    assert.deepEqual(await readBuildMetadata(tree),
+      { source_commit: clientSource, build_metadata_schema_version: 3, interface: interfaceValues });
     assert.equal(await bundleManifestDigest(tree), digest);
     await assert.rejects(readBuildMetadata(path.join(tree, 'missing')), /ENOENT/);
     assert.equal(CLIENT_DIST_DIRECTORY.endsWith(path.join('.client-artifacts', 'dist')), true);
     // A malformed or partial build metadata is named.
-    await writeFile(path.join(tree, 'build-metadata.json'), JSON.stringify({ component: 'AnyWear-Other',
-      source_commit: clientSource, interface: interfaceValues }));
+    await writeFile(path.join(tree, 'build-metadata.json'), JSON.stringify({ schema_version: 3,
+      component: 'AnyWear-Other', source_commit: clientSource, interface: interfaceValues }));
     await assert.rejects(readBuildMetadata(tree), /names component AnyWear-Other/);
-    await writeFile(path.join(tree, 'build-metadata.json'), JSON.stringify({ component: 'AnyWear-Client',
-      source_commit: clientSource, interface: { api_base_url: interfaceValues.api_base_url } }));
+    await writeFile(path.join(tree, 'build-metadata.json'), JSON.stringify({ schema_version: 3,
+      component: 'AnyWear-Client', source_commit: clientSource,
+      interface: { api_base_url: interfaceValues.api_base_url } }));
     await assert.rejects(readBuildMetadata(tree), /carries no interface\.cognito_user_pool_id/);
+    // A build-metadata record with no usable schema version cannot be pinned in the
+    // publication record.
+    await writeFile(path.join(tree, 'build-metadata.json'), JSON.stringify({ component: 'AnyWear-Client',
+      source_commit: clientSource, interface: interfaceValues }));
+    await assert.rejects(readBuildMetadata(tree), /build-metadata schema version/);
     assert.equal(typeof extractZip, 'function');
   });
 });

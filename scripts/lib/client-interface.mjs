@@ -51,8 +51,10 @@ export const CLIENT_INTERFACE_PARAMETERS = Object.freeze({
 });
 /** The three values the built bundle records and the live interface must match. */
 export const CLIENT_INTERFACE_KEYS = Object.freeze(['api_base_url', 'cognito_user_pool_id', 'cognito_client_id']);
-/** The one file the publication record artifact carries. */
-export const CLIENT_PUBLICATION_RECORD_NAME = 'client-publication-record.json';
+/** The one file the publication record artifact carries: the `## Data Models` name. */
+export const CLIENT_PUBLICATION_RECORD_NAME = 'publication-record.json';
+/** The `publication-record.json` schema this operation writes (issue #344 v2). */
+export const CLIENT_PUBLICATION_RECORD_SCHEMA_VERSION = 2;
 // The verified tree `verify` publishes and `deploy` syncs. `s3 sync` writes the
 // contents of this directory to the bucket root, exactly as the Client's retired
 // publish job did, so `index.html` stays the distribution default root object.

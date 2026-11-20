@@ -12,7 +12,8 @@ import {
   CLIENT_ARTIFACT_NAME, CLIENT_BUNDLE_MANIFEST, CLIENT_BUILD_METADATA, CLIENT_BUCKET,
   CLIENT_DIST_DIRECTORY, CLIENT_DOWNLOAD_DIRECTORY, CLIENT_INTERFACE_KEYS, CLIENT_INTERFACE_OUTPUTS,
   CLIENT_INTERFACE_PARAMETERS, CLIENT_PLATFORM_STACK, CLIENT_PUBLICATION_RECORD_PATH,
-  CLIENT_PUBLICATION_ROLE_ARN, CLIENT_REF, CLIENT_REPOSITORY, CLIENT_REPOSITORY_ID,
+  CLIENT_PUBLICATION_RECORD_SCHEMA_VERSION, CLIENT_PUBLICATION_ROLE_ARN, CLIENT_REF, CLIENT_REPOSITORY,
+  CLIENT_REPOSITORY_ID,
   CLIENT_WORKFLOW_PATH, CLOUDFRONT_DISTRIBUTION_ID, CLOUDFRONT_INVALIDATION_ID,
   clientInvalidationArguments, clientSyncArguments,
 } from './lib/client-interface.mjs';
@@ -227,8 +228,8 @@ export async function bundleManifestDigest(directory = CLIENT_DIST_DIRECTORY) {
 
 /**
  * The bundle's own record of what it was built from and for: the Client source
- * commit and the three interface values. The three are what the live interface must
- * match before any byte is written.
+ * commit, the schema of that record and the three interface values. The three are
+ * what the live interface must match before any byte is written.
  */
 export async function readBuildMetadata(directory = CLIENT_DIST_DIRECTORY) {
   const metadata = parseJson(await readFile(path.join(directory, CLIENT_BUILD_METADATA)));
@@ -239,13 +240,14 @@ export async function readBuildMetadata(directory = CLIENT_DIST_DIRECTORY) {
     throw new Error(`The bundle build-metadata.json names component ${String(metadata.component)}, not AnyWear-Client`);
   }
   matches(metadata.source_commit, SHA, 'bundle source commit');
+  integer(metadata.schema_version, 'bundle build-metadata schema version');
   for (const key of CLIENT_INTERFACE_KEYS) {
     if (typeof metadata.interface?.[key] !== 'string' || metadata.interface[key] === '') {
       throw new Error(`The bundle build-metadata.json carries no interface.${key}`);
     }
   }
-  return { source_commit: metadata.source_commit, interface: Object.fromEntries(
-    CLIENT_INTERFACE_KEYS.map(key => [key, metadata.interface[key]])) };
+  return { source_commit: metadata.source_commit, build_metadata_schema_version: metadata.schema_version,
+    interface: Object.fromEntries(CLIENT_INTERFACE_KEYS.map(key => [key, metadata.interface[key]])) };
 }
 
 async function writeOutput(env, values) {
@@ -417,15 +419,30 @@ export function assertInterfaceMatches(built, live) {
   return true;
 }
 
-/** The one publication record this run writes, in the shape the Client published before #344. */
-export function publicationRecord({ env = process.env, digest, source, live, invalidationId, publishedAt }) {
+/**
+ * The one `publication-record.json` this run writes (issue #344 v2). It names the
+ * Client run whose bytes were copied, in `publisher`, and this Infra run in
+ * `run_id`/`run_attempt`; `operation` states which Infra operation performed the
+ * write. The Client run's identity is never promoted to this record's own run
+ * identity, so a reader can tell the copier from the copier's source.
+ */
+export function publicationRecord({ env = process.env, digest, source, buildMetadataSchemaVersion, live,
+  invalidationId, publishedAt }) {
   return {
-    schema_version: 1,
+    schema_version: CLIENT_PUBLICATION_RECORD_SCHEMA_VERSION,
     component: 'AnyWear-Client',
     source_commit: source,
-    client_run_id: Number(env.CLIENT_RUN_ID),
-    client_run_attempt: Number(env.CLIENT_RUN_ATTEMPT),
-    bundle_digest: digest,
+    publisher: {
+      repository: CLIENT_REPOSITORY,
+      run_id: Number(env.CLIENT_RUN_ID),
+      run_attempt: Number(env.CLIENT_RUN_ATTEMPT),
+      bundle_manifest_sha256: digest,
+      build_metadata_schema_version: buildMetadataSchemaVersion,
+    },
+    // The Infra run that performed the publication, not the Client run above.
+    run_id: Number(env.GITHUB_RUN_ID),
+    run_attempt: Number(env.GITHUB_RUN_ATTEMPT),
+    operation: env.INFRA_OPERATION,
     bucket: live.bucket,
     distribution_id: live.distribution_id,
     invalidation_id: invalidationId,
@@ -482,15 +499,18 @@ export async function publishClientBundle({ env = process.env, run = execute, re
   out.write(`Synced ${directory} to s3://${live.bucket} with --delete and invalidated`
     + ` ${live.distribution_id} for /* as ${invalidationId}.\n`);
 
-  const record = publicationRecord({ env, digest: observed, source: metadata.source_commit, live,
+  const record = publicationRecord({ env, digest: observed, source: metadata.source_commit,
+    buildMetadataSchemaVersion: metadata.build_metadata_schema_version, live,
     invalidationId, publishedAt: now().toISOString() });
-  exact(record, ['schema_version', 'component', 'source_commit', 'client_run_id', 'client_run_attempt',
-    'bundle_digest', 'bucket', 'distribution_id', 'invalidation_id', 'interface', 'published_at'],
-  'publication record');
+  exact(record, ['schema_version', 'component', 'source_commit', 'publisher', 'run_id', 'run_attempt', 'operation',
+    'bucket', 'distribution_id', 'invalidation_id', 'interface', 'published_at'], 'publication record');
+  exact(record.publisher, ['repository', 'run_id', 'run_attempt', 'bundle_manifest_sha256',
+    'build_metadata_schema_version'], 'publication record publisher');
   await mkdir(path.dirname(recordPath), { recursive: true });
   await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
   out.write(`Wrote ${recordPath} for Client source ${record.source_commit}`
-    + ` (run ${record.client_run_id}/${record.client_run_attempt}, digest ${record.bundle_digest}).\n`);
+    + ` (publisher run ${record.publisher.run_id}/${record.publisher.run_attempt},`
+    + ` digest ${record.publisher.bundle_manifest_sha256}; Infra run ${record.run_id}/${record.run_attempt}).\n`);
   return record;
 }
 

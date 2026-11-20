@@ -325,7 +325,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: client-publication-record-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .client-publication/client-publication-record.json
+          path: .client-publication/publication-record.json
           retention-days: 90
           if-no-files-found: error
       - uses: ./.github/actions/deploy-operation

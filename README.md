@@ -204,7 +204,10 @@ parameters, refuses a mismatch before the first write, then assumes the role aga
 under a session narrowed to that bucket and distribution and performs exactly
 `aws s3 sync .client-artifacts/dist s3://<bucket> --delete` and one
 `cloudfront create-invalidation --paths '/*'`, and finally writes
-`client-publication-record.json` (retained 90 days). The role ARN is a reviewed
+`publication-record.json` (schema v2: the Client run in `publisher`, this Infra
+run and `operation: publish-client` beside the bucket, distribution, invalidation
+id and the three interface values; retained 90 days as
+`client-publication-record-<run_id>-<run_attempt>`). The role ARN is a reviewed
 workflow literal, not a repository variable, and the role's grants are unchanged —
 only its trust moved to the Infra environment.
 

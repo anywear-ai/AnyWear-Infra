@@ -466,7 +466,8 @@ test('a protected mutating run publishes only its transport bytes and the Client
   const recordUpload = mutate.jobs.deploy.steps
     .find(step => String(step.uses ?? '').startsWith('actions/upload-artifact'));
   assert.equal(recordUpload.with.name, 'client-publication-record-${{ github.run_id }}-${{ github.run_attempt }}');
-  assert.equal(recordUpload.with.path, '.client-publication/client-publication-record.json');
+  // Issue #344's `## Data Models` names the file `publication-record.json`.
+  assert.equal(recordUpload.with.path, '.client-publication/publication-record.json');
   assert.equal(recordUpload.with['retention-days'], 90);
   assert.equal(recordUpload.if, "env.INFRA_OPERATION == 'publish-client'");
   // The mutating composite runs for every operation except the one that consumes no
