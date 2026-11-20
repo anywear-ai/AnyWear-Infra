@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { dispatchArguments, dispatchQualification, FALLBACK_WAIT_MS, findDispatchedRun,
@@ -34,10 +34,11 @@ const runName = (payload = { operation: 'full', trigger: 'deploy-qualify' }) =>
 // A fake `gh` that answers the active-run listings, the dispatch POST and the
 // post-dispatch run read. Every call is recorded, so the tests prove what was
 // requested. `dispatchResponse` replaces the dispatch body — omit `workflow_run_id`
-// to exercise the fallback; `listSnapshots` answers each successive active-run
-// lookup with one snapshot, so the pre-dispatch lookup is the first.
+// to exercise the fallback; `dispatchError` makes the dispatch POST itself throw;
+// `listSnapshots` answers each successive active-run lookup with one snapshot, so
+// the pre-dispatch lookup is the first.
 function fakeGh({ queued = [], in_progress = [], failingStatus, listSnapshots,
-  dispatchResponse, created = { id: 4242, html_url: createdUrl } } = {}) {
+  dispatchResponse, dispatchError, created = { id: 4242, html_url: createdUrl } } = {}) {
   const calls = [];
   const output = [];
   let lookup;
@@ -47,6 +48,7 @@ function fakeGh({ queued = [], in_progress = [], failingStatus, listSnapshots,
     calls.push([...args]);
     const path = args[1] === '--method' ? args[3] : args[1];
     if (args[1] === '--method') {
+      if (dispatchError) throw dispatchError;
       const body = dispatchResponse ?? { workflow_run_id: 4242, run_url: `https://api.github.com${path}`, html_url: createdUrl };
       return { stdout: JSON.stringify(body), stderr: '' };
     }
@@ -280,6 +282,30 @@ test('the dispatch exposes the created run URL and id through GITHUB_OUTPUT', as
     await assert.rejects(dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out }),
       /was not returned by id/);
     assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
+  });
+});
+
+// Issue #338's acceptance: "all four outcomes: ... a thrown error when the dispatch
+// itself fails". The design's edge-case row is "the dispatch fails → records
+// `unqualified` naming the dispatch failure as the reason no qualification exists".
+// The POST throws, so nothing after it may run — no read-back of a created run and
+// no fallback listing — and `$GITHUB_OUTPUT` stays a real but empty file, which is
+// exactly the condition `scripts/qualification-observe.mjs` maps to `unqualified`
+// naming the dispatch failure.
+test('a failed dispatch throws before any run read and publishes no run', async () => {
+  await withOutputFiles(async ({ output }) => {
+    await writeFile(output, '');
+    const gh = fakeGh({ dispatchError: new Error('gh: HTTP 422 Unprocessable Entity') });
+    await assert.rejects(
+      dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out }),
+      /gh: HTTP 422 Unprocessable Entity/);
+    const postIndex = gh.calls.findIndex(args => args.includes('--method'));
+    assert.ok(postIndex > -1, 'the dispatch POST is the failing call');
+    assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'the dispatch is attempted once');
+    assert.deepEqual(gh.calls.slice(postIndex + 1), [],
+      'nothing follows the failed dispatch: no created-run read and no fallback listing');
+    assert.equal(await readFile(output, 'utf8'), '',
+      'no run id or URL is published, so the recorder records the dispatch failure');
   });
 });
 
