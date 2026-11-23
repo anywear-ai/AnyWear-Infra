@@ -157,14 +157,91 @@ async function pollDispatchedRun({ run, ghEnv, key, attempts, wait }) {
 }
 
 /**
+ * The by-id read of the run the dispatch created (#342). GitHub can answer `404`
+ * for a run it has already created, and it can answer with a run it has already
+ * cancelled when a `queue: max` overflow drops the dispatch: the same id carries
+ * two different meanings, so the read retries only the `404`, five times in total
+ * against the same id with a doubling wait between reads (15 seconds), and it
+ * rejects a run already terminal with a conclusion other than `success`, which no
+ * retry could make readable. The dispatch itself is never repeated.
+ */
+export const RUN_READ_ATTEMPTS = 5;
+export const RUN_READ_WAIT_MS = 1_000;
+
+/** The wait after read `k` is `runReadWaits()[k - 1]`; no wait trails the last read. */
+export function runReadWaits({ attempts = RUN_READ_ATTEMPTS, baseMs = RUN_READ_WAIT_MS } = {}) {
+  return Object.freeze(Array.from({ length: Math.max(attempts - 1, 0) }, (_, index) => baseMs * 2 ** index));
+}
+
+/**
+ * A read that answered `Not Found`. `promisify(execFile)` rejects with the `gh`
+ * body on `stdout`, and the status can arrive in any of the three fields, so all
+ * of them are read.
+ */
+const isNotFound = error => /(?:\b404\b|Not Found)/i.test(
+  `${error?.message ?? ''} ${error?.stderr ?? ''} ${error?.stdout ?? ''}`);
+
+/**
+ * Read the dispatched run by its own id, retrying only a `404`. A run the API has
+ * not made readable yet answers `404` and becomes readable moments later, so the
+ * same id is read again after the scheduled wait; any other read failure is
+ * terminal and names the run. A returned body must carry the dispatched id, and
+ * the run must not already be terminal with a conclusion other than `success`.
+ * The body is parsed in its own terminal wrapper, because a malformed read is not
+ * a transient `404` and must not consume a retry.
+ */
+async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, out }) {
+  const waits = runReadWaits({ attempts });
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let response;
+    try {
+      response = await run('gh', ['api', `repos/${E2E_REPOSITORY}/actions/runs/${id}`], { env: ghEnv, ...GH_OPTIONS });
+    } catch (error) {
+      if (!isNotFound(error)) {
+        throw new Error(`The dispatched qualification run ${runUrl} could not be read: ${error?.message ?? error}`);
+      }
+      if (attempt >= attempts) break;
+      const scheduled = waits[attempt - 1];
+      out.write(`The by-id read of the dispatched qualification run ${runUrl} answered 404`
+        + ` on attempt ${attempt}/${attempts}; retrying in ${scheduled} ms.\n`);
+      await wait(scheduled);
+      continue;
+    }
+    let body;
+    try {
+      body = parseJson(response.stdout);
+    } catch (error) {
+      throw new Error(`The dispatched qualification run ${runUrl} could not be read: ${error?.message ?? error}`);
+    }
+    if (body?.id !== id) {
+      throw new Error(`The dispatched qualification run ${id} was not returned by id: the run API answered ${String(body?.id)}`);
+    }
+    if (body?.status === 'completed' && body.conclusion !== 'success') {
+      const conclusion = typeof body.conclusion === 'string' && body.conclusion !== '' ? body.conclusion : 'unknown';
+      throw new Error(`The dispatched qualification run ${runUrl} had already completed with conclusion ${conclusion};`
+        + ' the dispatch was accepted once and not repeated, so the hand-off cannot report success');
+    }
+    out.write(`The dispatched qualification run ${runUrl} was readable on attempt ${attempt}/${attempts}.\n`);
+    return body;
+  }
+  // The schedule is the only source of the bound this message reports.
+  const totalMs = waits.reduce((total, milliseconds) => total + milliseconds, 0);
+  throw new Error(`The dispatched qualification run ${runUrl} was not readable after ${attempts} reads over ${totalMs} ms,`
+    + ' every read answering 404; the dispatch was accepted once and not repeated,'
+    + ' so the run was dropped or not accepted');
+}
+
+/**
  * Skip the dispatch when this run's URL is already in an active run's name; list
  * failures dispatch anyway and say so, because a duplicate qualification wastes a
  * run while a skipped legitimate one would hide a release. After dispatching, when
- * the response names the created run, read that run once by id and accept it when
- * the API returns the same id — never the title, which can lag the run itself. When
- * the response names no run id, poll the active-run list for this run's URL a
- * bounded number of attempts and fail only after they are exhausted, which still
- * catches a run dropped at birth by a full `queue: max` queue.
+ * the response names the created run, read that run by id — retrying only a `404`
+ * and rejecting a run already terminal with a non-`success` conclusion (#342) —
+ * and accept it when the API returns the same id, never the title, which can lag
+ * the run itself. When the response names no run id, poll the active-run list for
+ * this run's URL a bounded number of attempts and fail only after they are
+ * exhausted, which still catches a run dropped at birth by a full `queue: max`
+ * queue.
  *
  * #338: the created run's id and URL are also appended to the workflow step's
  * `GITHUB_OUTPUT`, so the job's final step can observe exactly the run this
@@ -174,7 +251,7 @@ async function pollDispatchedRun({ run, ghEnv, key, attempts, wait }) {
  * from its own operation menu; only the payload differs.
  */
 export async function dispatchRun({ env = process.env, run = execute, out = process.stdout, payload,
-  attempts = FALLBACK_ATTEMPTS, wait = sleep } = {}) {
+  attempts = FALLBACK_ATTEMPTS, readAttempts = RUN_READ_ATTEMPTS, wait = sleep } = {}) {
   if (typeof env.GH_TOKEN !== 'string' || !env.GH_TOKEN) {
     throw new Error('A write-scoped AnyWear-E2E App token is required to dispatch the qualification');
   }
@@ -204,13 +281,11 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
     // from the id; a response's API `run_url` is only a last resort for display.
     const observedUrl = firstText(details?.html_url, qualificationRunUrl(id));
     await publishDispatchedRun(env, observedUrl, id);
-    // The dispatch response names the run it created, so verify that run by id once.
-    // A run whose `display_title` has not propagated yet is still the same run.
-    const created = parseJson((await run('gh', ['api', `repos/${E2E_REPOSITORY}/actions/runs/${id}`],
-      { env: ghEnv, ...GH_OPTIONS })).stdout);
-    if (created?.id !== id) {
-      throw new Error(`The dispatched qualification run ${id} was not returned by id: the run API answered ${String(created?.id)}`);
-    }
+    // The dispatch response names the run it created, so verify that run by id. A
+    // `404` before the run is readable is retried against the same id, a run already
+    // terminal with a non-`success` conclusion is rejected, and the dispatch is
+    // never sent twice (#342).
+    const created = await readDispatchedRunById({ run, ghEnv, id, runUrl: observedUrl, attempts: readAttempts, wait, out });
     return { dispatched: true, payload, run_url: firstText(created.html_url, observedUrl), run_id: id };
   }
   out.write(`The dispatch response carried no run id; looking for ${key} in the target's active runs.\n`);

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { dispatchArguments, dispatchQualification, FALLBACK_WAIT_MS, findDispatchedRun,
   HOLD_CEILING_MS, observeQualification, OBSERVATION_INTERVAL_MS, qualificationOutcomeLine,
-  qualificationPayload, recordQualificationOutcome } from '../../scripts/qualification-dispatch.mjs';
+  qualificationPayload, recordQualificationOutcome, RUN_READ_ATTEMPTS, runReadWaits,
+  RUN_READ_WAIT_MS } from '../../scripts/qualification-dispatch.mjs';
 
 // #226: the deploy chain's qualification hop. The payloads are the two rows of the
 // design's E2E dispatch table; the pre-dispatch dedupe and the post-dispatch
@@ -37,13 +38,16 @@ const runName = (payload = { operation: 'full', trigger: 'deploy-qualify' }) =>
 // requested. `dispatchResponse` replaces the dispatch body — omit `workflow_run_id`
 // to exercise the fallback; `dispatchError` makes the dispatch POST itself throw;
 // `listSnapshots` answers each successive active-run lookup with one snapshot, so
-// the pre-dispatch lookup is the first.
+// the pre-dispatch lookup is the first; `reads` answers the by-id read from a result
+// sequence instead, whose entries are run bodies or `Error`s that are thrown, and
+// whose last entry repeats.
 function fakeGh({ queued = [], in_progress = [], failingStatus, listSnapshots,
-  dispatchResponse, dispatchError, created = { id: 4242, html_url: createdUrl } } = {}) {
+  dispatchResponse, dispatchError, created = { id: 4242, html_url: createdUrl }, reads } = {}) {
   const calls = [];
   const output = [];
   let lookup;
   let lookups = 0;
+  let readIndex = 0;
   const run = async (command, args) => {
     assert.equal(command, 'gh');
     calls.push([...args]);
@@ -61,7 +65,14 @@ function fakeGh({ queued = [], in_progress = [], failingStatus, listSnapshots,
       return { stdout: JSON.stringify({ workflow_runs: runs ?? [] }), stderr: '' };
     }
     const createdRun = /actions\/runs\/(\d+)$/.exec(path);
-    if (createdRun) return { stdout: JSON.stringify(created), stderr: '' };
+    if (createdRun) {
+      if (reads) {
+        const entry = reads[Math.min(readIndex++, reads.length - 1)];
+        if (entry instanceof Error) throw entry;
+        return { stdout: JSON.stringify(entry), stderr: '' };
+      }
+      return { stdout: JSON.stringify(created), stderr: '' };
+    }
     throw new Error(`unexpected gh api ${path}`);
   };
   return { calls, run, out: { write: chunk => output.push(chunk) }, output: () => output.join('') };
@@ -308,6 +319,87 @@ test('the dispatch exposes the created run URL and id through GITHUB_OUTPUT', as
       /was not returned by id/);
     assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
   });
+});
+
+// #342: the by-id read of the run the dispatch created. GitHub answers `404` for a
+// run it has already created, and after a `queue: max` overflow it answers with a
+// run it has already cancelled under the same id. So only the `404` is retried,
+// against the same id, and a terminal non-success run fails the hand-off; the
+// dispatch itself is sent exactly once on every path.
+const notFoundError = () => {
+  const error = new Error('Command failed: gh api repos/anywear-ai/AnyWear-E2E/actions/runs/4242');
+  error.stdout = '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/actions/workflow-runs","status":"404"}';
+  return error;
+};
+const rejectionOf = promise => promise.then(() => undefined, error => error);
+const byIdReads = gh => gh.calls.filter(args => args[1] === 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242');
+const dispatchPosts = gh => gh.calls.filter(args => args.includes('--method'));
+
+test('a first read that answers 404 is retried against the same id and succeeds', async () => {
+  await withOutputFiles(async ({ output }) => {
+    const gh = fakeGh({ reads: [notFoundError(), { id: 4242, html_url: createdUrl }] });
+    const waits = [];
+    const result = await dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out,
+      wait: async milliseconds => waits.push(milliseconds) });
+    assert.equal(result.dispatched, true);
+    assert.equal(result.run_id, 4242);
+    assert.equal(result.run_url, createdUrl);
+    assert.equal(byIdReads(gh).length, 2, 'the retry reads the same id, and only that id');
+    assert.equal(dispatchPosts(gh).length, 1, 'the dispatch is not sent a second time');
+    assert.deepEqual(waits, [1000], 'the wait after the first read is the first entry of the schedule');
+    assert.match(gh.output(), /was readable on attempt 2\/5/);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
+  });
+});
+
+test('every read answering 404 fails after the bounded attempts, dispatching once', async () => {
+  const gh = fakeGh({ reads: [notFoundError()] });
+  const waits = [];
+  const failure = await rejectionOf(dispatchQualification({ env: dispatchEnv(), run: gh.run, out: gh.out,
+    wait: async milliseconds => waits.push(milliseconds) }));
+  assert.ok(failure instanceof Error, 'the exhausted reads fail the dispatch');
+  assert.ok(failure.message.includes(createdUrl), 'the failure names the run');
+  assert.match(failure.message, /was not readable after 5 reads over 15000 ms, every read answering 404/);
+  assert.equal(byIdReads(gh).length, 5, 'five reads and no more, all of the same id');
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000], 'the waits are the schedule, in order');
+  assert.equal(dispatchPosts(gh).length, 1, 'the dispatch is accepted once and never repeated');
+  const retrying = gh.output().split('\n').filter(line => line.includes('retrying'));
+  assert.equal(retrying.length, 4, 'a retry is logged after each of the first four reads, never after the fifth');
+  assert.ok(retrying[3].includes('on attempt 4/5'));
+  assert.equal(retrying.some(line => line.includes('on attempt 5/5')), false, 'the fifth read logs no retry');
+  // The schedule is pinned as literals rather than through its own exports' semantics.
+  assert.equal(RUN_READ_ATTEMPTS, 5);
+  assert.equal(RUN_READ_WAIT_MS, 1000);
+  assert.deepEqual(runReadWaits(), [1000, 2000, 4000, 8000]);
+  assert.equal(runReadWaits().length, 4);
+  assert.equal(runReadWaits().reduce((total, value) => total + value, 0), 15000);
+  assert.ok(runReadWaits().every(milliseconds => milliseconds <= 8000), 'no wait exceeds 8000 ms');
+});
+
+test('a non-404 read failure is not retried', async () => {
+  const gateway = new Error('gh: HTTP 502 Bad Gateway');
+  gateway.stderr = 'gh: HTTP 502 Bad Gateway\n';
+  const gh = fakeGh({ reads: [gateway] });
+  const waits = [];
+  const failure = await rejectionOf(dispatchQualification({ env: dispatchEnv(), run: gh.run, out: gh.out,
+    wait: async milliseconds => waits.push(milliseconds) }));
+  assert.ok(failure instanceof Error, 'the read failure fails the dispatch');
+  assert.ok(failure.message.includes(createdUrl), 'the failure names the run');
+  assert.ok(failure.message.includes('HTTP 502'), 'the underlying status is carried verbatim');
+  assert.equal(byIdReads(gh).length, 1, 'a non-404 read failure is terminal');
+  assert.equal(dispatchPosts(gh).length, 1);
+  assert.equal(gh.output().includes('retrying'), false, 'a terminal read failure schedules no retry');
+  assert.deepEqual(waits, []);
+});
+
+test('a run already terminal with a non-success conclusion fails the hand-off without a retry', async () => {
+  const gh = fakeGh({ reads: [{ id: 4242, status: 'completed', conclusion: 'cancelled' }] });
+  const failure = await rejectionOf(dispatchQualification({ env: dispatchEnv(), run: gh.run, out: gh.out }));
+  assert.ok(failure instanceof Error, 'a run cancelled under the same id fails the hand-off');
+  assert.ok(failure.message.includes(createdUrl), 'the failure names the run');
+  assert.match(failure.message, /had already completed with conclusion cancelled/);
+  assert.equal(byIdReads(gh).length, 1, 'a terminal run is not read again');
+  assert.equal(dispatchPosts(gh).length, 1, 'the dispatch is never repeated');
 });
 
 // Issue #338's acceptance: "all four outcomes: ... a thrown error when the dispatch
