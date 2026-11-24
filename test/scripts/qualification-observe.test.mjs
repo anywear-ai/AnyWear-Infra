@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { HOLD_CEILING_MS, RUN_READ_ATTEMPTS, runReadWaits } from '../../scripts/qualification-dispatch.mjs';
+import { HOLD_CEILING_MS, OBSERVATION_INTERVAL_MS, observeQualification, RUN_READ_ATTEMPTS,
+  runReadWaits } from '../../scripts/qualification-dispatch.mjs';
 import { runQualificationObservation } from '../../scripts/qualification-observe.mjs';
 
 // #338/#354: the hold recorder's exit codes and its three-value vocabulary. Nothing
@@ -211,6 +212,19 @@ test('a terminal non-success run whose job list cannot be read still records its
   assert.match(result.log, /^::warning::Qualification unqualified:/m, 'the unread job list is a warning');
 });
 
+test('a malformed job-list body after a non-success conclusion keeps the conclusion', async () => {
+  const result = await observeEntry({
+    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    reads: [runState('completed', 'failure')],
+    jobs: { runs: [] },
+  });
+  assert.equal(result.code, 0, 'a malformed job list is not a verdict and never fails the observation');
+  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.summary, `Qualification unqualified: ${createdUrl} concluded failure;`
+    + ' failed job(s): none named (the job list could not be read: the response is not a job list).\n');
+  assert.match(result.log, /^::warning::Qualification unqualified:/m);
+});
+
 test('a terminal non-success run records unqualified and exits zero', async () => {
   const result = await observeEntry({
     env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
@@ -267,7 +281,8 @@ test('an authentication failure inside the final interval records unobserved', a
 test('the hold deadline is created_at plus the ceiling even when the opening read is retried', async () => {
   // The run was created 54 minutes and 30 seconds before the observation starts, so
   // only 30 seconds remain: the opening 404 does not move the bound.
-  const createdAt = new Date(clockStart - (HOLD_CEILING_MS - 30_000)).toISOString();
+  const createdAtMs = clockStart - (HOLD_CEILING_MS - 30_000);
+  const createdAt = new Date(createdAtMs).toISOString();
   const result = await observeEntry({
     env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
     reads: [notFoundError(), runState('in_progress', null, { created_at: createdAt })],
@@ -275,8 +290,71 @@ test('the hold deadline is created_at plus the ceiling even when the opening rea
   assert.equal(result.code, 0, 'the ceiling is the hold\'s own bound');
   assert.equal(result.output, 'outcome=unqualified\n');
   assert.equal(result.summary.includes('hold ceiling was reached'), true);
+  // The logged ceiling is exactly created_at + 55 minutes; the observation started
+  // 30 seconds after that instant's minute, so now() + 55 minutes would differ.
+  const ceilingLine = `Observing qualification ${createdUrl}: interval ${OBSERVATION_INTERVAL_MS} ms,`
+    + ` hold ceiling ${new Date(createdAtMs + HOLD_CEILING_MS).toISOString()}.`;
+  assert.equal(result.log.split('\n').filter(line => line.startsWith('Observing qualification')).length, 1,
+    'exactly one observation line establishes the ceiling');
+  assert.ok(result.log.split('\n').includes(ceilingLine),
+    `the logged ceiling is created_at + 55 minutes: ${ceilingLine}`);
+  assert.equal(ceilingLine.includes(new Date(clockStart + HOLD_CEILING_MS).toISOString()), false,
+    'the ceiling is not now() + 55 minutes');
   // The retried opening read consumed 1000 ms of the remaining 30 seconds; the
   // observation then waits exactly the rest, never past created_at + 55 minutes.
   assert.deepEqual(result.waits, [1000, 29_000]);
   assert.equal(result.waits.reduce((total, value) => total + value, 0), 30_000);
+});
+
+test('a fifth-attempt opening read still bounds the hold at created_at plus the ceiling', async () => {
+  // The run was created 54 minutes before the observation starts, so 60 seconds
+  // remain; the four 404 retries consume the first 15 of them, and the bound is
+  // still the run's own created_at + 55 minutes.
+  const createdAtMs = clockStart - (HOLD_CEILING_MS - 60_000);
+  const createdAt = new Date(createdAtMs).toISOString();
+  const result = await observeEntry({
+    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    reads: [notFoundError(), notFoundError(), notFoundError(), notFoundError(),
+      runState('in_progress', null, { created_at: createdAt })],
+  });
+  assert.equal(result.code, 0, 'the ceiling keeps the outcome unqualified, not qualified');
+  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.calls.length, 6, 'five opening reads, then one interval read');
+  const ceilingLine = `Observing qualification ${createdUrl}: interval ${OBSERVATION_INTERVAL_MS} ms,`
+    + ` hold ceiling ${new Date(createdAtMs + HOLD_CEILING_MS).toISOString()}.`;
+  assert.ok(result.log.split('\n').includes(ceilingLine),
+    `the fifth-attempt opening read still logs created_at + 55 minutes: ${ceilingLine}`);
+  assert.equal(ceilingLine.includes(new Date(clockStart + 15_000 + HOLD_CEILING_MS).toISOString()), false,
+    'the retry cannot move the ceiling to now() + 55 minutes');
+  // The retries take 15 seconds and the interval waits take the remaining 45; the
+  // total wait never exceeds the time left to the fixed instant.
+  assert.deepEqual(result.waits, [1000, 2000, 4000, 8000, 30_000, 15_000]);
+  const waited = result.waits.reduce((total, value) => total + value, 0);
+  assert.ok(waited <= 60_000, 'the total wait never exceeds the remaining time to the ceiling');
+  assert.equal(waited, 60_000);
+});
+
+test('a first read answering 404 is retried and the terminal failure is still recorded', async () => {
+  // AC 16's sequence: the retry never changes the conclusion the second read names.
+  const jobs = { jobs: [{ name: 'full', conclusion: 'failure' }, { name: 'record', conclusion: 'failure' }] };
+  const gh = fakeGh({ reads: [notFoundError(), runState('completed', 'failure')], jobs });
+  const clock = observationClock();
+  const result = await observeQualification({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
+    wait: clock.wait, now: clock.now, out: { write: () => undefined }, runUrl: createdUrl });
+  assert.equal(result.outcome, 'unqualified');
+  assert.equal(result.conclusion, 'failure');
+  assert.deepEqual(result.failed_jobs, ['full', 'record'], 'the failed jobs are named from the run the retry read');
+  assert.equal(gh.calls.filter(args => args[1] === runPath).length, 2,
+    'exactly two reads, both of the same by-id path');
+  assert.equal(dispatchCalls(gh.calls).length, 0, 'the retry only reads and never dispatches');
+  assert.deepEqual(clock.waits, [1000], 'only the retry wait is taken');
+  // The recorder turns that same record into the one verdict line and exits zero.
+  const entry = await observeEntry({
+    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    reads: [notFoundError(), runState('completed', 'failure')], jobs,
+  });
+  assert.equal(entry.code, 0);
+  assert.equal(entry.output, 'outcome=unqualified\n');
+  assert.equal(entry.summary, `Qualification unqualified: ${createdUrl} concluded failure;`
+    + ' failed job(s): full, record.\n');
 });

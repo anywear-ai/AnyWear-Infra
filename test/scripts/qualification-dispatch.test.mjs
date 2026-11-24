@@ -246,8 +246,9 @@ test('the dispatch arguments carry exactly the payload inputs and the verbatim k
 
 // #338: the hold. The dispatched run is read to a terminal state on a fixed
 // interval and never past `created_at + HOLD_CEILING_MS`; the outcome is exactly
-// `qualified` or `unqualified`, the failed jobs are named only when the run is a
-// non-success, and the recorder writes one summary line and the step output. The
+// `qualified`, `unqualified` or `unobserved` — the failed jobs are named only when
+// the run is a non-success, a run that cannot be read is `unobserved` rather than a
+// verdict, and the recorder writes one summary line and the step output. The
 // fake clock moves only when the injected wait does, so no test sleeps and the
 // ceiling is proven arithmetically.
 const clockStart = 1_700_000_000_000;
@@ -449,6 +450,21 @@ test('a payload failure publishes not_submitted before the dispatch runs', async
     assert.deepEqual(gh.calls, [], 'the payload is built before any request');
     assert.equal(await readFile(output, 'utf8'), 'receipt=not_submitted\n',
       'the recorder reads a refusal, not an unknown dispatch');
+  });
+});
+
+// #354: `validateOperationInputs` runs before the payload is built, so a refused
+// identity phase is equally a pre-request failure and must read `not_submitted`.
+test('a validation failure before the payload publishes not_submitted', async () => {
+  await withOutputFiles(async ({ output }) => {
+    await writeFile(output, '');
+    const gh = fakeGh();
+    await assert.rejects(dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output,
+      INFRA_IDENTITY_PHASE: 'invalid' }), run: gh.run, out: gh.out }),
+    /Explicit identity phase required/);
+    assert.deepEqual(gh.calls, [], 'no GitHub call precedes the validation refusal');
+    assert.equal(await readFile(output, 'utf8'), 'receipt=not_submitted\n',
+      'a pre-request refusal names no run and is not acceptance_unknown');
   });
 });
 
