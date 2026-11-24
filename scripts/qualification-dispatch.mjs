@@ -464,7 +464,7 @@ export function qualificationOutcomeLine(result) {
     const receipt = typeof result.receipt === 'string' && result.receipt !== ''
       ? result.receipt : 'no receipt was recorded';
     return `Qualification unobserved: ${runUrl ?? 'the dispatched qualification run'} could not be read (${cause})`
-      + ` after ${reads} read${reads === 1 ? '' : 's'} over ${waitsMs} ms of waits; dispatch receipt: ${receipt},`
+      + ` after ${reads} reads over ${waitsMs} ms of waits; dispatch receipt: ${receipt},`
       + ` so no qualification verdict was recorded${tuple}.`;
   }
   const conclusion = typeof result.conclusion === 'string' && result.conclusion !== '' ? result.conclusion : undefined;

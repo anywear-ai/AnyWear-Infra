@@ -167,7 +167,7 @@ test('a read failure other than 404 records unobserved with the cause and no ret
     assert.equal(result.output, 'outcome=unobserved\n');
     assert.match(result.summary, /^Qualification unobserved: /);
     assert.match(result.summary, pattern);
-    assert.match(result.summary, /after 1 read over 15000 ms of waits; dispatch receipt: adopted,/);
+    assert.match(result.summary, /after 1 reads over 15000 ms of waits; dispatch receipt: adopted,/);
     assert.match(result.summary, /no qualification verdict was recorded/);
     assert.equal(result.summary.includes('hold ceiling'), false);
   }
@@ -256,7 +256,7 @@ test('an authentication failure inside the final interval records unobserved', a
     reads });
   assert.equal(result.code, 1, 'a token that failed inside the interval is a read failure, not the ceiling');
   assert.equal(result.output, 'outcome=unobserved\n');
-  assert.match(result.summary, /could not be read \(gh: HTTP 401 Bad credentials\) after 1 read over 15000 ms of waits/);
+  assert.match(result.summary, /could not be read \(gh: HTTP 401 Bad credentials\) after 1 reads over 15000 ms of waits/);
   assert.equal(result.summary.includes('hold ceiling'), false);
   assert.match(result.log, /^::error::Qualification unobserved:/m);
   assert.equal(result.waits.reduce((total, value) => total + value, 0), HOLD_CEILING_MS - 30_000,
