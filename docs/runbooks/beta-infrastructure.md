@@ -262,7 +262,7 @@ gates.
 | --- | --- | --- |
 | [check.yml](../../.github/workflows/check.yml) | none (PR / push main) | Source checks only; no dispatch surface |
 | [runtime.yml](../../.github/workflows/runtime.yml) | `state` | `state`: CFN and SSM read-only session, no tasks/PassRole/deploy role or schema assertion, works with the switch closed, publishes no artifact |
-| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`, `publish-client` | Chain: `preflight` (no credentials) → `verify` (read-only release token only, and a separate read-only `AnyWear-Client` token for `publish-client`; publishes the Service bytes as `service-release-bytes-<run_id>-<run_attempt>` with the published digests as its `release_assets` output, or the verified Client tree as `client-publish-bytes-<run_id>-<run_attempt>` with its digest as `client_bundle_digest`) → `deploy` (the only job holding an AWS credential; the read-only `AnyWear-E2E` admission check runs after checkout and `npm ci`, before the release-byte download and the mutating composite, and refuses before any AWS credential request; `prove-release-bytes` then runs first inside that composite, which `publish-client` skips) → `qualify-hold` (`deploy-runtime` and `publish-client` only, after `deploy` succeeded: no environment, no `id-token`, no AWS permission, one write-scoped `AnyWear-E2E` App token, which also reads the dispatched run back; for `delivery_trigger=deploy` or `publish` it dispatches the E2E qualification and observes it to a terminal state under a 55-minute ceiling, recording exactly one `qualified`/`unqualified` outcome, while `manual` dispatches a `smoke` and ends). No separate observation or record job. `delivery_trigger`/`dispatched_by` are accepted only by `deploy-runtime` (`deploy`/`manual`) and `publish-client` (`publish`/`manual`); explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
+| [mutate.yml](../../.github/workflows/mutate.yml) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`, `publish-client` | Chain: `preflight` (no credentials) → `verify` (read-only release token only, and a separate read-only `AnyWear-Client` token for `publish-client`; publishes the Service bytes as `service-release-bytes-<run_id>-<run_attempt>` with the published digests as its `release_assets` output, or the verified Client tree as `client-publish-bytes-<run_id>-<run_attempt>` with its digest as `client_bundle_digest`) → `deploy` (the only job holding an AWS credential; the read-only `AnyWear-E2E` admission check runs after checkout and `npm ci`, before the release-byte download and the mutating composite, and refuses before any AWS credential request; `prove-release-bytes` then runs first inside that composite, which `publish-client` skips) → `qualify-hold` (`deploy-runtime` and `publish-client` only, after `deploy` succeeded: no environment, no `id-token`, no AWS permission, one write-scoped `AnyWear-E2E` App token, which also reads the dispatched run back; for `delivery_trigger=deploy` or `publish` it dispatches the E2E qualification and observes it to a terminal state under a 55-minute ceiling, recording exactly one `qualified`, `unqualified` or `unobserved` outcome (`unobserved` means the dispatched run could not be read, so no verdict was formed and the hold fails), while `manual` dispatches a `smoke` and ends). No separate observation or record job. `delivery_trigger`/`dispatched_by` are accepted only by `deploy-runtime` (`deploy`/`manual`) and `publish-client` (`publish`/`manual`); explicit identity phase/retention accepted but only vary for `deploy-*`/`restore-release`; stack-specific deployment and selected verification tasks |
 | [schedule.yml](../../.github/workflows/schedule.yml) | `reconcile`, `smoke`, `full` (daily `17 3 * * *`, plus dispatch) | The scheduled entry: `preflight` proves reviewed main, the stage switch and the operation/input scope with no credential, and `hold` mints the same `AnyWear-E2E` `actions: write` App token, dispatches `beta-qualification.yml` (`reconcile` as `trigger=scheduled`, `smoke` as `deploy-smoke`, `full` as `release-qualify` with `expected_service_commit` and any `expected_client_commit`) and observes the created run with the deploy chain's 55-minute ceiling and recorder. No `environment`, no `id-token`, no AWS credential, no admission read of its own |
 | [production.yml](../../.github/workflows/production.yml) | none (`workflow_call` only) | Future Production scaffold; source-disabled pre-AWS blocker; not an entry |
 
@@ -334,8 +334,11 @@ dispatched run back. For `delivery_trigger=deploy` or `publish` the job is the
 hold: its final
 step reads the dispatched run to a terminal state, so this run — and with it
 `anywear-infra-runtime` — stays alive for the qualification instead of releasing
-the environment to the next writer, and it records exactly one `qualified` or
-`unqualified` outcome in the step summary and the job output. The observation's
+the environment to the next writer, and it records exactly one `qualified`,
+`unqualified` or `unobserved` outcome in the step summary and the job output.
+`unobserved` means no verdict was formed because the dispatched run could not be
+read; the step exits non-zero, and it is never recorded as a qualification the
+tuple failed. The observation's
 ceiling is 55 minutes from the moment the dispatched run was created, under the
 token's one-hour lifetime; the job's `timeout-minutes` is 65, so the deadline fires
 first and the recorder still runs. A red E2E run leaves the deployment's (or the
@@ -358,8 +361,13 @@ the time it appears. The dispatch calls the workflow-dispatch REST endpoint with
 `return_run_details: true` through `gh api` (`gh workflow run` does not expose the
 flag) and prints the created run's URL from the response. When the response carries
 a positive `workflow_run_id`, the job reads
-`repos/anywear-ai/AnyWear-E2E/actions/runs/<id>` once and accepts the run when the
-returned `id` equals that id; it does not read `display_title`, so a run whose
+`repos/anywear-ai/AnyWear-E2E/actions/runs/<id>` by id through the shared
+`scripts/lib/created-run-read.mjs` and accepts the run when the
+returned `id` equals that id; the read tolerates the runs API's eventual
+consistency by retrying only a `404` against the same id, up to five reads with a
+doubling wait between them (1 000, 2 000, 4 000 and 8 000 ms, 15 seconds in total),
+and any other failure is terminal on the read that produced it. It does not read
+`display_title`, so a run whose
 title has not propagated yet is not a failure. Only when the response carries no
 run id does the job poll the target's active runs for this run's URL in their
 names — the E2E `run-name` still renders `dispatched_by` — a fixed small number of
@@ -403,14 +411,24 @@ Service baseline matrices and cannot substitute for the live Original comparison
 ### Qualification outcomes and recovery (#338)
 
 A `deploy-runtime` run that took the hold ends with exactly one outcome line in its
-step summary and its `outcome` step output. `qualified` means the dispatched `full`
+step summary and its `outcome` step output, and that outcome is one of three values.
+`qualified` means the dispatched `full`
 run concluded `success`, which only the E2E `record` job produces after it has
 verified and attached `beta-qualification-<run_id>-<run_attempt>`. `unqualified`
-means the deployed tuple carries no qualification record, in any of three ways: the
+means the deployed tuple carries no qualification record and the run's fate is
+known, in any of three ways: the
 dispatched `full` run reached a terminal state as `failure`, `cancelled` or
 `timed_out`; it had not reached a terminal state when the 55-minute hold ceiling was
-reached (recorded as a `::warning`, never an error); or the dispatch step itself
-failed and created no run. The `deploy` job's own success stands in every case — a
+reached (recorded as a `::warning`, never an error); or the dispatch step's receipt
+proves nothing was submitted (`not_submitted`) and created no run. `unobserved`
+means no verdict was formed: the dispatch step recorded no receipt or an
+`acceptance_unknown` one, or the run it named could not be read — every bounded
+by-id read answered `404`, or a read failed another way (`401`, `403`, a `5xx`, a
+transport timeout, a body that is not a run, or a `200` naming a different id). The
+record then names the run when one was recorded, the reads it made, the waits
+between them (15 000 ms in total) and the dispatch receipt, and asserts no verdict;
+the step exits non-zero so the operator re-runs it. The `deploy` job's own success
+stands in every case — a
 red qualification is a red E2E run, never a failed deployment — so do not redeploy
 to recover. Re-qualify the live tuple instead, with one `AnyWear-E2E`
 `beta-qualification.yml` dispatch carrying all five inputs:
@@ -419,7 +437,7 @@ to recover. Re-qualify the live tuple instead, with one `AnyWear-E2E`
 - `trigger=release-qualify`
 - `expected_service_commit=<the live Service commit>`
 - `worker_slot_offset=0`
-- `dispatched_by=<URL of the deployment run whose summary recorded unqualified>`
+- `dispatched_by=<URL of the deployment run whose summary recorded unqualified or unobserved>`
 
 Those are the workflow's own inputs and its `release-qualify` validation accepts
 nothing else: the operation must be `full`, the expected Service commit is required,
@@ -427,6 +445,11 @@ the worker slot offset must be `0`, and a non-manual trigger is the only place
 `dispatched_by` (an HTTPS run URL) is accepted. Only a `full` run seals a record
 when its `record` job attaches the artifact, so neither a `smoke` dispatch nor a
 re-run of the failed E2E run recovers the tuple.
+
+A run whose job list cannot be read is not an `unobserved` hold: the run's own
+conclusion stands and the outcome line says `failed job(s): none named (the job
+list could not be read: …)` on a `::warning`, so an unread job list never invents a
+verdict or hides one.
 
 The escape from a stuck hold — or from a refused admission — is to cancel the
 **qualification** run, never the deployment run. Cancelling the qualification makes
@@ -462,7 +485,8 @@ in-flight mutation instead of racing it.
 operation/input scope — `full` requires a 40-hex Service commit, only `full` accepts
 either expected commit — with no token. `hold` mints exactly one App installation
 token narrowed to `AnyWear-E2E` with `actions: write` only, dispatches
-`beta-qualification.yml`, and records exactly one `qualified`/`unqualified` line in
+`beta-qualification.yml`, and records exactly one `qualified`, `unqualified` or
+`unobserved` line in
 the step summary and the `outcome` job output, using the same 55-minute ceiling and
 recorder as the deploy chain's hold. The job name `hold` is fixed: the E2E
 repository's admission read keys on the writer pair `mutate.yml` → `qualify-hold`

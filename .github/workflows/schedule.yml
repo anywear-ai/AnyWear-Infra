@@ -91,9 +91,10 @@ jobs:
   # 55-minute ceiling, from the same `scripts/qualification-observe.mjs` that records
   # the deploy chain's outcome. The job's 65-minute timeout outlives that ceiling, so
   # the observation's deadline fires first and the recorder still runs. Exactly one
-  # `qualified`/`unqualified` line is recorded in the step summary and as the job
-  # output. A red qualification is a red E2E run; the entry itself creates no record
-  # and never changes a deployment verdict.
+  # `qualified`/`unqualified`/`unobserved` line is recorded in the step summary and
+  # as the job output; `unobserved` means the dispatched run could not be read, so no
+  # verdict was formed and the step fails. A red qualification is a red E2E run; the
+  # entry itself creates no record and never changes a deployment verdict.
   hold:
     needs: preflight
     runs-on: ubuntu-latest
@@ -125,7 +126,8 @@ jobs:
       # The operation-to-trigger mapping, the pre-dispatch dedupe, the dispatch with
       # `return_run_details: true`, the created run verified by id and the bounded
       # run-name fallback are `scripts/schedule-qualification.mjs`'s; it exposes the
-      # created run's id and URL as its step outputs, which the observation reads.
+      # created run's id, URL and dispatch receipt as its step outputs, which the
+      # observation reads.
       - name: Dispatch the scheduled qualification and print its run
         id: dispatch
         shell: bash
@@ -134,10 +136,11 @@ jobs:
         run: node scripts/schedule-qualification.mjs dispatch
       # The observation is the job's last step and runs even when an earlier step
       # failed, so every run leaves exactly one outcome. It records `unqualified`
-      # and exits zero when no run was created (the job is already red from the
-      # failed step), records `unqualified` and fails when a dispatched run cannot be
-      # read, and exits zero for a terminal non-success run, the ceiling and a
-      # success.
+      # and exits zero when the dispatch receipt proves nothing was submitted (the
+      # job is already red from the failed step), records `unobserved` and fails when
+      # a dispatched run cannot be read or when a receipt names a run this step
+      # cannot identify, and exits zero for a terminal non-success run, the ceiling
+      # and a success.
       - name: Observe the dispatched qualification and record its one outcome
         id: observe
         if: always()
@@ -146,6 +149,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           QUALIFICATION_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
           QUALIFICATION_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          QUALIFICATION_RECEIPT: ${{ steps.dispatch.outputs.receipt }}
           # A `full` qualification names the Service commit it expects; the outcome
           # line reports it when the entry dispatched one.
           SERVICE_COMMIT: ${{ inputs.expected_service_commit }}

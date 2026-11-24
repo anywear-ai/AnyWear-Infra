@@ -136,7 +136,9 @@ and must not be relabeled as an Infra-produced deployment.
   `contents: read` and one App installation token narrowed to `AnyWear-E2E` with
   `actions: write` only, dispatching the E2E qualification and — for
   `delivery_trigger=deploy` or `publish` — reading it to a terminal state under a
-  55-minute ceiling, recording exactly one `qualified`/`unqualified` outcome.
+  55-minute ceiling, recording exactly one `qualified`, `unqualified` or
+  `unobserved` outcome (`unobserved` means the dispatched run could not be read, so
+  no verdict was formed and the hold fails).
   `delivery_trigger` and `dispatched_by` are
   accepted only by `deploy-runtime` (`deploy`/`manual`) and `publish-client`
   (`publish`/`manual`) and proved in the same credential-free preflight: a chain
