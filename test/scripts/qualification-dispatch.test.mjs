@@ -302,13 +302,13 @@ const withOutputFiles = async body => {
   }
 };
 
-test('the dispatch exposes the created run URL and id through GITHUB_OUTPUT', async () => {
+test('the dispatch exposes the created run URL, id and receipt through GITHUB_OUTPUT', async () => {
   await withOutputFiles(async ({ output }) => {
     const gh = fakeGh();
     const result = await dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out });
     assert.equal(result.run_id, 4242);
-    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`,
-      'the workflow step receives exactly the two values the observation reads');
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\nreceipt=created\n`,
+      'the workflow step receives exactly the values the observation reads');
   });
   // The values are published before the read-back that verifies them, so a run the
   // dispatcher created but could not verify is still observed rather than misread as
@@ -317,7 +317,7 @@ test('the dispatch exposes the created run URL and id through GITHUB_OUTPUT', as
     const gh = fakeGh({ created: { id: 999 } });
     await assert.rejects(dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out }),
       /was not returned by id/);
-    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\nreceipt=created\n`);
   });
 });
 
@@ -347,8 +347,8 @@ test('a first read that answers 404 is retried against the same id and succeeds'
     assert.equal(byIdReads(gh).length, 2, 'the retry reads the same id, and only that id');
     assert.equal(dispatchPosts(gh).length, 1, 'the dispatch is not sent a second time');
     assert.deepEqual(waits, [1000], 'the wait after the first read is the first entry of the schedule');
-    assert.match(gh.output(), /was readable on attempt 2\/5/);
-    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
+    assert.match(gh.output(), /read attempt 2\/5/);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\nreceipt=created\n`);
   });
 });
 
@@ -403,13 +403,11 @@ test('a run already terminal with a non-success conclusion fails the hand-off wi
 });
 
 // Issue #338's acceptance: "all four outcomes: ... a thrown error when the dispatch
-// itself fails". The design's edge-case row is "the dispatch fails → records
-// `unqualified` naming the dispatch failure as the reason no qualification exists".
-// The POST throws, so nothing after it may run — no read-back of a created run and
-// no fallback listing — and `$GITHUB_OUTPUT` stays a real but empty file, which is
-// exactly the condition `scripts/qualification-observe.mjs` maps to `unqualified`
-// naming the dispatch failure.
-test('a failed dispatch throws before any run read and publishes no run', async () => {
+// itself fails". A `422` proves the request was refused, so the receipt is
+// `not_submitted`: nothing after the POST may run — no read-back of a created run
+// and no fallback listing — and `$GITHUB_OUTPUT` carries only that receipt, which
+// `scripts/qualification-observe.mjs` maps to `unqualified` naming it.
+test('a refused dispatch throws before any run read and publishes only the receipt', async () => {
   await withOutputFiles(async ({ output }) => {
     await writeFile(output, '');
     const gh = fakeGh({ dispatchError: new Error('gh: HTTP 422 Unprocessable Entity') });
@@ -421,8 +419,36 @@ test('a failed dispatch throws before any run read and publishes no run', async 
     assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'the dispatch is attempted once');
     assert.deepEqual(gh.calls.slice(postIndex + 1), [],
       'nothing follows the failed dispatch: no created-run read and no fallback listing');
-    assert.equal(await readFile(output, 'utf8'), '',
-      'no run id or URL is published, so the recorder records the dispatch failure');
+    assert.equal(await readFile(output, 'utf8'), 'receipt=not_submitted\n',
+      'the refusal is published as the receipt, and no run is named');
+  });
+});
+
+// The receipt says what the dispatch step can prove: a `5xx` or a timeout may have
+// been accepted before it broke, so it is `acceptance_unknown`, never `not_submitted`.
+test('a dispatch failure that may have been accepted records acceptance_unknown', async () => {
+  for (const dispatchError of [new Error('gh: HTTP 502 Bad Gateway'),
+    Object.assign(new Error('Command failed: gh api repos/anywear-ai/AnyWear-E2E/actions/workflows/beta-qualification.yml/dispatches'),
+      { killed: true, signal: 'SIGTERM' })]) {
+    await withOutputFiles(async ({ output }) => {
+      const gh = fakeGh({ dispatchError });
+      await assert.rejects(dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output }), run: gh.run, out: gh.out }),
+        /HTTP 502|Command failed/);
+      assert.equal(await readFile(output, 'utf8'), 'receipt=acceptance_unknown\n',
+        'a failure that may have been accepted names no run and no refusal');
+    });
+  }
+});
+
+test('a payload failure publishes not_submitted before the dispatch runs', async () => {
+  await withOutputFiles(async ({ output }) => {
+    const gh = fakeGh();
+    await assert.rejects(dispatchQualification({ env: dispatchEnv({ GITHUB_OUTPUT: output,
+      DELIVERY_TRIGGER: 'release', DISPATCHED_BY: dispatchedBy }), run: gh.run, out: gh.out }),
+    /delivery_trigger=release is refused/);
+    assert.deepEqual(gh.calls, [], 'the payload is built before any request');
+    assert.equal(await readFile(output, 'utf8'), 'receipt=not_submitted\n',
+      'the recorder reads a refusal, not an unknown dispatch');
   });
 });
 
@@ -481,66 +507,68 @@ test('the ceiling returns unqualified without waiting past the deadline', async 
     'the wait sums to exactly the ceiling, never past it');
   assert.ok(clock.waits.every(milliseconds => milliseconds <= OBSERVATION_INTERVAL_MS),
     'no single wait is longer than the interval');
-  assert.equal(gh.calls.length, clock.waits.length + 1, 'one read per interval plus the first');
+  assert.equal(gh.calls.length, clock.waits.length,
+    'one read per interval; the read that would start at the deadline is replaced by the ceiling');
 });
 
-test('an authentication failure inside the final interval is recorded as the ceiling', async () => {
-  const authentication = new Error('gh: HTTP 401 Bad credentials');
-  const reads = [...Array(109).fill(runState('in_progress')), authentication];
-  const clock = observationClock();
-  const { result, gh } = await observe({ reads, clock });
-  assert.equal(result.outcome, 'unqualified');
-  assert.equal(result.ceiling, true, 'a token that outlived its margin must not turn a named state red');
-  assert.match(result.reason, /final read failed: gh: HTTP 401 Bad credentials/);
-  assert.equal(clock.waits.reduce((total, value) => total + value, 0), HOLD_CEILING_MS - OBSERVATION_INTERVAL_MS,
-    'the failure happened inside the last interval before the ceiling');
-  assert.equal(gh.calls.at(-1)[1], 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242');
+test('a read failure is thrown as the shared module error, never recorded as a ceiling', async () => {
+  const first = await rejectionOf(observe({ reads: [new Error('gh: HTTP 401 Bad credentials')] }));
+  assert.equal(first.code, 'read-failed', 'the authentication failure is its own read failure');
+  assert.equal(first.reads, 1, 'a 401 is terminal on its first read');
+  assert.ok(first.message.includes('gh: HTTP 401 Bad credentials'), 'the status is carried verbatim');
+  const later = await rejectionOf(observe({ reads: [runState('in_progress'), new Error('gh: HTTP 502 Bad Gateway')] }));
+  assert.equal(later.code, 'read-failed', 'a later 5xx is a read failure too');
+  assert.equal(later.reads, 1);
 });
 
-test('a read failure is an observation failure unless it is authentication near the ceiling', async () => {
-  await assert.rejects(observe({ reads: [new Error('gh: HTTP 401 Bad credentials')] }),
-    /could not be read: gh: HTTP 401 Bad credentials/);
-  await assert.rejects(observe({ reads: [runState('in_progress'), new Error('gh: HTTP 502 Bad Gateway')] }),
-    /could not be read: gh: HTTP 502 Bad Gateway/);
+test('a terminal non-success run whose job list cannot be read records its conclusion', async () => {
+  const { result, gh } = await observe({ reads: [runState('completed', 'failure')],
+    jobs: new Error('gh: HTTP 502 Bad Gateway') });
+  assert.equal(result.outcome, 'unqualified', 'the conclusion stands; the unread job list does not change it');
+  assert.equal(result.conclusion, 'failure');
+  assert.deepEqual(result.failed_jobs, []);
+  assert.match(result.failed_jobs_note, /gh: HTTP 502 Bad Gateway/);
+  assert.equal(gh.calls.filter(args => String(args[1]).endsWith('/jobs')).length, 1, 'the job list is read once');
 });
 
-test('a non-success run whose job list cannot be read fails the observation instead of guessing', async () => {
-  await assert.rejects(observe({ reads: [runState('completed', 'failure')], jobs: new Error('gh: HTTP 502 Bad Gateway') }),
-    /concluded non-success but its jobs could not be read: gh: HTTP 502/);
-});
-
-test('the one outcome line names the run, the conclusion and the failed jobs, or the reason none ran', async () => {
+test('the one outcome line names the run, the conclusion and the failed jobs, or the reason none ran', () => {
   assert.equal(qualificationOutcomeLine({ outcome: 'qualified', run_url: createdUrl, conclusion: 'success' }),
     `Qualification qualified: ${createdUrl} concluded success.`);
   assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: 'failure',
     failed_jobs: ['full', 'record'] }),
   `Qualification unqualified: ${createdUrl} concluded failure; failed job(s): full, record.`);
-  assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: null,
+  assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: 'failure',
+    failed_jobs: [], failed_jobs_note: 'gh: HTTP 502 Bad Gateway' }),
+  `Qualification unqualified: ${createdUrl} concluded failure; failed job(s): none named`
+    + ' (the job list could not be read: gh: HTTP 502 Bad Gateway).');
+  assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl,
     failed_jobs: [], ceiling: true, ceiling_ms: HOLD_CEILING_MS }),
   `Qualification unqualified: ${createdUrl} had not reached a terminal state when the 55-minute hold ceiling was reached.`);
   assert.equal(qualificationOutcomeLine({ outcome: 'unqualified', service_commit: serviceCommit,
-    reason: 'no qualification run was created and no dispatched run id or URL was recorded, so the deployed tuple carries no qualification record' }),
-  `Qualification unqualified: no qualification run was created and no dispatched run id or URL was recorded, so the deployed `
-    + `tuple carries no qualification record for Service commit ${serviceCommit}.`);
+    reason: 'no dispatched run id or URL was recorded by the dispatch step (receipt: not_submitted),'
+      + ' so this deployment names no qualification run' }),
+  'Qualification unqualified: no dispatched run id or URL was recorded by the dispatch step (receipt: not_submitted),'
+    + ` so this deployment names no qualification run for Service commit ${serviceCommit}.`);
 });
 
-// F1: the line states only an observed cause. A known run whose read failed has no
-// conclusion and no ceiling, so it carries the recorded reason and never the ceiling
-// sentence; the ceiling wording appears only when `ceiling === true`.
-test('a read failure is reported as itself, never as the hold ceiling', async () => {
-  const reason = `the dispatched qualification ${createdUrl} could not be read, so the deployed tuple carries no `
-    + 'qualification record: gh: HTTP 401 Bad credentials';
-  const line = qualificationOutcomeLine({ outcome: 'unqualified', run_url: createdUrl, conclusion: null, reason,
-    service_commit: serviceCommit });
-  assert.ok(line.includes('gh: HTTP 401 Bad credentials'), 'the real read cause is in the line');
-  assert.ok(line.includes(createdUrl), 'the line still names the run');
-  assert.ok(line.includes('could not be read'), 'the reason is carried verbatim');
-  assert.equal(line.includes('hold ceiling'), false, 'an unobserved ceiling is never invented');
-  const noRun = qualificationOutcomeLine({ outcome: 'unqualified', reason: 'the observation could not record a cause' });
-  assert.equal(noRun, 'Qualification unqualified: the observation could not record a cause.');
+// #354: a hold that could not read the dispatched run records `unobserved`, and
+// that word names the reads, the wait schedule's total and the dispatch receipt.
+test('an unobserved outcome names the reads, the waits and the receipt, never the ceiling', () => {
+  const line = qualificationOutcomeLine({ outcome: 'unobserved', run_url: createdUrl, reads: 5,
+    attempts: 5, waits_ms: 15000, elapsed_ms: 16000, read_failure: 'not-readable',
+    read_cause: 'every read answering 404', receipt: 'created', service_commit: serviceCommit });
+  assert.equal(line, `Qualification unobserved: ${createdUrl} could not be read (every read answering 404)`
+    + ' after 5 reads over 15000 ms of waits; dispatch receipt: created, so no qualification verdict was recorded'
+    + ` for Service commit ${serviceCommit}.`);
+  assert.equal(line.includes('hold ceiling'), false, 'a failed read is never reported as the ceiling');
+  assert.equal(qualificationOutcomeLine({ outcome: 'unobserved', reads: 0, waits_ms: 15000,
+    read_cause: 'no dispatch receipt was recorded' }),
+  'Qualification unobserved: the dispatched qualification run could not be read (no dispatch receipt was recorded)'
+    + ' after 0 reads over 15000 ms of waits; dispatch receipt: no receipt was recorded,'
+    + ' so no qualification verdict was recorded.');
 });
 
-test('the recorder writes exactly one summary line, the step outcome and a warning only for the ceiling', async () => {
+test('the recorder writes exactly one summary line, the step outcome and the right annotation', async () => {
   await withOutputFiles(async ({ summary, output }) => {
     const sink = sinkOf();
     const unqualified = { outcome: 'unqualified', run_url: createdUrl, conclusion: 'failure',
@@ -554,11 +582,25 @@ test('the recorder writes exactly one summary line, the step outcome and a warni
 
     const warn = sinkOf();
     const ceilingLine = await recordQualificationOutcome({ env: { GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: output },
-      result: { outcome: 'unqualified', run_url: createdUrl, conclusion: null, failed_jobs: [], ceiling: true },
+      result: { outcome: 'unqualified', run_url: createdUrl, failed_jobs: [], ceiling: true, ceiling_ms: HOLD_CEILING_MS },
       out: warn.out });
     assert.equal(warn.text(), `::warning::${ceilingLine}\n`, 'the ceiling carries a ::warning');
     assert.equal(await readFile(summary, 'utf8'), `${line}\n${ceilingLine}\n`,
       'the ceiling appends one more line, never a second line for the same outcome');
     assert.equal(await readFile(output, 'utf8'), 'outcome=unqualified\noutcome=unqualified\n');
+
+    const unread = sinkOf();
+    const unobservedLine = await recordQualificationOutcome({ env: { GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: output },
+      result: { outcome: 'unobserved', run_url: createdUrl, reads: 1, waits_ms: 15000,
+        read_cause: 'gh: HTTP 401 Bad credentials', receipt: 'created', service_commit: serviceCommit },
+      out: unread.out });
+    assert.equal(unread.text(), `::error::${unobservedLine}\n`, 'unobserved carries a ::error');
+    assert.equal(await readFile(output, 'utf8'), 'outcome=unqualified\noutcome=unqualified\noutcome=unobserved\n');
+
+    const note = sinkOf();
+    const notedLine = await recordQualificationOutcome({ env: { GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: output },
+      result: { outcome: 'unqualified', run_url: createdUrl, conclusion: 'failure', failed_jobs: [],
+        failed_jobs_note: 'gh: HTTP 502 Bad Gateway' }, out: note.out });
+    assert.equal(note.text(), `::warning::${notedLine}\n`, 'an unread job list is a warning on a known conclusion');
   });
 });

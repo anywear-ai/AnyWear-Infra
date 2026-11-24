@@ -118,7 +118,7 @@ test('the dispatch sends the payload once and exposes the created run to the obs
     const post = gh.calls.find(args => args.includes('--method'));
     assert.equal(post[3], 'repos/anywear-ai/AnyWear-E2E/actions/workflows/beta-qualification.yml/dispatches');
     assert.deepEqual(inputFields(post), schedulePayload(env()));
-    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\n`);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\nreceipt=created\n`);
     assert.match(gh.text(), /Dispatched qualification reconcile\/scheduled/);
   });
 });
@@ -133,7 +133,7 @@ test('a re-run whose key is already in an active run name dispatches nothing', a
     assert.equal(result.dispatched, false);
     assert.equal(result.run_id, 999);
     assert.equal(gh.calls.some(args => args.includes('--method')), false);
-    assert.equal(await readFile(output, 'utf8'), `run_url=${existingUrl}\nrun_id=999\n`);
+    assert.equal(await readFile(output, 'utf8'), `run_url=${existingUrl}\nrun_id=999\nreceipt=adopted\n`);
   });
 });
 

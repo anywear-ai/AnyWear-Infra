@@ -4,7 +4,15 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { matches, parseJson, SHA } from './lib/json-contract.mjs';
 import { DELIVERY_TRIGGER_OPERATIONS, dispatchingRunUrl } from './lib/delivery-inputs.mjs';
+import { readCreatedRunById, RUN_READ_ATTEMPTS } from './lib/created-run-read.mjs';
 import { validateOperationInputs } from './runtime-operation.mjs';
+
+// #354: the by-id read of the run this process just created has one
+// implementation, `scripts/lib/created-run-read.mjs`, byte-identical to the copies
+// AnyWear-Service and AnyWear-Client vendor. The three policy symbols are
+// re-exported, never redefined, so their existing importers keep working and the
+// census guard can prove the definition exists in exactly one file.
+export { RUN_READ_ATTEMPTS, RUN_READ_WAIT_MS, runReadWaits } from './lib/created-run-read.mjs';
 
 // The deploy chain's qualification hop and hold (#226, #338). After `deploy`
 // succeeded for `deploy-runtime`, this dispatches the E2E `beta-qualification.yml`
@@ -120,16 +128,34 @@ function dispatchedRunId(details) {
 }
 
 /**
- * Expose the dispatched run to the workflow step that observes it. The workflow
- * step owns the output file (`GITHUB_OUTPUT`); this appends only the values that
- * are known, so the observation can fall back from the id to the URL.
+ * Expose the dispatched run and the dispatch receipt to the workflow step that
+ * observes it. The workflow step owns the output file (`GITHUB_OUTPUT`); this
+ * appends the run URL, the run id and the receipt together, in that order, in one
+ * write, so a step that reaches a decision publishes exactly once. A value that is
+ * not known is omitted, so the observation can fall back from the id to the URL and
+ * read a receipt whose run it cannot name.
  */
-async function publishDispatchedRun(env, runUrl, runId) {
+async function publishDispatchedRun(env, runUrl, runId, receipt) {
   if (typeof env.GITHUB_OUTPUT !== 'string' || env.GITHUB_OUTPUT === '') return;
   const lines = [];
   if (typeof runUrl === 'string' && runUrl !== '') lines.push(`run_url=${runUrl}`);
   if (Number.isSafeInteger(runId) && runId > 0) lines.push(`run_id=${runId}`);
+  if (typeof receipt === 'string' && receipt !== '') lines.push(`receipt=${receipt}`);
   if (lines.length > 0) await appendFile(env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
+}
+
+/**
+ * Whether a failed dispatch `POST` proves the request was refused. The status is
+ * read from the first error line: a `400`, `403`, `404`, `409` or `422` rejects the
+ * request, so nothing was submitted. Any other failure — a `5xx`, a timeout, no
+ * status at all — may have been accepted before it broke.
+ */
+function dispatchRefused(error) {
+  const line = [error?.stderr, error?.stdout, error?.message]
+    .flatMap(value => String(value ?? '').split('\n'))
+    .map(value => value.trim())
+    .find(value => value !== '') ?? '';
+  return /\b(?:400|403|404|409|422)\b/.test(line);
 }
 
 /**
@@ -157,78 +183,24 @@ async function pollDispatchedRun({ run, ghEnv, key, attempts, wait }) {
 }
 
 /**
- * The by-id read of the run the dispatch created (#342). GitHub can answer `404`
- * for a run it has already created, and it can answer with a run it has already
- * cancelled when a `queue: max` overflow drops the dispatch: the same id carries
- * two different meanings, so the read retries only the `404`, five times in total
- * against the same id with a doubling wait between reads (15 seconds), and it
- * rejects a run already terminal with a conclusion other than `success`, which no
- * retry could make readable. The dispatch itself is never repeated.
- */
-export const RUN_READ_ATTEMPTS = 5;
-export const RUN_READ_WAIT_MS = 1_000;
-
-/** The wait after read `k` is `runReadWaits()[k - 1]`; no wait trails the last read. */
-export function runReadWaits({ attempts = RUN_READ_ATTEMPTS, baseMs = RUN_READ_WAIT_MS } = {}) {
-  return Object.freeze(Array.from({ length: Math.max(attempts - 1, 0) }, (_, index) => baseMs * 2 ** index));
-}
-
-/**
- * A read that answered `Not Found`. `promisify(execFile)` rejects with the `gh`
- * body on `stdout`, and the status can arrive in any of the three fields, so all
- * of them are read.
- */
-const isNotFound = error => /(?:\b404\b|Not Found)/i.test(
-  `${error?.message ?? ''} ${error?.stderr ?? ''} ${error?.stdout ?? ''}`);
-
-/**
- * Read the dispatched run by its own id, retrying only a `404`. A run the API has
- * not made readable yet answers `404` and becomes readable moments later, so the
- * same id is read again after the scheduled wait; any other read failure is
- * terminal and names the run. A returned body must carry the dispatched id, and
- * the run must not already be terminal with a conclusion other than `success`.
- * The body is parsed in its own terminal wrapper, because a malformed read is not
- * a transient `404` and must not consume a retry.
+ * The by-id read of the run the dispatch created (#342, unified by #354). The
+ * module owns the retry policy: only a `404` is retried, against the same id, five
+ * reads in total with a doubling wait between them (15 seconds), and it rejects a
+ * run already terminal with a conclusion other than `success`, which no retry
+ * could make readable. The dispatch itself is never repeated.
  */
 async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, out }) {
-  const waits = runReadWaits({ attempts });
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    let response;
-    try {
-      response = await run('gh', ['api', `repos/${E2E_REPOSITORY}/actions/runs/${id}`], { env: ghEnv, ...GH_OPTIONS });
-    } catch (error) {
-      if (!isNotFound(error)) {
-        throw new Error(`The dispatched qualification run ${runUrl} could not be read: ${error?.message ?? error}`);
-      }
-      if (attempt >= attempts) break;
-      const scheduled = waits[attempt - 1];
-      out.write(`The by-id read of the dispatched qualification run ${runUrl} answered 404`
-        + ` on attempt ${attempt}/${attempts}; retrying in ${scheduled} ms.\n`);
-      await wait(scheduled);
-      continue;
-    }
-    let body;
-    try {
-      body = parseJson(response.stdout);
-    } catch (error) {
-      throw new Error(`The dispatched qualification run ${runUrl} could not be read: ${error?.message ?? error}`);
-    }
-    if (body?.id !== id) {
-      throw new Error(`The dispatched qualification run ${id} was not returned by id: the run API answered ${String(body?.id)}`);
-    }
-    if (body?.status === 'completed' && body.conclusion !== 'success') {
-      const conclusion = typeof body.conclusion === 'string' && body.conclusion !== '' ? body.conclusion : 'unknown';
-      throw new Error(`The dispatched qualification run ${runUrl} had already completed with conclusion ${conclusion};`
-        + ' the dispatch was accepted once and not repeated, so the hand-off cannot report success');
-    }
-    out.write(`The dispatched qualification run ${runUrl} was readable on attempt ${attempt}/${attempts}.\n`);
-    return body;
-  }
-  // The schedule is the only source of the bound this message reports.
-  const totalMs = waits.reduce((total, milliseconds) => total + milliseconds, 0);
-  throw new Error(`The dispatched qualification run ${runUrl} was not readable after ${attempts} reads over ${totalMs} ms,`
-    + ' every read answering 404; the dispatch was accepted once and not repeated,'
-    + ' so the run was dropped or not accepted');
+  return readCreatedRunById({
+    read: async path => parseJson((await run('gh', ['api', path], { env: ghEnv, ...GH_OPTIONS })).stdout),
+    repository: E2E_REPOSITORY,
+    runId: id,
+    runUrl,
+    label: 'the dispatched qualification run',
+    attempts,
+    wait,
+    log: line => out.write(`${line}\n`),
+    requireSuccess: true,
+  });
 }
 
 /**
@@ -245,7 +217,10 @@ async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, o
  *
  * #338: the created run's id and URL are also appended to the workflow step's
  * `GITHUB_OUTPUT`, so the job's final step can observe exactly the run this
- * dispatch created.
+ * dispatch created. #354 adds the dispatch receipt to the same write: `adopted`,
+ * `created`, `not_submitted` or `acceptance_unknown`, decided by how far the
+ * dispatch got, so the recorder can tell "nothing was submitted" from "a run may
+ * exist that this step cannot name".
  *
  * Issue #344: the body is shared with the scheduled entry, whose payload is built
  * from its own operation menu; only the payload differs.
@@ -257,48 +232,85 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
   }
   const key = payload.dispatched_by;
   const ghEnv = { ...process.env, GH_TOKEN: env.GH_TOKEN, GH_TELEMETRY: 'disabled' };
-  let existing;
+  // The receipt names what the dispatch step can prove about this dispatch. The
+  // single `finally` below writes it with the run, in one append, on every path.
+  let receipt = 'not_submitted';
+  let runUrl;
+  let runId;
   try {
-    existing = findDispatchedRun(await listActiveRuns(run, ghEnv), key);
-  } catch (error) {
-    out.write(`Could not list the target's queued and in-progress runs (${error?.message ?? error}); dispatching anyway.\n`);
+    let existing;
+    try {
+      existing = findDispatchedRun(await listActiveRuns(run, ghEnv), key);
+    } catch (error) {
+      out.write(`Could not list the target's queued and in-progress runs (${error?.message ?? error}); dispatching anyway.\n`);
+    }
+    if (existing) {
+      out.write(`Qualification already dispatched by ${key}: ${existing.html_url}\n`);
+      receipt = 'adopted';
+      runUrl = existing.html_url;
+      runId = existing.id;
+      return { dispatched: false, payload, run_url: runUrl, run_id: runId, receipt };
+    }
+    let details;
+    // The POST may have been accepted even when its response never arrives, so only
+    // a status that proves refusal records `not_submitted`; every other failure is
+    // `acceptance_unknown` and the observation records `unobserved`.
+    try {
+      details = parseJson((await run('gh', dispatchArguments(payload), { env: ghEnv, ...GH_OPTIONS })).stdout);
+    } catch (error) {
+      receipt = dispatchRefused(error) ? 'not_submitted' : 'acceptance_unknown';
+      throw error;
+    }
+    receipt = 'created';
+    const id = dispatchedRunId(details);
+    // Print the URL the dispatch response names before reading the run back, so the
+    // operator has it even if the verification fails.
+    const dispatchedUrl = firstText(details?.html_url, details?.run_url, id === undefined ? undefined : qualificationRunUrl(id));
+    out.write(`Dispatched qualification ${payload.operation}/${payload.trigger}${dispatchedUrl ? ` as ${dispatchedUrl}` : ''}\n`);
+    if (id !== undefined) {
+      // The response names the created run, so publish it before the read-back that
+      // can fail, and let the observation still find a run the dispatcher could not
+      // verify. The browsable URL is the response's `html_url`, or the one built
+      // from the id; a response's API `run_url` is only a last resort for display.
+      const observedUrl = firstText(details?.html_url, qualificationRunUrl(id));
+      runUrl = observedUrl;
+      runId = id;
+      // The dispatch response names the run it created, so verify that run by id. The
+      // module retries a `404` before the run is readable against the same id, rejects
+      // a run already terminal with a non-`success` conclusion, and the dispatch is
+      // never sent twice (#342, #354).
+      const created = await readDispatchedRunById({ run, ghEnv, id, runUrl: observedUrl, attempts: readAttempts, wait, out });
+      runUrl = firstText(created.html_url, observedUrl);
+      return { dispatched: true, payload, run_url: runUrl, run_id: id, receipt };
+    }
+    out.write(`The dispatch response carried no run id; looking for ${key} in the target's active runs.\n`);
+    const match = await pollDispatchedRun({ run, ghEnv, key, attempts, wait });
+    out.write(`Qualification dispatched by ${key}: ${match.html_url}\n`);
+    const matchId = Number.isSafeInteger(match.id) && match.id > 0 ? match.id : undefined;
+    runUrl = match.html_url;
+    runId = matchId;
+    return { dispatched: true, payload, run_url: runUrl, run_id: matchId, receipt };
+  } finally {
+    await publishDispatchedRun(env, runUrl, runId, receipt);
   }
-  if (existing) {
-    out.write(`Qualification already dispatched by ${key}: ${existing.html_url}\n`);
-    await publishDispatchedRun(env, existing.html_url, existing.id);
-    return { dispatched: false, payload, run_url: existing.html_url, run_id: existing.id };
-  }
-  const details = parseJson((await run('gh', dispatchArguments(payload), { env: ghEnv, ...GH_OPTIONS })).stdout);
-  const id = dispatchedRunId(details);
-  // Print the URL the dispatch response names before reading the run back, so the
-  // operator has it even if the verification fails.
-  const dispatchedUrl = firstText(details?.html_url, details?.run_url, id === undefined ? undefined : qualificationRunUrl(id));
-  out.write(`Dispatched qualification ${payload.operation}/${payload.trigger}${dispatchedUrl ? ` as ${dispatchedUrl}` : ''}\n`);
-  if (id !== undefined) {
-    // The response names the created run, so publish it now — before the read-back
-    // that can fail — and let the observation still find a run the dispatcher could
-    // not verify. The browsable URL is the response's `html_url`, or the one built
-    // from the id; a response's API `run_url` is only a last resort for display.
-    const observedUrl = firstText(details?.html_url, qualificationRunUrl(id));
-    await publishDispatchedRun(env, observedUrl, id);
-    // The dispatch response names the run it created, so verify that run by id. A
-    // `404` before the run is readable is retried against the same id, a run already
-    // terminal with a non-`success` conclusion is rejected, and the dispatch is
-    // never sent twice (#342).
-    const created = await readDispatchedRunById({ run, ghEnv, id, runUrl: observedUrl, attempts: readAttempts, wait, out });
-    return { dispatched: true, payload, run_url: firstText(created.html_url, observedUrl), run_id: id };
-  }
-  out.write(`The dispatch response carried no run id; looking for ${key} in the target's active runs.\n`);
-  const match = await pollDispatchedRun({ run, ghEnv, key, attempts, wait });
-  out.write(`Qualification dispatched by ${key}: ${match.html_url}\n`);
-  const matchId = Number.isSafeInteger(match.id) && match.id > 0 ? match.id : undefined;
-  await publishDispatchedRun(env, match.html_url, matchId);
-  return { dispatched: true, payload, run_url: match.html_url, run_id: matchId };
 }
 
+/**
+ * Build this run's payload and dispatch it. The payload is built before
+ * `dispatchRun` is called, so a failure here publishes `receipt=not_submitted`
+ * itself — the only write outside `dispatchRun`'s single `finally` — and the two
+ * never write together.
+ */
 export async function dispatchQualification({ env = process.env, ...options } = {}) {
-  validateOperationInputs(env);
-  return dispatchRun({ env, ...options, payload: qualificationPayload(env) });
+  let payload;
+  try {
+    validateOperationInputs(env);
+    payload = qualificationPayload(env);
+  } catch (error) {
+    await publishDispatchedRun(env, undefined, undefined, 'not_submitted');
+    throw error;
+  }
+  return dispatchRun({ env, ...options, payload });
 }
 
 /** The run id to observe: the dispatch output, or the trailing `/runs/<id>` of its URL. */
@@ -316,39 +328,39 @@ function holdDeadline(createdAt, fallback, ceilingMs) {
   return (Number.isFinite(created) ? created : fallback) + ceilingMs;
 }
 
-/** An authentication-shaped read failure: the observation token, not the run, is the problem. */
-const isAuthenticationFailure = error => /(?:\b401\b|\b403\b|Bad credentials|authentication)/i.test(
-  `${error?.message ?? ''} ${error?.stderr ?? ''}`);
-
 const ceilingMinutes = ceilingMs => Math.round(ceilingMs / 60_000);
 
-function ceilingOutcome({ runId, runUrl, current, ceilingMs, detail = '' }) {
+function ceilingOutcome({ runId, runUrl, current, ceilingMs }) {
   const minutes = ceilingMinutes(ceilingMs);
-  return { outcome: 'unqualified', run_id: runId, run_url: runUrl, conclusion: current?.conclusion ?? null,
+  // The ceiling is the hold's own bound, not a broken read: the record carries no
+  // `conclusion` and no `read_failure`, so it cannot be mistaken for a verdict.
+  return { outcome: 'unqualified', run_id: runId, run_url: runUrl,
     failed_jobs: [], status: current?.status,
     reason: `the run had not reached a terminal state when the ${minutes}-minute hold ceiling was reached`
-      + ` (last status ${current?.status ?? 'unknown'}${detail})`,
+      + ` (last status ${current?.status ?? 'unknown'})`,
     ceiling: true, ceiling_ms: ceilingMs };
 }
 
 /**
- * The names of the jobs that stopped the run, in API order. `skipped` is not a
- * failure: the E2E workflow skips the jobs a non-`full` operation does not need.
+ * The names of the jobs that stopped the run, in API order, or the cause when the
+ * job list could not be read. `skipped` is not a failure: the E2E workflow skips the
+ * jobs a non-`full` operation does not need. A job-list read that fails never
+ * changes the conclusion the run itself established: the caller records the
+ * conclusion and the note instead of failing the observation.
  */
-async function failedJobNames({ run, ghEnv, runId, runUrl }) {
+async function failedJobNames({ run, ghEnv, runId }) {
   let body;
   try {
     body = parseJson((await run('gh', ['api', `repos/${E2E_REPOSITORY}/actions/runs/${runId}/jobs`],
       { env: ghEnv, ...GH_OPTIONS })).stdout);
   } catch (error) {
-    throw new Error(`The qualification run ${runUrl} concluded non-success but its jobs could not be read: `
-      + `${error?.message ?? error}`);
+    return { jobs: [], note: `${error?.message ?? error}` };
   }
-  if (!Array.isArray(body?.jobs)) throw new Error(`The qualification run ${runUrl} job list is malformed`);
-  return body.jobs
+  if (!Array.isArray(body?.jobs)) return { jobs: [], note: 'the response is not a job list' };
+  return { jobs: body.jobs
     .filter(job => job?.conclusion !== 'success' && job?.conclusion !== 'skipped')
     .map(job => job?.name)
-    .filter(name => typeof name === 'string' && name !== '');
+    .filter(name => typeof name === 'string' && name !== '') };
 }
 
 /**
@@ -356,11 +368,17 @@ async function failedJobNames({ run, ghEnv, runId, runUrl }) {
  * past `created_at + HOLD_CEILING_MS` (#338). `qualified` means the E2E run
  * concluded `success`, which for a `full` dispatch only the `record` job produces
  * after verifying and attaching the qualification record. A terminal non-success
- * run and the ceiling both return `unqualified`; the ceiling result carries
- * `ceiling: true` so the recorder writes a `::warning` rather than an error. A
- * read failure fails the observation, except an authentication-shaped failure
- * inside the final interval before the ceiling: that is recorded as the ceiling,
- * so a token that outlived its margin cannot turn a named state into a red run.
+ * run returns `unqualified` with the failed jobs, or with the job-list cause when
+ * that list could not be read, and the ceiling returns `unqualified` with
+ * `ceiling: true` so the recorder writes a `::warning`. A read failure is thrown as
+ * the shared module's `RunReadError`: a run that could not be read is not a
+ * verdict, so the recorder records `unobserved` instead of inventing one.
+ *
+ * The opening read establishes the deadline from the run's own `created_at` and
+ * carries no deadline itself, so a retried opening read cannot extend the hold.
+ * Every interval read carries the deadline; a read that reaches it reports the
+ * module's `deadline-reached` code, which is mapped here to the ceiling outcome
+ * because the ceiling is the hold's own bound, not a broken read.
  */
 export async function observeQualification({ env = process.env, run = execute, wait = sleep, out = process.stdout,
   now = Date.now, runId, runUrl, ceilingMs = HOLD_CEILING_MS, intervalMs = OBSERVATION_INTERVAL_MS } = {}) {
@@ -369,24 +387,24 @@ export async function observeQualification({ env = process.env, run = execute, w
     throw new Error('A read-scoped AnyWear-E2E App token is required to observe the qualification');
   }
   const ghEnv = { ...process.env, GH_TOKEN: env.GH_TOKEN, GH_TELEMETRY: 'disabled' };
-  const readRun = async () => {
-    const body = parseJson((await run('gh', ['api', `repos/${E2E_REPOSITORY}/actions/runs/${id}`],
-      { env: ghEnv, ...GH_OPTIONS })).stdout);
-    if (body === null || typeof body !== 'object') throw new Error(`The qualification run ${id} read is malformed`);
-    return body;
-  };
+  let readUrl = firstText(runUrl, qualificationRunUrl(id));
+  const readRun = ({ deadlineAtMs } = {}) => readCreatedRunById({
+    read: async path => parseJson((await run('gh', ['api', path], { env: ghEnv, ...GH_OPTIONS })).stdout),
+    repository: E2E_REPOSITORY,
+    runId: id,
+    runUrl: readUrl,
+    label: 'the dispatched qualification run',
+    wait,
+    log: line => out.write(`${line}\n`),
+    now,
+    requireSuccess: false,
+    deadlineAtMs,
+  });
   const startedAt = now();
-  // The first read is the one that establishes the deadline, and the token was
-  // minted moments before it: a failure here is an observation failure, never the
-  // ceiling exception below, which only exists for a token near its own expiry.
-  let current;
-  try {
-    current = await readRun();
-  } catch (error) {
-    throw new Error(`The qualification run ${id} could not be read: ${error?.message ?? error}`);
-  }
+  let current = await readRun();
   const deadline = holdDeadline(current?.created_at, startedAt, ceilingMs);
   const resolvedUrl = firstText(current?.html_url, runUrl, qualificationRunUrl(id));
+  readUrl = resolvedUrl;
   out.write(`Observing qualification ${resolvedUrl}: interval ${intervalMs} ms, hold ceiling ${new Date(deadline).toISOString()}.\n`);
   for (;;) {
     if (current?.status === 'completed') {
@@ -395,10 +413,14 @@ export async function observeQualification({ env = process.env, run = execute, w
         out.write(`The qualification run ${resolvedUrl} concluded success.\n`);
         return { outcome: 'qualified', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: [] };
       }
-      const jobs = await failedJobNames({ run, ghEnv, runId: id, runUrl: resolvedUrl });
-      out.write(`The qualification run ${resolvedUrl} concluded ${conclusion}`
-        + `; failed job(s): ${jobs.length > 0 ? jobs.join(', ') : 'none named'}.\n`);
-      return { outcome: 'unqualified', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: jobs };
+      const { jobs, note } = await failedJobNames({ run, ghEnv, runId: id });
+      out.write(note === undefined
+        ? `The qualification run ${resolvedUrl} concluded ${conclusion}`
+          + `; failed job(s): ${jobs.length > 0 ? jobs.join(', ') : 'none named'}.\n`
+        : `The qualification run ${resolvedUrl} concluded ${conclusion}; the job list could not be read (${note}),`
+          + ' so no failed job is named.\n');
+      return { outcome: 'unqualified', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: jobs,
+        ...(note === undefined ? {} : { failed_jobs_note: note }) };
     }
     const remaining = deadline - now();
     if (remaining <= 0) {
@@ -407,15 +429,13 @@ export async function observeQualification({ env = process.env, run = execute, w
     }
     await wait(Math.min(intervalMs, remaining));
     try {
-      current = await readRun();
+      current = await readRun({ deadlineAtMs: deadline });
     } catch (error) {
-      if (isAuthenticationFailure(error) && now() >= deadline - intervalMs) {
-        out.write(`The observation token no longer authenticated inside the final interval before the hold ceiling`
-          + ` (${error?.message ?? error}); recording the ceiling.\n`);
-        return ceilingOutcome({ runId: id, runUrl: resolvedUrl, current, ceilingMs,
-          detail: `; the final read failed: ${error?.message ?? error}` });
+      if (error?.code === 'deadline-reached') {
+        out.write(`The ${ceilingMinutes(ceilingMs)}-minute hold ceiling was reached before the run could be read again.\n`);
+        return ceilingOutcome({ runId: id, runUrl: resolvedUrl, current, ceilingMs });
       }
-      throw new Error(`The qualification run ${resolvedUrl} could not be read: ${error?.message ?? error}`);
+      throw error;
     }
   }
 }
@@ -423,8 +443,11 @@ export async function observeQualification({ env = process.env, run = execute, w
 /**
  * The one outcome line #338 records, for the step summary and the job log. The
  * cause is only ever what was observed: a conclusion when the run reached a
- * terminal state, the ceiling when the hold actually expired, and the recorded
- * `reason` otherwise — a read failure must never be reported as the ceiling.
+ * terminal state, the ceiling when the hold actually expired, the recorded
+ * `reason` when the dispatch proves nothing was submitted, and — for
+ * `unobserved` — the read failure plus the reads that were made and the dispatch
+ * receipt. A failure to read is never reported as the ceiling and never as a
+ * verdict the observation did not form.
  */
 export function qualificationOutcomeLine(result) {
   const tuple = typeof result.service_commit === 'string' && result.service_commit !== ''
@@ -433,10 +456,23 @@ export function qualificationOutcomeLine(result) {
     return `Qualification qualified: ${result.run_url} concluded ${result.conclusion}${tuple}.`;
   }
   const runUrl = typeof result.run_url === 'string' && result.run_url !== '' ? result.run_url : undefined;
+  if (result.outcome === 'unobserved') {
+    const cause = typeof result.read_cause === 'string' && result.read_cause !== ''
+      ? result.read_cause : 'no read cause was recorded';
+    const reads = Number.isSafeInteger(result.reads) && result.reads >= 0 ? result.reads : 0;
+    const waitsMs = Number.isSafeInteger(result.waits_ms) && result.waits_ms >= 0 ? result.waits_ms : 0;
+    const receipt = typeof result.receipt === 'string' && result.receipt !== ''
+      ? result.receipt : 'no receipt was recorded';
+    return `Qualification unobserved: ${runUrl ?? 'the dispatched qualification run'} could not be read (${cause})`
+      + ` after ${reads} read${reads === 1 ? '' : 's'} over ${waitsMs} ms of waits; dispatch receipt: ${receipt},`
+      + ` so no qualification verdict was recorded${tuple}.`;
+  }
   const conclusion = typeof result.conclusion === 'string' && result.conclusion !== '' ? result.conclusion : undefined;
   if (conclusion !== undefined) {
     const failed = Array.isArray(result.failed_jobs) && result.failed_jobs.length > 0
-      ? `; failed job(s): ${result.failed_jobs.join(', ')}` : '';
+      ? `; failed job(s): ${result.failed_jobs.join(', ')}`
+      : (typeof result.failed_jobs_note === 'string' && result.failed_jobs_note !== ''
+        ? `; failed job(s): none named (the job list could not be read: ${result.failed_jobs_note})` : '');
     return `Qualification unqualified: ${runUrl ?? 'the dispatched qualification run'} concluded`
       + ` ${conclusion}${tuple}${failed}.`;
   }
@@ -453,13 +489,16 @@ export function qualificationOutcomeLine(result) {
 
 /**
  * Record exactly one outcome line. The step summary is the durable record and the
- * step output carries the verdict for the run; the ceiling is an annotation on the
- * step log (`::warning`), never an error, because the deployment's own conclusion
- * stands.
+ * step output carries the verdict for the run. `unobserved` is an error annotation
+ * because no verdict was formed and the step exits non-zero; the ceiling and the
+ * unreadable job list are warnings on the step log, never errors, because the
+ * deployment's own conclusion stands.
  */
 export async function recordQualificationOutcome({ env = process.env, result, out = process.stdout } = {}) {
   const line = qualificationOutcomeLine(result);
-  out.write(`${result.ceiling === true ? '::warning::' : ''}${line}\n`);
+  const annotation = result.outcome === 'unobserved' ? '::error::'
+    : result.ceiling === true || typeof result.failed_jobs_note === 'string' ? '::warning::' : '';
+  out.write(`${annotation}${line}\n`);
   if (typeof env.GITHUB_STEP_SUMMARY === 'string' && env.GITHUB_STEP_SUMMARY !== '') {
     await appendFile(env.GITHUB_STEP_SUMMARY, `${line}\n`);
   }
