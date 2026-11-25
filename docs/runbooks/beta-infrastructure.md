@@ -43,60 +43,6 @@ reads Runtime terminal first (one writer), and a missing Runtime is the stopped
 state rather than an inactive variant to maintain. The one-time Platform/Runtime split
 migration is Deployment-gated: see [beta-split-migration.md](beta-split-migration.md).
 
-### Egress NAT/EIP replacement experiment (historical)
-
-> **Superseded on 2026-11-25.** The Egress stack now owns its EIP and releases it when a
-> stop deletes the stack: the resource carries no `Retain` policy, `deploy-egress` takes no
-> allocation id, and every start allocates a fresh source address. The text below records
-> the #166 experiment and the address it replaced; it does not describe the current start or
-> stop.
-
-The Egress stack's NAT/EIP constructs are renamed `NatGatewayNext`/`NatEipNext`
-(formerly `NatGateway`/`NatEip`) so the next `deploy-egress` gives the provider a
-new source address. CloudFormation creates a new EIP/allocation and NAT, updates
-both 0.0.0.0/0 routes to the new NAT, then deletes the old NAT and releases its
-EIP. The `EgressNatGatewayId` and `EgressNatEipAllocationId` output logical
-IDs/names stay unchanged; only their values change.
-
-The current old physical IDs are `18.162.201.142` (EIP) and
-`nat-0bf635c13de95e370` (NAT). Record the new EIP/allocation and NAT IDs from the
-deploy readback; the source revision does not claim them before deployment. The
-old pre-split address `16.163.218.252` was released and must not be reused. The
-change is reversible, but a revert replaces again and allocates another EIP.
-This experiment is source-only until the scheduler allocates the Beta writer; no
-deploy is authorized by the source change.
-
-### Drill precondition: pin the Egress NAT EIP (historical)
-
-> **Superseded on 2026-11-25.** The pin is retired with the `Retain` policy: there is no
-> allocation to supply to `deploy-egress` and no retained address to reuse. The flow below
-> is kept as the record of the drill it served.
-
-The recovery drill needs the provider to see the same source address across the
-stop/start until the moment the experiment changes it. The working EIP is
-`54.46.99.32` (`eipalloc-0a5198fb91b876949`). The Egress stack owns no EIP when
-`deploy-egress` receives this allocation: the NAT and the
-`EgressNatEipAllocationId` output use the provided value. Without the input the
-stack creates a fresh EIP and retains it across deletion.
-
-Drill flow:
-
-1. Deploy the fix: the default Egress synthesis marks its EIP `Retain`, so this
-   deploy installs the policy without replacing the current EIP.
-2. Stop with `delete-egress`: the EIP `54.46.99.32`
-   (`eipalloc-0a5198fb91b876949`) is retained; the operation's step log and the
-   stack's own events name the allocation it kept.
-3. Start with `deploy-egress` and
-   `nat_eip_allocation_id=eipalloc-0a5198fb91b876949`: the stack creates no EIP
-   and reuses the retained allocation, so the provider sees the same address.
-4. Continue the remaining drill steps with that address.
-
-Fallback: if the allocation is missing, run `deploy-egress` without
-`nat_eip_allocation_id`; a new EIP is created and the provider probe must be
-repeated. The input is accepted only for `deploy-egress` and must match
-`eipalloc-[0-9a-f]+`; the retained allocation is recorded in the operation
-context and the delete event.
-
 ## Step C: the release slice left this repository (historical, pre-#195)
 
 > **Historical (before #195).** This section records the #158 step C decision. The
