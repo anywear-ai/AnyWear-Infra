@@ -43,7 +43,13 @@ reads Runtime terminal first (one writer), and a missing Runtime is the stopped
 state rather than an inactive variant to maintain. The one-time Platform/Runtime split
 migration is Deployment-gated: see [beta-split-migration.md](beta-split-migration.md).
 
-### Egress NAT/EIP replacement experiment
+### Egress NAT/EIP replacement experiment (historical)
+
+> **Superseded on 2026-11-25.** The Egress stack now owns its EIP and releases it when a
+> stop deletes the stack: the resource carries no `Retain` policy, `deploy-egress` takes no
+> allocation id, and every start allocates a fresh source address. The text below records
+> the #166 experiment and the address it replaced; it does not describe the current start or
+> stop.
 
 The Egress stack's NAT/EIP constructs are renamed `NatGatewayNext`/`NatEipNext`
 (formerly `NatGateway`/`NatEip`) so the next `deploy-egress` gives the provider a
@@ -60,7 +66,11 @@ change is reversible, but a revert replaces again and allocates another EIP.
 This experiment is source-only until the scheduler allocates the Beta writer; no
 deploy is authorized by the source change.
 
-### Drill precondition: pin the Egress NAT EIP
+### Drill precondition: pin the Egress NAT EIP (historical)
+
+> **Superseded on 2026-11-25.** The pin is retired with the `Retain` policy: there is no
+> allocation to supply to `deploy-egress` and no retained address to reuse. The flow below
+> is kept as the record of the drill it served.
 
 The recovery drill needs the provider to see the same source address across the
 stop/start until the moment the experiment changes it. The working EIP is

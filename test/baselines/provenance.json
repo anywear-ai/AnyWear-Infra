@@ -120,6 +120,8 @@
   "egress_pinned_allocation": {
     "recorded_at": "2026-10-21",
     "issue": 166,
+    "superseded_at": "2026-11-25",
+    "superseded_note": "The Egress stack now owns its EIP and releases it when a stop deletes the stack: the resource carries no Retain policy, deploy-egress accepts no allocation id (the NAT_EIP_ALLOCATION_ID input is retired), and each start allocates a fresh source address. The drill flow recorded here is history.",
     "allocation_id": "eipalloc-0a5198fb91b876949",
     "address": "54.46.99.32",
     "scope": "Egress NAT EIP drill precondition",

@@ -65,10 +65,6 @@ on:
         description: Explicit email JSON array for add-testers or set-testers; otherwise []
         type: string
         default: '[]'
-      nat_eip_allocation_id:
-        description: Retained Egress EIP allocation for a deploy-egress start (eipalloc-...); empty creates a new EIP
-        type: string
-        default: ''
       # Issue #321: the abandoned object-deletion manifest one rearm-object-deletion
       # run repairs. Both values are copied from the worker's
       # `Object deletion manifest standing state` line, and both are empty on every
@@ -128,7 +124,6 @@ env:
   # repository variable for this operation.
   CLIENT_PUBLISH_ROLE_ARN: 'arn:aws:iam::650880818323:role/beta-client-publish-role'
   TESTER_EMAILS: ${{ inputs.tester_emails }}
-  NAT_EIP_ALLOCATION_ID: ${{ inputs.nat_eip_allocation_id }}
   OBJECT_DELETION_MANIFEST_ID: ${{ inputs.object_deletion_manifest_id }}
   OBJECT_DELETION_EXPECTED_GENERATION: ${{ inputs.object_deletion_expected_generation }}
   INFRA_IDENTITY_PHASE: ${{ inputs.identity_phase }}

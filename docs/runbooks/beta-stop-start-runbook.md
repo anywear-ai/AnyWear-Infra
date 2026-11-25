@@ -15,6 +15,9 @@ gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main \
 gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main -f operation=delete-egress
 ```
 
+`delete-egress` deletes the Egress stack, and the stack's EIP is released with it: the
+stopped state keeps no idle allocation, and nothing has to be carried to the next start.
+
 ## Start (order matters)
 
 Two dispatches. The runtime dispatch recreates the stack, repoints the API `CloudFront`
@@ -26,10 +29,9 @@ distribution's origin at the load balancer it just created, and then reads `/hea
 SERVICE_ARTIFACT_TAG="service-artifacts-<commit>"
 SERVICE_COMMIT="<commit>"
 
-# 1. egress, reusing the retained EIP
+# 1. egress — allocates a fresh EIP, so Beta's outbound source address changes here
 gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main \
-  -f operation=deploy-egress -f nat_eip_allocation_id="$(aws ec2 describe-addresses \
-      --region ap-east-1 --query 'Addresses[0].AllocationId' --output text)"
+  -f operation=deploy-egress
 
 # 2. runtime — creates the stack, repoints the edge, bakes for 5 minutes, ends green
 gh workflow run mutate.yml -R anywear-ai/AnyWear-Infra --ref main \
@@ -95,7 +97,11 @@ dispatching `deploy-runtime` again — it sets the parameter and re-reads `/heal
 - The runtime dispatch repoints the distribution's origin itself; do not insert a
   `deploy-platform` between the two dispatches, and do not read a 502 during the run as a
   failure of the start.
-- The EIP must survive the stop; without it the next start gets a new outbound address.
+- Stop releases the EIP. The Egress stack owns the allocation and releases it with the
+  stack, so a stopped Beta leaves nothing behind to bill or to carry between runs, and the
+  next start allocates a new one. Beta's outbound source address therefore changes on every
+  start: anything outside this repository that pins it must be updated after the start,
+  because the address does not exist until then.
 
 Stacks, gates and evidence: [Beta infrastructure runbook](https://github.com/anywear-ai/AnyWear-Infra/blob/main/docs/runbooks/beta-infrastructure.md).
 Costs: [Beta cost controls](https://github.com/anywear-ai/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/finOps/beta-cost-controls.md).

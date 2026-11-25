@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createRuntimeIo, validateOperationInputs, cdkDeploymentArguments, deleteOperationStack,
+import { createRuntimeIo, validateOperationInputs, deleteOperationStack,
   resolveServiceImageDigest, runOperation, serviceImageTag } from '../../scripts/runtime-operation.mjs';
 import { runtimeStack } from '../../scripts/lib/one-writer.mjs';
 
@@ -22,26 +22,6 @@ const env = {
 };
 const stackAbsence = stackName => Object.assign(new Error(`aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`), {
   stderr: `aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${stackName} does not exist`,
-});
-
-test('the Egress EIP allocation is accepted only for deploy-egress and must be an eipalloc id', () => {
-  const inputs = validateOperationInputs({ ...env, NAT_EIP_ALLOCATION_ID: allocationId });
-  assert.equal(inputs.nat_eip_allocation_id, allocationId);
-  // Empty means absence, as the workflow input's default.
-  assert.equal(Object.hasOwn(validateOperationInputs({ ...env, NAT_EIP_ALLOCATION_ID: '' }), 'nat_eip_allocation_id'), false);
-  assert.throws(() => validateOperationInputs({ ...env, INFRA_OPERATION: 'delete-egress', NAT_EIP_ALLOCATION_ID: allocationId }),
-    /belongs only to deploy-egress/);
-  for (const value of ['eipalloc-XYZ', 'eipalloc-', 'eip-0a5198fb91b876949', 'eipalloc-0a5198fb91b876949 ']) {
-    assert.throws(() => validateOperationInputs({ ...env, NAT_EIP_ALLOCATION_ID: value }),
-      /must be an Elastic IP allocation id/, value);
-  }
-});
-
-test('the Egress deploy passes the retained allocation as CDK context', () => {
-  const args = cdkDeploymentArguments(egressStack, '/tmp/artifacts', env, { natEipAllocationId: allocationId });
-  assert.ok(args.includes('natEipAllocationId=eipalloc-0a5198fb91b876949'));
-  assert.ok(args.includes('-c'));
-  assert.equal(cdkDeploymentArguments(egressStack, '/tmp/artifacts', env).some(arg => arg.startsWith('natEipAllocationId=')), false);
 });
 
 // Issue #254: both Base-deploying operations resolve the origin through
@@ -91,9 +71,10 @@ test('a Base deploy passes the live Base parameter as the ApiOriginDomainName pa
   }
 });
 
-// The retained EIP is the allocation the next start must reuse, so delete-egress
-// still refuses when the stack cannot report it before the destroy.
-test('delete-egress proves the retained EIP allocation before destroying the stack', async () => {
+// The destroy releases the stack-owned EIP with the stack, so delete-egress still
+// reads the allocation the stack reports before it destroys anything: a stack that
+// cannot name its own EIP refuses instead of releasing an unknown address.
+test('delete-egress proves the EIP allocation before destroying the stack', async () => {
   const destroyed = [];
   const io = {
     async aws(args) {
