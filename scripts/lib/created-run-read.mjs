@@ -4,13 +4,12 @@
 // not absence: the read happens right after the dispatch that created the run.
 // This module owns the API path, the bounded retry, the identity check and the
 // failure message, so every workflow script that reads such a run follows one
-// policy, and `test/scripts/created-run-read-census.test.mjs` fails a script that
-// spells the path itself.
+// policy.
 //
 // The file has no dependencies, reads no environment and touches no filesystem:
 // the two hand-off jobs that vendor these exact bytes run no dependency install,
-// so it must load standalone. Its bytes are pinned by a SHA-256 digest in the
-// census test named above.
+// so it must load standalone. Its bytes travel as one implementation, vendored
+// unchanged into every repository that reads a created run.
 export const RUN_READ_ATTEMPTS = 5;
 export const RUN_READ_WAIT_MS = 1_000;
 
