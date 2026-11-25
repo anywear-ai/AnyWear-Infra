@@ -11,7 +11,8 @@ import { validateOperationInputs } from './runtime-operation.mjs';
 // implementation, `scripts/lib/created-run-read.mjs`, byte-identical to the copies
 // AnyWear-Service and AnyWear-Client vendor. The three policy symbols are
 // re-exported, never redefined, so their existing importers keep working and the
-// census guard can prove the definition exists in exactly one file.
+// definition stays in one file; `test/scripts/entry-manifest.test.mjs` fails a
+// second exported definition across `lib/contracts.mjs` and `scripts/`.
 export { RUN_READ_ATTEMPTS, RUN_READ_WAIT_MS, runReadWaits } from './lib/created-run-read.mjs';
 
 // The deploy chain's qualification hop and hold (#226, #338). After `deploy`
