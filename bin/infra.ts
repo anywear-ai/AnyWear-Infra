@@ -90,14 +90,6 @@ if (stage === 'beta') {
 }
 }
 
-// Issue #166 drill precondition: an Egress start may reuse the retained EIP
-// allocation from the previous stop instead of creating a new one.
-const natEipAllocationIdContext = app.node.tryGetContext('natEipAllocationId');
-if (natEipAllocationIdContext !== undefined && typeof natEipAllocationIdContext !== 'string') {
-  throw new Error('natEipAllocationId must be a string');
-}
-const natEipAllocationId = natEipAllocationIdContext || undefined;
-
 // `egress` is the disposable network edge. It is a separate scope so
 // `deploy-egress` / `delete-egress` synthesize only this stack and need no
 // Service artifact directory; `cdk deploy/destroy --exclusively` then touches
@@ -106,7 +98,7 @@ const natEipAllocationId = natEipAllocationIdContext || undefined;
 // two stacks share the Base-owned network without Egress re-creating route
 // tables or a second association. Synthesis performs no AWS call.
 if (deployScope === 'egress') {
-  new EgressStack(app, 'AnyWearEgressStack-beta', { env, natEipAllocationId });
+  new EgressStack(app, 'AnyWearEgressStack-beta', { env });
 }
 
 // `runtime` is the release slice (#195). It is a separate scope because the

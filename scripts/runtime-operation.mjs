@@ -79,16 +79,6 @@ export function validateOperationInputs(env = process.env) {
   if (!testerOperations.includes(operation) && normalizeTesterEmails(env.TESTER_EMAILS ?? '[]') !== '[]') {
     throw new Error('Tester payload belongs only to the tester operations');
   }
-  // The retained Egress EIP allocation is a deploy-egress start input only. An
-  // empty workflow_dispatch value is absence; any non-empty value must match the
-  // reviewed allocation form before credentials.
-  const natEipAllocationId = env.NAT_EIP_ALLOCATION_ID;
-  if (natEipAllocationId !== undefined && natEipAllocationId !== '') {
-    if (operation !== 'deploy-egress') throw new Error('NAT_EIP_ALLOCATION_ID belongs only to deploy-egress');
-    if (!/^eipalloc-[0-9a-f]+$/.test(natEipAllocationId)) {
-      throw new Error('NAT_EIP_ALLOCATION_ID must be an Elastic IP allocation id (eipalloc-...)');
-    }
-  }
   // Issue #321: the abandoned-manifest re-arm takes exactly the two values the
   // worker's standing-state line reports — the oldest abandoned manifest id and
   // its lease generation. Both inputs default to empty on every operation, so a
@@ -115,7 +105,6 @@ export function validateOperationInputs(env = process.env) {
   }
   return { source_sha: env.GITHUB_SHA, operation, service_release: release,
     ...(clientPublication ? { client_publication: clientPublication } : {}),
-    ...(operation === 'deploy-egress' && natEipAllocationId ? { nat_eip_allocation_id: natEipAllocationId } : {}),
     ...(rearm ? { object_deletion_rearm: rearm } : {}) };
 }
 const baseStack = 'AnyWearPlatformStack-beta';
@@ -199,8 +188,9 @@ export async function deployOperationStack(io, operation) {
 }
 // The stop sequence is Runtime (Infra's `stop-runtime`) then Egress. This
 // operation is the second step only: it refuses while the Runtime stack exists.
-// The retained EIP is the allocation the next start must reuse, so its output is
-// proven before the destroy removes it and the stack's outputs.
+// The destroy releases the stack-owned EIP, so its output is read and proven
+// before the destroy removes it and the stack's outputs: the run names the
+// allocation it is about to release, and a stack that cannot report one refuses.
 export async function deleteOperationStack(io, operation) {
   const [stack] = changedStackNames(operation);
   if (operation !== 'delete-egress' || stack !== egressStack) {
@@ -226,7 +216,7 @@ function deployScopeFor(stack) {
   if (stack === runtimeStack) return 'runtime';
   return 'foundation';
 }
-export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId } = {}) {
+export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName } = {}) {
   const deployScope = deployScopeFor(stack);
   if (deployScope === 'application' && !apiOriginDomainName) throw new Error('The Base deploy requires the API origin domain name');
   return ['cdk', 'deploy', stack, '--exclusively', '--require-approval', 'never',
@@ -235,11 +225,12 @@ export function cdkDeploymentArguments(stack, directory, env, { apiOriginDomainN
     // #254: the origin is a CloudFormation stack parameter now, so the deploy
     // passes it with the CDK CLI's `--parameters KEY=VALUE` form instead of the
     // old `-c apiOriginDomainName` context the synthesis read.
-    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '--parameters', `ApiOriginDomainName=${apiOriginDomainName}`] : []),
-    ...(deployScope === 'egress' && natEipAllocationId ? ['-c', `natEipAllocationId=${natEipAllocationId}`] : [])];
+    ...(deployScope === 'application' ? ['-c', `artifactDirectory=${directory}`, '--parameters', `ApiOriginDomainName=${apiOriginDomainName}`] : [])];
 }
 // The Egress destroy uses the same restricted deploy session and reviewed
-// context; `--force` is safe because the stack holds no retained resources.
+// context; `--force` is safe because the stack holds no retained resources: the
+// Egress stack's EIP is released with the stack, so a stop leaves no allocation
+// behind for a later start to reuse.
 export function cdkDestroyArguments(stack, env) {
   return ['cdk', 'destroy', stack, '--force', '--exclusively',
     '-c', `deployScope=${deployScopeFor(stack)}`, '-c', 'stage=beta', '-c', 'legacyRoleSource=external',
@@ -452,9 +443,8 @@ export async function createRuntimeIo(env = process.env, { run = execute, assume
       if (purpose !== 'operation') throw new Error('Qualification cannot deploy');
       assertDeployAllowed(env, stack);
       const apiOriginDomainName = stack === baseStack ? await readApiOrigin(io) : undefined;
-      const natEipAllocationId = stack === egressStack ? env.NAT_EIP_ALLOCATION_ID : undefined;
       const awsEnv = await roleEnv('deploy');
-      await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName, natEipAllocationId }),
+      await run('npx', cdkDeploymentArguments(stack, directory, env, { apiOriginDomainName }),
         { cwd: root, env: awsEnv, timeout: 3_600_000, maxBuffer: 20 * 1024 * 1024 });
       // The mutation landed: record it as a changed stack so a later failure still
       // names what the run already altered in its step summary.

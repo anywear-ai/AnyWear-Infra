@@ -156,20 +156,15 @@ test('mutate.yml keeps one preflight → verify → deploy → qualify-hold chai
   assert.match(mutate['run-name'], /inputs\.service_artifact_tag/);
   assert.match(mutate['run-name'], /inputs\.dispatched_by/);
   assert.match(mutate['run-name'], /github\.actor/);
-  // #166 drill precondition: the retained Egress EIP allocation is an optional
-  // string input passed to the operation env; its pattern is enforced by
-  // check-operation/validateOperationInputs, not by a workflow_dispatch pattern.
-  const natEipInput = mutate.on.workflow_dispatch.inputs.nat_eip_allocation_id;
-  assert.equal(natEipInput.type, 'string');
-  assert.equal(natEipInput.default, '');
-  assert.match(natEipInput.description, /deploy-egress/);
-  assert.match(natEipInput.description, /eipalloc-/);
-  assert.equal(Object.hasOwn(natEipInput, 'pattern'), false);
-  assert.equal(mutate.env.NAT_EIP_ALLOCATION_ID, '${{ inputs.nat_eip_allocation_id }}');
+  // The retired Egress EIP pin (issue #166 drill precondition) is gone from the
+  // dispatch surface: the Egress stack owns its EIP and releases it on stop, so a
+  // start allocates a fresh one and no operator supplies an allocation id.
+  assert.equal(Object.hasOwn(mutate.on.workflow_dispatch.inputs, 'nat_eip_allocation_id'), false);
+  assert.equal(Object.hasOwn(mutate.env, 'NAT_EIP_ALLOCATION_ID'), false);
   // Issue #321: the abandoned-manifest re-arm carries exactly two dispatch inputs.
   // They are optional strings whose per-operation scope is enforced in the
-  // credential-free preflight, exactly like the tester payload and the EIP
-  // allocation above; the workflow itself admits them on every operation.
+  // credential-free preflight, exactly like the tester payload; the workflow
+  // itself admits them on every operation.
   const manifestIdInput = mutate.on.workflow_dispatch.inputs.object_deletion_manifest_id;
   assert.equal(manifestIdInput.type, 'string');
   assert.equal(manifestIdInput.default, '');
