@@ -28,7 +28,11 @@ route tables, and the S3 gateway endpoint, and is deleted on stop; it creates no
 route table and no subnet route-table association (AWS allows one association per
 subnet and Platform owns it). `Runtime` (`AnyWearRuntimeStack-beta`, Infra-owned; it
 replaced the old Workload identity) holds the ALB, ECS services/task definitions,
-log groups and the cleanup operation and is deleted on stop.
+log groups and the cleanup operation and is deleted on stop. The internet-facing
+ALB is also where the account's other two Elastic IPs come from: `ElasticLoadBalancing`
+allocates one per public subnet when the load balancer is created and releases them
+with the stack, so a running Beta holds three addresses in total and a stopped Beta
+holds none. Only the Egress stack's address is the Egress stack's own.
 
 There is no `environmentRunning` switch, no `BetaActive` output and no stopped
 template. Run state is one fact: whether the Runtime stack exists. Stop deletes
