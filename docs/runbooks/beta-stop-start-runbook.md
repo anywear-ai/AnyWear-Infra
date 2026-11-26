@@ -84,6 +84,7 @@ gh workflow enable  reconcile-schedule.yml -R anywear-ai/AnyWear-E2E   # after a
 | --- | --- | --- | --- |
 | `curl -s -o /dev/null -w '%{http_code}' https://d1pfqujqt29n11.cloudfront.net/health` | 200 | 502 while a start's `deploy-runtime` runs, or after its edge repair failed | 502 |
 | `AnyWearRuntimeStack-beta` status | `CREATE_COMPLETE` or `UPDATE_COMPLETE` | `CREATE_COMPLETE` or `UPDATE_COMPLETE`, and its `ApiLoadBalancerDnsName` differs from the distribution's origin | does not exist |
+| `aws ec2 describe-addresses --region ap-east-1` count | three | one after `deploy-egress` and before the load balancer exists | zero |
 
 A 502 alone is not `Stopped`: read the Runtime stack's existence with it. That repair needs the
 Platform stack's origin parameter installed, which one `deploy-platform` does; before that install,
@@ -91,17 +92,28 @@ a `deploy-runtime` dispatch refuses by name instead of repointing anything. Once
 installed, a 502 with the Runtime stack existing and the parameter differing is repaired by
 dispatching `deploy-runtime` again — it sets the parameter and re-reads `/health`.
 
+**Three addresses while running, none while stopped.** Only one of the three is the Egress
+stack's own. The other two are the internet-facing API load balancer's: `ElasticLoadBalancing`
+allocates them when the load balancer is created, attaches one to each public subnet's load
+balancer network interface, and releases them when `stop-runtime` deletes
+`AnyWearRuntimeStack-beta`. They count against the account's five-address EC2-VPC quota, but
+they are not orphans and never need a manual release — a green stop leaves zero addresses, and
+`delete-egress` releases the one the Egress stack owns. If `describe-addresses` shows an address
+after a green stop, that one is a leftover worth investigating; anything seen while Beta runs is
+expected.
+
 ## Three things that bite
 
 - `stop-runtime` without `identity_phase=roles-added` is rejected — the default is `retired`.
 - The runtime dispatch repoints the distribution's origin itself; do not insert a
   `deploy-platform` between the two dispatches, and do not read a 502 during the run as a
   failure of the start.
-- Stop releases the EIP. The Egress stack owns the allocation and releases it with the
-  stack, so a stopped Beta leaves nothing behind to bill or to carry between runs, and the
-  next start allocates a new one. Beta's outbound source address therefore changes on every
-  start: anything outside this repository that pins it must be updated after the start,
-  because the address does not exist until then.
+- Stop releases every address. `delete-egress` releases the Egress stack's own allocation and
+  `stop-runtime` releases the load balancer's two, so a stopped Beta leaves nothing behind to
+  bill, to clean up or to carry between runs, and the next start allocates a new outbound
+  address. Beta's outbound source address therefore changes on every start: anything outside
+  this repository that pins it must be updated after the start, because the address does not
+  exist until then.
 
 Stacks, gates and evidence: [Beta infrastructure runbook](https://github.com/anywear-ai/AnyWear-Infra/blob/main/docs/runbooks/beta-infrastructure.md).
 Costs: [Beta cost controls](https://github.com/anywear-ai/AnyWear-Meta/blob/main/architecture/system-component-architecture/technical-architecture/finOps/beta-cost-controls.md).
