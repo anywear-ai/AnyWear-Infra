@@ -48,8 +48,9 @@ test('the workflow directory is exactly the four Beta entries plus the callable'
   const betaEntries = files.filter(file => file === 'check.yml' || dispatchSurfaces.includes(file));
   assert.deepEqual(betaEntries, ['check.yml', 'mutate.yml', 'runtime.yml', 'schedule.yml']);
 
-  // `check.yml` is the automatic entry: PR plus main pushes, no dispatch surface.
-  assert.deepEqual(Object.keys(workflows['check.yml'].on).sort(), ['pull_request', 'push']);
+  // `check.yml` is the automatic entry: PR, main pushes and the merge queue's serial
+  // re-test, no dispatch surface.
+  assert.deepEqual(Object.keys(workflows['check.yml'].on).sort(), ['merge_group', 'pull_request', 'push']);
   assert.deepEqual(workflows['check.yml'].on.push, { branches: ['main'] });
   assert.equal(Object.hasOwn(workflows['check.yml'].on, 'workflow_dispatch'), false);
 
