@@ -123,9 +123,9 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: AnyWear-E2E
           permission-actions: write
-      # The operation-to-trigger mapping, the pre-dispatch dedupe, the dispatch with
-      # `return_run_details: true`, the created run verified by id and the bounded
-      # run-name fallback are `scripts/schedule-e2e.mjs`'s; it exposes the
+      # The operation-to-trigger mapping, the dispatch with `return_run_details: true`,
+      # the created run verified by id and the bounded run-name fallback are
+      # `scripts/schedule-e2e.mjs`'s; it dispatches on every invocation and exposes the
       # created run's id, URL and dispatch receipt as its step outputs, which the
       # observation reads.
       - name: Dispatch the scheduled gate run and print its run

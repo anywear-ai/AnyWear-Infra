@@ -30,8 +30,8 @@ export const CLIENT_PUBLICATION_OPERATION = 'publish-client';
 export const CLIENT_INPUTS = Object.freeze(['CLIENT_RUN_ID', 'CLIENT_RUN_ATTEMPT', 'CLIENT_BUNDLE_DIGEST']);
 // The one form a dispatcher produces for `dispatched_by`: the HTTPS URL of the
 // GitHub Actions run that dispatched this workflow. It is also the key the
-// receiving workflow renders into its own `run-name`, so a re-run can be
-// deduplicated from the run list without reading workflow inputs.
+// receiving workflow renders into its own `run-name`, so the no-run-id fallback
+// can find the dispatched run by its run name without reading workflow inputs.
 const RUN_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/[1-9][0-9]*$/;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 

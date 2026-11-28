@@ -309,12 +309,15 @@ shape: a `smoke` run is dispatched and the job ends.
 | `publish` | `smoke` | `deploy-smoke` | — | `0` | this Infra run URL |
 | `manual` | `smoke` | `deploy-smoke` | — | `0` | this Infra run URL |
 
-Before dispatching, the job lists the target's `queued` and `in_progress` runs
-and skips when this run's URL already appears in one of their names, printing that
-run's URL. A failed listing dispatches anyway and says so: a duplicate
-gate run wastes a run, while a skipped legitimate one would hide a release.
-That lookup runs before the dispatch because an existing run's name has settled by
-the time it appears. The dispatch calls the workflow-dispatch REST endpoint with
+The gate dispatch is made on every invocation: a re-run is a deliberate redeploy,
+not a duplicate to suppress. The `anywear-infra-runtime` concurrency group
+(`cancel-in-progress: false`, `queue: max`) orders the second dispatch behind the
+holder instead of replacing it, and no pre-dispatch listing of the target's active
+runs is read. The dispatch step records exactly one receipt — `created` once the
+POST returned a parsable response, `not_submitted` when the POST was refused, or
+`acceptance_unknown` when it may have been accepted before it broke — so the hold
+can tell a dispatch that never happened from one whose run it cannot name. The
+dispatch calls the workflow-dispatch REST endpoint with
 `return_run_details: true` through `gh api` (`gh workflow run` does not expose the
 flag) and prints the created run's URL from the response. When the response carries
 a positive `workflow_run_id`, the job reads

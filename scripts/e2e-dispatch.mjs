@@ -29,12 +29,14 @@ export { RUN_READ_ATTEMPTS, RUN_READ_WAIT_MS, runReadWaits } from './lib/created
 // AWS credential and no environment; its only token is one App installation token
 // narrowed to AnyWear-E2E with `actions: write`.
 //
-// The dispatch cannot be deduplicated from workflow inputs — the REST run object
-// exposes none — so the pre-dispatch skip and the fallback post-dispatch lookup use
-// `display_title`, which for a `workflow_dispatch` run is exactly its `run-name`.
-// The receiving workflow renders `dispatched_by` into that name, and this run's own
-// URL is the value it sends. The normal post-dispatch check does not use the title:
-// the dispatch response names the created run, and that run is verified by id.
+// The dispatch is sent on every invocation: a re-run is a deliberate redeploy, and
+// `anywear-infra-runtime` (`cancel-in-progress: false`, `queue: max`) orders it
+// behind the holder instead of replacing it, so no pre-dispatch lookup suppresses
+// it. The dispatch response names the created run, and that run is verified by id.
+// Only when the response names no run id does the fallback use `display_title`,
+// which for a `workflow_dispatch` run is exactly its `run-name`; the receiving
+// workflow renders `dispatched_by` into that name, and this run's own URL is the
+// value it sends.
 const execute = promisify(execFile);
 export const E2E_REPOSITORY = 'anywear-ai/AnyWear-E2E';
 export const E2E_WORKFLOW = 'beta-e2e.yml';
@@ -205,23 +207,25 @@ async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, o
 }
 
 /**
- * Skip the dispatch when this run's URL is already in an active run's name; list
- * failures dispatch anyway and say so, because a duplicate gate run wastes a
- * run while a skipped legitimate one would hide a release. After dispatching, when
- * the response names the created run, read that run by id — retrying only a `404`
- * and rejecting a run already terminal with a non-`success` conclusion (#342) —
- * and accept it when the API returns the same id, never the title, which can lag
- * the run itself. When the response names no run id, poll the active-run list for
- * this run's URL a bounded number of attempts and fail only after they are
- * exhausted, which still catches a run dropped at birth by a full `queue: max`
+ * Dispatch the gate run and prove the dispatch. There is no pre-dispatch lookup:
+ * every invocation dispatches, because a re-run is a deliberate redeploy and this
+ * run's `anywear-infra-runtime` queue (`cancel-in-progress: false`, `queue: max`)
+ * already orders it behind the holder instead of replacing it.
+ *
+ * When the response names the created run, read that run by id — retrying only a
+ * `404` and rejecting a run already terminal with a non-`success` conclusion
+ * (#342) — and accept it when the API returns the same id, never the title, which
+ * can lag the run itself. When the response names no run id, poll the active-run
+ * list for this run's URL a bounded number of attempts and fail only after they
+ * are exhausted, which still catches a run dropped at birth by a full `queue: max`
  * queue.
  *
  * #338: the created run's id and URL are also appended to the workflow step's
  * `GITHUB_OUTPUT`, so the job's final step can observe exactly the run this
- * dispatch created. #354 adds the dispatch receipt to the same write: `adopted`,
- * `created`, `not_submitted` or `acceptance_unknown`, decided by how far the
- * dispatch got, so the recorder can tell "nothing was submitted" from "a run may
- * exist that this step cannot name".
+ * dispatch created. #354 adds the dispatch receipt to the same write: `created`,
+ * `not_submitted` or `acceptance_unknown`, decided by how far the dispatch got, so
+ * the recorder can tell "nothing was submitted" from "a run may exist that this
+ * step cannot name".
  *
  * Issue #344: the body is shared with the scheduled entry, whose payload is built
  * from its own operation menu; only the payload differs.
@@ -239,19 +243,6 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
   let runUrl;
   let runId;
   try {
-    let existing;
-    try {
-      existing = findDispatchedRun(await listActiveRuns(run, ghEnv), key);
-    } catch (error) {
-      out.write(`Could not list the target's queued and in-progress runs (${error?.message ?? error}); dispatching anyway.\n`);
-    }
-    if (existing) {
-      out.write(`Gate run already dispatched by ${key}: ${existing.html_url}\n`);
-      receipt = 'adopted';
-      runUrl = existing.html_url;
-      runId = existing.id;
-      return { dispatched: false, payload, run_url: runUrl, run_id: runId, receipt };
-    }
     let details;
     // The POST may have been accepted even when its response never arrives, so only
     // a status that proves refusal records `not_submitted`; every other failure is

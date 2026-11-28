@@ -68,9 +68,10 @@ export function schedulePayload(env = process.env) {
 
 /**
  * Dispatch the gate run and expose the created run's id and URL through the
- * step's `GITHUB_OUTPUT`, which the observation step reads. The dedupe, the
- * by-id verification and the bounded fallback are `e2e-dispatch.mjs`'s,
- * so the scheduled entry and the deploy chain hold their runs the same way.
+ * step's `GITHUB_OUTPUT`, which the observation step reads. The dispatch is made on
+ * every invocation; the by-id verification and the bounded fallback are
+ * `e2e-dispatch.mjs`'s, so the scheduled entry and the deploy chain hold their runs
+ * the same way.
  */
 export async function dispatchScheduledGate({ env = process.env, ...options } = {}) {
   return dispatchRun({ env, ...options, payload: schedulePayload(env) });

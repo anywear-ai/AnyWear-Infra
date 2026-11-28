@@ -123,17 +123,21 @@ test('the dispatch sends the payload once and exposes the created run to the obs
   });
 });
 
-test('a re-run whose key is already in an active run name dispatches nothing', async () => {
+test('a re-run dispatches even when an active run name already carries the key', async () => {
   await withOutput(async output => {
     const existingUrl = 'https://github.com/anywear-ai/AnyWear-E2E/actions/runs/999';
-    const gh = fakeGh({ in_progress: [{ id: 999, html_url: existingUrl,
-      display_title: 'Beta E2E gate: reconcile · scheduled · - · by ' + key }] });
+    const active = { id: 999, html_url: existingUrl,
+      display_title: 'Beta E2E gate: reconcile · scheduled · - · by ' + key };
+    const gh = fakeGh({ queued: [active], in_progress: [active] });
     const result = await dispatchScheduledGate({ env: env({ GITHUB_OUTPUT: output }),
       run: gh.run, out: gh.out });
-    assert.equal(result.dispatched, false);
-    assert.equal(result.run_id, 999);
-    assert.equal(gh.calls.some(args => args.includes('--method')), false);
-    assert.equal(await readFile(output, 'utf8'), `run_url=${existingUrl}\nrun_id=999\nreceipt=adopted\n`);
+    assert.equal(result.dispatched, true, 'the scheduled entry dispatches on every invocation');
+    assert.equal(result.receipt, 'created');
+    assert.equal(result.run_id, 4242, 'the run it created, not the active run that already carried the key');
+    assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1);
+    assert.deepEqual(gh.calls.filter(args => /\?status=/.test(String(args[1]))), [],
+      'no pre-dispatch listing is read, so the active run is never adopted');
+    assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\nreceipt=created\n`);
   });
 });
 
