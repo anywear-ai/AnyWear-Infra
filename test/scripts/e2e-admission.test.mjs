@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import {
   ACCEPTED_FULL_RUN_NAME_PREFIXES, ACCEPTED_WORKFLOW_PATHS, ADMISSION_BUDGET_MS,
   ADMISSION_INTERVAL_MS, E2E_FULL_RUN_NAME_PREFIX, E2E_WORKFLOW_PATH, isFullGateRun,
-  listNonterminalFullRuns, main, E2E_NONTERMINAL_STATUSES,
-  RETIRED_FULL_RUN_NAME_PREFIX, RETIRED_WORKFLOW_PATH, RUNS_PATH,
+  listNonterminalFullRuns, main, E2E_NONTERMINAL_STATUSES, RUNS_PATH,
 } from '../../scripts/e2e-admission.mjs';
 import { capturedRunPage } from '../fixtures/e2e-repository-runs-page.mjs';
 
@@ -96,16 +95,15 @@ const admit = async ({ gh, clock, overrides = {} } = {}) => {
 
 const waitedTotal = waits => waits.reduce((total, value) => total + value, 0);
 
-test('the accepted sets are the retired and current literals, and nothing else', async () => {
+test('the accepted sets are exactly the current gate literals', async () => {
   // The literals, not the workflow file: `AnyWear-E2E` is not in this checkout, so
   // these tests pin Infra's half and the E2E `run-name`'s own half is Acceptance's.
-  assert.equal(RETIRED_WORKFLOW_PATH, '.github/workflows/beta-qualification.yml');
+  // Issue #358 step 6 shrank the set: the retired path and run-name prefix are not
+  // accepted any more, and no other path or prefix is.
   assert.equal(E2E_WORKFLOW_PATH, '.github/workflows/beta-e2e.yml');
-  assert.deepEqual([...ACCEPTED_WORKFLOW_PATHS], [RETIRED_WORKFLOW_PATH, E2E_WORKFLOW_PATH]);
-  assert.equal(RETIRED_FULL_RUN_NAME_PREFIX, 'Beta qualification: full');
+  assert.deepEqual([...ACCEPTED_WORKFLOW_PATHS], [E2E_WORKFLOW_PATH]);
   assert.equal(E2E_FULL_RUN_NAME_PREFIX, 'Beta E2E gate: full');
-  assert.deepEqual([...ACCEPTED_FULL_RUN_NAME_PREFIXES],
-    [RETIRED_FULL_RUN_NAME_PREFIX, E2E_FULL_RUN_NAME_PREFIX]);
+  assert.deepEqual([...ACCEPTED_FULL_RUN_NAME_PREFIXES], [E2E_FULL_RUN_NAME_PREFIX]);
   assert.equal(Object.isFrozen(ACCEPTED_WORKFLOW_PATHS), true);
   assert.equal(Object.isFrozen(ACCEPTED_FULL_RUN_NAME_PREFIXES), true);
   assert.equal(Object.isFrozen(E2E_NONTERMINAL_STATUSES), true);
@@ -113,38 +111,38 @@ test('the accepted sets are the retired and current literals, and nothing else',
     ['requested', 'waiting', 'pending', 'queued', 'in_progress']);
   assert.equal(RUNS_PATH, 'repos/anywear-ai/AnyWear-E2E/actions/runs?per_page=100');
   assert.equal(isFullGateRun({}), false);
-  assert.equal(isFullGateRun({ path: RETIRED_WORKFLOW_PATH }), false,
+  assert.equal(isFullGateRun({ path: E2E_WORKFLOW_PATH }), false,
     'a path alone is not a `full` holder');
+  assert.equal(isFullGateRun({ path: '.github/workflows/other.yml',
+    display_title: fullTitle(E2E_FULL_RUN_NAME_PREFIX) }), false,
+    'a lookalike path is not a `full` holder');
   assert.equal(isFullGateRun({ display_title: fullTitle(E2E_FULL_RUN_NAME_PREFIX) }), false,
     'a run-name alone is not a `full` holder');
 });
 
-test('the four path × run-name-prefix combinations are each recognised as a full holder', async () => {
-  let index = 0;
-  for (const path of ACCEPTED_WORKFLOW_PATHS) {
-    for (const prefix of ACCEPTED_FULL_RUN_NAME_PREFIXES) {
-      const holder = runState(6000 + index++, 'in_progress', { path, title: fullTitle(prefix) });
-      assert.equal(isFullGateRun(holder), true, `${path} + ${prefix} must be a full holder`);
-      // The holder is never completed, so the budget is what ends the wait: the
-      // combination did hold the gate rather than being filtered away.
-      const gh = fakeGh({ pages: [[holder]], byId: { [holder.id]: holder } });
-      const clock = fakeClock();
-      const { code, text, waits } = await admit({ gh, clock });
-      assert.equal(code, 1, `${path} + ${prefix} must refuse the mutation`);
-      assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
-      assert.match(text, /^Refusing the mutation: 1 full gate run\(s\) were still nonterminal/);
-      assert.ok(text.includes(runUrl(holder.id)), 'the refusal names the holder URL');
-      assert.match(text, /\(in_progress\)/, 'the refusal names the holder status');
-    }
-  }
+test('the current path and run-name prefix are recognised as a full holder', async () => {
+  // The retired pair is no longer accepted: the issue's plan removed the gate file
+  // and its stub before this shrink step, so the one current pair is the whole set.
+  const holder = runState(6000, 'in_progress', { path: E2E_WORKFLOW_PATH,
+    title: fullTitle(E2E_FULL_RUN_NAME_PREFIX) });
+  assert.equal(isFullGateRun(holder), true);
+  const gh = fakeGh({ pages: [[holder]], byId: { [holder.id]: holder } });
+  const clock = fakeClock();
+  const { code, text, waits } = await admit({ gh, clock });
+  assert.equal(code, 1, 'the holder must refuse the mutation');
+  assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
+  assert.match(text, /^Refusing the mutation: 1 full gate run\(s\) were still nonterminal/);
+  assert.ok(text.includes(runUrl(holder.id)), 'the refusal names the holder URL');
+  assert.match(text, /\(in_progress\)/, 'the refusal names the holder status');
 });
 
-test('smoke and reconcile runs are not holders under either prefix', async () => {
+test('smoke and reconcile runs are not holders', async () => {
   let index = 0;
-  for (const prefix of ACCEPTED_FULL_RUN_NAME_PREFIXES) {
-    for (const operation of ['smoke', 'reconcile']) {
-      const run = runState(7000 + index++, 'in_progress', { title: runName(prefix, operation) });
-      assert.equal(isFullGateRun(run), false, `${operation} under ${prefix} is not a full run`);
+  for (const operation of ['smoke', 'reconcile']) {
+    {
+      const run = runState(7000 + index++, 'in_progress',
+        { title: runName(E2E_FULL_RUN_NAME_PREFIX, operation) });
+      assert.equal(isFullGateRun(run), false, `${operation} is not a full run`);
       const gh = fakeGh({ pages: [[run]] });
       const clock = fakeClock();
       const { code, text, waits } = await admit({ gh, clock });
@@ -160,16 +158,12 @@ test('the committed fixture is a real page and carries the deleted workflow path
   // The surviving evidence for the repository-level read: `.github/workflows/
   // reconcile-schedule.yml` was deleted from AnyWear-E2E long ago, and its runs are
   // still listed with that `path`. The fixture is the real capture, trimmed to the
-  // consumed fields, and deliberately contains no entry of the retired gate workflow
-  // file: the shrink step of this issue must reach zero occurrences of that name
-  // without touching this file.
+  // consumed fields, and carries no retired gate entry either, so this step's
+  // repository-wide check reaches zero occurrences of the retired name without
+  // touching this file.
   const paths = capturedRunPage.workflow_runs.map(run => run.path);
   assert.equal(paths.filter(path => path === '.github/workflows/reconcile-schedule.yml').length > 0, true,
     'the fixture must carry real runs of the long-deleted reconcile-schedule.yml');
-  assert.equal(paths.includes(RETIRED_WORKFLOW_PATH), false,
-    'the fixture itself must not carry a retired gate-path entry');
-  assert.equal(capturedRunPage.workflow_runs.some(run =>
-    typeof run.display_title === 'string' && run.display_title.startsWith(RETIRED_FULL_RUN_NAME_PREFIX)), false);
   // Every committed entry is a real run object with the consumed fields, so it is a
   // valid page for the read; none of them is a `full` holder.
   for (const run of capturedRunPage.workflow_runs) {
@@ -183,28 +177,6 @@ test('the committed fixture is a real page and carries the deleted workflow path
   const runs = await listNonterminalFullRuns(gh.run, { GH_TOKEN: 'ghs_read_only' });
   assert.deepEqual(runs, [], 'the real page holds no nonterminal full run');
   assert.deepEqual(gh.calls, [RUNS_PATH]);
-});
-
-test('a nonterminal holder written under the retired path is still seen', async () => {
-  // The design's deleted-file assumption. The holder is built from a real captured
-  // `.github/workflows/reconcile-schedule.yml` entry, changing only `path`,
-  // `display_title`, `status` and `conclusion`: a run keeps the path of the file it
-  // was dispatched from after that file is deleted, so the holder is still visible
-  // here while the rename window closes.
-  const shape = capturedRunPage.workflow_runs
-    .find(run => run.path === '.github/workflows/reconcile-schedule.yml');
-  const holder = { ...shape, path: RETIRED_WORKFLOW_PATH,
-    display_title: fullTitle(RETIRED_FULL_RUN_NAME_PREFIX), status: 'in_progress', conclusion: null };
-  assert.equal(isFullGateRun(holder), true);
-  const gh = fakeGh({ pages: [[holder], []],
-    byId: { [holder.id]: [holder, { ...holder, status: 'completed', conclusion: 'success' }] } });
-  const clock = fakeClock();
-  const { code, text, waits } = await admit({ gh, clock });
-  assert.equal(code, 0, 'the retired-path holder kept the gate shut until it completed');
-  assert.deepEqual(waits, [ADMISSION_INTERVAL_MS],
-    'the holder was recognised on the first page and held the mutation for one interval');
-  assert.equal(gh.byIdCalls(), 2, 'the holder was re-read by id until it reported completed');
-  assert.match(text, /proceeds after 30 s/);
 });
 
 test('a holder at the end of a 100-entry mixed page is still found', async () => {

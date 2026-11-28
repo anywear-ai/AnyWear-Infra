@@ -30,12 +30,14 @@ import { E2E_REPOSITORY } from './e2e-dispatch.mjs';
 // captured page in `test/fixtures/e2e-repository-runs-page.mjs`).
 //
 // A page is filtered client-side, because the runs API has no "path is" filter: a run
-// is a holder only when its own `path` is one of the accepted workflow paths, its
-// `display_title` starts with an accepted `full` run-name prefix, and its `status` is
-// not `completed`. Both the retired and the current literal are accepted until the
-// later shrink step removes the retired one: runs written under the retired name must
-// stay visible while the rename window closes, and the failure mode of missing one is
-// an admitted deployment, not an error.
+// is a holder only when its own `path` is the gate workflow path, its `display_title`
+// starts with the `full` run-name prefix, and its `status` is not `completed`. The
+// dual literal set existed only for the rename window: the issue's plan removes the
+// old gate file and its stub in AnyWear-E2E before this shrink step, so this read
+// stops accepting the old name and pins the one current pair. The repository-level
+// read still does not depend on the gate file existing — the `reconcile-schedule.yml`
+// runs in the captured page prove that a deleted file's runs keep their `path` — it
+// only has to recognise the one name the live gate writes.
 //
 // The read is one unfiltered snapshot per poll, plus a by-id re-read of every run it
 // has ever observed as a holder. The earlier shape queried the five nonterminal
@@ -56,33 +58,26 @@ import { E2E_REPOSITORY } from './e2e-dispatch.mjs';
 // created between the two reads.
 const execute = promisify(execFile);
 
-// The two accepted workflow-file paths. `RETIRED_WORKFLOW_PATH` is the file the
-// rename retires: runs dispatched under it are still nonterminal after the file is
-// deleted, and their `path` still names it. Both members are accepted in this step;
-// the shrink step of the same issue removes the retired one. They are compared
-// exactly, never by suffix, so a lookalike path is not a holder.
-export const RETIRED_WORKFLOW_PATH = '.github/workflows/beta-qualification.yml';
+// The one accepted workflow-file path. It is compared exactly, never by suffix, so a
+// lookalike path is not a holder. Runs of the long-deleted `reconcile-schedule.yml`
+// still carry their own `path` in the repository run list (see the captured page in
+// `test/fixtures/e2e-repository-runs-page.mjs`), which is why the read is scoped to
+// the repository and not to a workflow file that has to exist.
 export const E2E_WORKFLOW_PATH = '.github/workflows/beta-e2e.yml';
-export const ACCEPTED_WORKFLOW_PATHS = Object.freeze([RETIRED_WORKFLOW_PATH, E2E_WORKFLOW_PATH]);
+export const ACCEPTED_WORKFLOW_PATHS = Object.freeze([E2E_WORKFLOW_PATH]);
 
 // The `full` filter is the run-name prefix, not the run's own operation output: the
-// workflow's `run-name` is the only field the runs API exposes. These constants are
-// the `full` half of `AnyWear-E2E`'s
-// `run-name: "<gate>: ${{ inputs.operation }} · ${{ inputs.trigger }} ·
+// workflow's `run-name` is the only field the runs API exposes. This constant is the
+// `full` half of `AnyWear-E2E`'s
+// `run-name: "Beta E2E gate: ${{ inputs.operation }} · ${{ inputs.trigger }} ·
 // ${{ inputs.expected_service_commit || '-' }} · by ${{ inputs.dispatched_by ||
 // format('@{0}', github.actor) }}"`, and the workflow's `operation` input is a
 // choice of `full|smoke|reconcile`; only `full` runs the regression suite the hold
-// exists to protect. `RETIRED_FULL_RUN_NAME_PREFIX` is the pre-rename rendering of
-// the same field and is accepted for the same reason as the retired path. The other
-// side of this check — that `AnyWear-E2E`'s own `run-name` renders the current
-// prefix — belongs to Acceptance (issue #338), because that file is not in this
-// checkout.
-export const RETIRED_FULL_RUN_NAME_PREFIX = 'Beta qualification: full';
+// exists to protect. The other side of this check — that `AnyWear-E2E`'s own
+// `run-name` renders this prefix — belongs to Acceptance (issue #338), because that
+// file is not in this checkout.
 export const E2E_FULL_RUN_NAME_PREFIX = 'Beta E2E gate: full';
-export const ACCEPTED_FULL_RUN_NAME_PREFIXES = Object.freeze([
-  RETIRED_FULL_RUN_NAME_PREFIX,
-  E2E_FULL_RUN_NAME_PREFIX,
-]);
+export const ACCEPTED_FULL_RUN_NAME_PREFIXES = Object.freeze([E2E_FULL_RUN_NAME_PREFIX]);
 
 // The runs API's documented nonterminal status names. The read does not query them:
 // it takes one unfiltered snapshot and filters on the complement of `completed`, so
