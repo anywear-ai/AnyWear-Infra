@@ -1,4 +1,4 @@
-﻿import * as cdk from 'aws-cdk-lib';
+import * as cdk from 'aws-cdk-lib';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';

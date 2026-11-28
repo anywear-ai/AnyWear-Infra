@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACCEPTED_FULL_RUN_NAME_PREFIXES, ACCEPTED_WORKFLOW_PATHS, ADMISSION_BUDGET_MS,

@@ -1,4 +1,4 @@
-﻿# `scripts/` entry surface
+# `scripts/` entry surface
 
 This file is the single declaration of the `scripts/` entry surface. An entry is a
 `.mjs` program at the `scripts/` root that a reviewed caller invokes as a program
