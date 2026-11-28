@@ -390,14 +390,21 @@ instead, with one `AnyWear-E2E` `beta-e2e.yml` dispatch carrying all five inputs
 - `trigger=release-gate`
 - `expected_service_commit=<the live Service commit>`
 - `worker_slot_offset=0`
-- `dispatched_by=<URL of the deployment run whose summary recorded failed or unobserved>`
+- `dispatched_by` left empty — the run name then states `@<actor>`, the identity
+  GitHub recorded when it created the run
 
-Those are the workflow's own inputs and its `release-gate` validation accepts
-nothing else: the operation must be `full`, the expected Service commit is required,
-the worker slot offset must be `0`, and a non-manual trigger is the only place
-`dispatched_by` (an HTTPS run URL) is accepted. Only a `full` run is the gate
-verdict, so neither a `smoke` dispatch nor a re-run of a failed gate run recovers the
-tuple.
+When an `AnyWear-Infra` writer holds the Beta tuple, the queued alternative is
+`AnyWear-Infra`'s `schedule.yml` with `operation=full` and the expected Service
+commit: it waits in `anywear-infra-runtime` and dispatches the same `release-gate`
+gate as its own child, which then carries that Infra run's URL.
+
+Those are the workflow's own inputs and its `release-gate` validation admits them:
+the operation must be `full`, the expected Service commit is required, and the
+worker slot offset must be `0`. `manual` and a direct `release-gate` dispatch must
+both leave `dispatched_by` empty; `deploy-gate`, `deploy-smoke` and `scheduled`
+require the dispatching run's HTTPS URL, and a non-empty value is accepted only from
+a run an app identity created. Only a `full` run is the gate verdict, so neither a
+`smoke` dispatch nor a re-run of a failed gate run recovers the tuple.
 
 A run whose job list cannot be read is not an `unobserved` hold: the run's own
 conclusion stands and the outcome line says `failed job(s): none named (the job
@@ -996,8 +1003,11 @@ line, with both remedies:
   converged change set executes nothing.
 - **Dispatch `AnyWear-E2E` `beta-e2e.yml`** with `operation=full`,
   `trigger=release-gate`, `expected_service_commit=<commit>`,
-  `worker_slot_offset=0` and `dispatched_by=<run URL>`. This is the fallback when
-  a re-run is unavailable.
+  `worker_slot_offset=0` and `dispatched_by` left empty — the run name then states
+  `@<actor>`, the identity GitHub recorded when it created the run. This is the
+  fallback when a re-run is unavailable. When an `AnyWear-Infra` writer holds the
+  tuple, `AnyWear-Infra`'s `schedule.yml` with `operation=full` and the expected
+  Service commit dispatches the gate as its own child instead.
 
 A new manual `deploy-runtime` dispatch is **not** a remedy: it carries
 `delivery_trigger=manual`, and `scripts/e2e-dispatch.mjs` maps `manual`
