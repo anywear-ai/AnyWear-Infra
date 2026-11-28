@@ -9,9 +9,9 @@ import { dispatchArguments, dispatchGateRun, FALLBACK_WAIT_MS, findDispatchedRun
   RUN_READ_WAIT_MS } from '../../scripts/e2e-dispatch.mjs';
 
 // #226: the deploy chain's qualification hop. The payloads are the two rows of the
-// design's E2E dispatch table; the pre-dispatch dedupe and the post-dispatch
-// verification are what make a re-run dispatch nothing and a created run be
-// confirmed by the id the dispatch response names, not by a title that can lag it.
+// design's E2E dispatch table. Every invocation dispatches — a re-run is a
+// deliberate redeploy — and the created run is confirmed by the id the dispatch
+// response names, not by a title that can lag it.
 const serviceCommit = 'b'.repeat(40);
 const dispatchedBy = 'https://github.com/git-malu/AnyWear-Service/actions/runs/40123456789';
 const clientDispatchedBy = 'https://github.com/git-malu/AnyWear-Client/actions/runs/40123456790';
@@ -37,10 +37,10 @@ const runName = (payload = { operation: 'full', trigger: 'deploy-gate' }) =>
 // post-dispatch run read. Every call is recorded, so the tests prove what was
 // requested. `dispatchResponse` replaces the dispatch body — omit `workflow_run_id`
 // to exercise the fallback; `dispatchError` makes the dispatch POST itself throw;
-// `listSnapshots` answers each successive active-run lookup with one snapshot, so
-// the pre-dispatch lookup is the first; `reads` answers the by-id read from a result
-// sequence instead, whose entries are run bodies or `Error`s that are thrown, and
-// whose last entry repeats.
+// `failingStatus` makes that status's listing fail; `listSnapshots` answers each
+// successive fallback lookup with one snapshot; `reads` answers the by-id read from
+// a result sequence instead, whose entries are run bodies or `Error`s that are
+// thrown, and whose last entry repeats.
 function fakeGh({ queued = [], in_progress = [], failingStatus, listSnapshots,
   dispatchResponse, dispatchError, created = { id: 4242, html_url: createdUrl }, reads } = {}) {
   const calls = [];
@@ -159,8 +159,8 @@ test('a dispatch response naming the run id is verified by id, never by the run 
   assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'the dispatch happens once');
   assert.equal(gh.calls.filter(args => args[1] === 'repos/anywear-ai/AnyWear-E2E/actions/runs/4242').length, 1,
     'the created run is fetched exactly once, by the id the dispatch response named');
-  assert.deepEqual(gh.calls.slice(postIndex + 1).filter(args => /\?status=/.test(String(args[1]))), [],
-    'the active-run lookup is not consulted after the dispatch');
+  assert.deepEqual(gh.calls.filter(args => /\?status=/.test(String(args[1]))), [],
+    'the active-run lookup is not consulted when the response names a run id');
   // A foreign title is equally irrelevant: the hook does not compare titles.
   const foreign = fakeGh({ created: { id: 4242, display_title: 'Some Foreign Run', html_url: createdUrl } });
   const ignored = await dispatchGateRun({ env: dispatchEnv(), run: foreign.run, out: foreign.out });
@@ -169,25 +169,27 @@ test('a dispatch response naming the run id is verified by id, never by the run 
   assert.equal(ignored.run_id, 4242);
 });
 
-test('a re-run whose key is already in an active run name dispatches nothing', async () => {
+test('a re-run whose key is already in an active run name still dispatches', async () => {
   const existingUrl = 'https://github.com/git-malu/AnyWear-E2E/actions/runs/999';
-  const gh = fakeGh({ queued: [{ id: 999, display_title: runName(), html_url: existingUrl }] });
+  const active = { id: 999, display_title: runName(), html_url: existingUrl };
+  const gh = fakeGh({ queued: [active], in_progress: [active] });
   const result = await dispatchGateRun({ env: dispatchEnv(), run: gh.run, out: gh.out });
-  assert.equal(result.dispatched, false);
-  assert.equal(result.run_url, existingUrl);
-  assert.equal(result.run_id, 999, 'the skipped run is still the run the observation must read');
-  assert.equal(gh.calls.some(args => args.includes('--method')), false, 'no dispatch when the key already exists');
-  assert.ok(gh.output().includes(existingUrl), 'the skipped run URL is printed');
-  // The in-progress list is part of the pre-dispatch read.
-  assert.ok(gh.calls.some(args => String(args[1]).includes('status=in_progress')));
+  assert.equal(result.dispatched, true, 'the re-run is a deliberate redeploy, not a duplicate to adopt');
+  assert.equal(result.receipt, 'created');
+  assert.equal(result.run_url, createdUrl);
+  assert.equal(result.run_id, 4242, 'the run this dispatch created, not the active one that already carried the key');
+  assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'every invocation dispatches once');
+  assert.deepEqual(gh.calls.filter(args => /\?status=/.test(String(args[1]))), [],
+    'no pre-dispatch listing is read, so the active run is never adopted');
+  assert.equal(gh.output().includes(existingUrl), false, 'the active run is not reported as this dispatch');
 });
 
 test('without a run id the hook polls the active-run list instead of reading it once', async () => {
   const matching = { id: 4242, display_title: runName(), html_url: createdUrl };
   const empty = { queued: [], in_progress: [] };
-  // The pre-dispatch lookup and the first fallback attempt are empty; the second
-  // fallback attempt carries the run the dispatch created.
-  const gh = fakeGh({ dispatchResponse: {}, listSnapshots: [empty, empty, { queued: [matching], in_progress: [] }] });
+  // The first fallback attempt is empty; the second carries the run the dispatch
+  // created.
+  const gh = fakeGh({ dispatchResponse: {}, listSnapshots: [empty, { queued: [matching], in_progress: [] }] });
   const waits = [];
   const result = await dispatchGateRun({ env: dispatchEnv(), run: gh.run, out: gh.out,
     wait: async milliseconds => waits.push(milliseconds) });
@@ -214,12 +216,14 @@ test('the fallback fails only after its attempts are exhausted', async () => {
   assert.deepEqual(waits, [FALLBACK_WAIT_MS, FALLBACK_WAIT_MS], 'the wait runs between attempts, not after the last');
 });
 
-test('a failed run listing dispatches anyway and says so', async () => {
-  const gh = fakeGh({ failingStatus: 'queued' });
-  const result = await dispatchGateRun({ env: dispatchEnv(), run: gh.run, out: gh.out });
-  assert.equal(result.dispatched, true);
-  assert.match(gh.output(), /dispatching anyway/);
-  assert.ok(gh.calls.some(args => args.includes('--method')), 'the dispatch still happens');
+test('a fallback listing failure is retried and named when the attempts are exhausted', async () => {
+  const gh = fakeGh({ dispatchResponse: {}, failingStatus: 'queued' });
+  const waits = [];
+  await assert.rejects(dispatchGateRun({ env: dispatchEnv(), run: gh.run, out: gh.out,
+    attempts: 2, wait: async milliseconds => waits.push(milliseconds) }),
+  /No active gate run carried .* after 2 attempts: the last listing failed: gh: HTTP 502 Bad Gateway/);
+  assert.equal(gh.calls.filter(args => args.includes('--method')).length, 1, 'the dispatch itself was made once');
+  assert.deepEqual(waits, [FALLBACK_WAIT_MS], 'the wait runs between the two attempts');
 });
 
 test('the hook refuses a missing token, a release trigger and an unknown operation before any call', async () => {
