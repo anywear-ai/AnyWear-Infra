@@ -19,8 +19,6 @@ test/support/*.d.ts
 # that travels to the deploy job and the one publication record it uploads.
 .client-artifacts/
 .client-publication/
-.qualification/
-.qualification-verifier/
 runtime-evidence/
 app-access-evidence/
 cdk.matrix/

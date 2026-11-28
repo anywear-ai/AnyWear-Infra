@@ -60,7 +60,7 @@ export const qualifiedWorkflowPaths = Object.freeze(['.github/workflows/runtime.
 // AnyWear-E2E executes exactly one reviewed workflow. `integration.yml` was
 // retired with the E2E consolidation; adding another path here would admit a
 // second, unreviewed E2E producer without a reviewed executor.
-export const e2eExecutorPaths = Object.freeze(['.github/workflows/beta-qualification.yml']);
+export const e2eExecutorPaths = Object.freeze(['.github/workflows/beta-e2e.yml']);
 
 // The reviewed executor/source/account/region gate shared by the observation and
 // the recovery drivers. It reads only repository identity and dispatch

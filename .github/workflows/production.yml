@@ -1,4 +1,4 @@
-name: Future qualified Production promotion
+name: Future gated Production promotion
 on:
   # Not an entry: this file stays source-disabled and is callable only. Its
   # tested pre-AWS blocker and tests remain; a future reviewed onboarding adds the
@@ -26,11 +26,12 @@ jobs:
       CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       PROD_DEPLOY_ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
-      QUALIFICATION_RUN_ID: ${{ vars.PROD_QUALIFICATION_RUN_ID }}
-      QUALIFICATION_RUN_ATTEMPT: ${{ vars.PROD_QUALIFICATION_RUN_ATTEMPT }}
-      QUALIFICATION_ARTIFACT_ID: ${{ vars.PROD_QUALIFICATION_ARTIFACT_ID }}
-      QUALIFICATION_RECORD_SHA256: ${{ vars.PROD_QUALIFICATION_RECORD_SHA256 }}
-      QUALIFICATION_E2E_SHA: ${{ vars.PROD_QUALIFICATION_E2E_SHA }}
+      # Issue #358: the AnyWear-E2E `full` gate run this promotion dispatched and
+      # holds. The id and attempt come from that dispatch's `return_run_details`
+      # response in a future entry; they are variables here only so the disabled
+      # gate can be exercised and read back.
+      E2E_GATE_RUN_ID: ${{ vars.E2E_GATE_RUN_ID }}
+      E2E_GATE_RUN_ATTEMPT: ${{ vars.E2E_GATE_RUN_ATTEMPT }}
       STABLE_RELEASE_ID: ${{ vars.PROD_STABLE_RELEASE_ID }}
       SERVICE_RELEASE_ID: ${{ vars.PROD_SERVICE_RELEASE_ID }}
       SERVICE_SOURCE_SHA: ${{ vars.PROD_SERVICE_SOURCE_SHA }}
@@ -47,6 +48,10 @@ jobs:
       - name: Require separately reviewed Production executor onboarding before credentials or artifact access
         run: node scripts/promote-production.mjs
       - run: npm ci
+      # The one App token reads the AnyWear-Service release facts and the
+      # AnyWear-E2E gate run this promotion holds. It no longer downloads a gate
+      # artifact and no longer checks out the AnyWear-E2E verifier: the run object
+      # itself is the verdict (#358).
       - uses: actions/create-github-app-token@v3
         id: app
         with:
@@ -59,31 +64,15 @@ jobs:
           permission-contents: read
           permission-actions: read
           permission-attestations: read
-      - name: Verify the reviewed release identity, stable release and trusted Beta qualification before AWS credentials
-        id: qualified
+      - name: Resolve the reviewed release identity, stable release and the gate run before AWS credentials
+        id: gate
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: node scripts/production-preflight.mjs resolve
-      - uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ vars.PROD_QUALIFICATION_ARTIFACT_ID }}
-          repository: ${{ github.repository_owner }}/AnyWear-E2E
-          run-id: ${{ vars.PROD_QUALIFICATION_RUN_ID }}
-          github-token: ${{ steps.app.outputs.token }}
-          path: .qualification/download
-          merge-multiple: true
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/AnyWear-E2E
-          ref: ${{ steps.qualified.outputs.e2e_sha }}
-          path: .qualification-verifier
-          token: ${{ steps.app.outputs.token }}
-          persist-credentials: false
-      - name: Verify the qualification record v3 integrity and exact artifact/run/attempt/release binding
-        run: node scripts/production-preflight.mjs verify
       # Execution stays source-disabled in scripts/promote-production.mjs, which
       # runs before credentials and cannot be bypassed by an activation variable.
-      # The preflight consumes the flat v3 record (`revisions`/`service_artifacts`/
-      # `observations`); it no longer downloads or validates deployment records.
-      # A future reviewed onboarding PR must supply scoped cross-account credentials,
+      # The preflight reads the sealed Service release identity, the stable release
+      # and the AnyWear-E2E `full` gate run this promotion dispatched and holds; the
+      # run object is the gate verdict, and no record or artifact is read. A future
+      # reviewed onboarding PR must supply scoped cross-account credentials,
       # Production DB observation, scan/retention evidence and compute-only recovery.

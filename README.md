@@ -11,7 +11,7 @@ delivery alone does not establish AWS deployment or runtime acceptance.
 
 The accepted [ownership ADR](https://github.com/anywear-ai/AnyWear-Meta/blob/main/architecture/ADR/0021-shared-infrastructure-repository.md)
 assigns shared infrastructure to Infra, immutable application artifacts to Service,
-independent web publishing to Client, and authenticated system qualification to E2E.
+independent web publishing to Client, and the authenticated system gate on E2E.
 
 ## Source checks
 
@@ -134,7 +134,7 @@ digests, the ECR image digest and the live `/health` and `/readyz` endpoints.
 Infra exposes **4 entries / 3 manual dispatch surfaces / 1 switch**
 (`ENABLE_BETA_MUTATION`): one automatic source check, one manual operation
 chain per deployable unit, and the scheduled entry that starts and holds the
-qualification of Beta's served tuple (issue #344). `production.yml` stays in the
+E2E gate on Beta's served tuple (issue #344). `production.yml` stays in the
 tree but is `workflow_call`-only, so it is not an entry.
 
 Every `scripts/` entry program is declared in [`scripts/README.md`](scripts/README.md)
@@ -148,8 +148,8 @@ says when to use each, including the hand stop and start of Beta.
 | --- | --- | --- |
 | [check.yml](.github/workflows/check.yml) | PR / push `main` | CDK build and tests, contract/workflow tests, live-Foundation comparison and both source matrices; no dispatch surface |
 | [runtime.yml](.github/workflows/runtime.yml) | manual `operation: state` | `state`: fixed AWS read-only state/SSM status, usable with the stage switch closed, no tasks, no mutation and no artifact |
-| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`, `publish-client`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` or `publish-client` run adds `qualify-hold` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output, while a Client publication travels as `client-publish-bytes-<run_id>-<run_attempt>` and its recomputed digest as `verify`'s `client_bundle_digest` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime` (`deploy`/`manual`) and `publish-client` (`publish`/`manual`), and the hold dispatches the E2E qualification and, for `delivery_trigger=deploy` or `publish`, reads it to a terminal state under a 55-minute ceiling, recording exactly one `qualified`, `unqualified` or `unobserved` outcome (`manual` dispatches a `smoke` and does not wait); `unobserved` means the dispatched run could not be read, so no verdict was formed and the step fails. The run's job and step conclusions are the verdict |
-| [schedule.yml](.github/workflows/schedule.yml) | daily `03:17 UTC` / manual `operation` (`reconcile`, `smoke`, `full`) | The scheduled entry: dispatches AnyWear-E2E `beta-qualification.yml` — `reconcile` as `trigger=scheduled`, `smoke` as `deploy-smoke`, `full` as `release-qualify` with the expected commits — and holds the created run under the same 55-minute ceiling and three-outcome recorder, recording one `qualified`, `unqualified` or `unobserved` outcome. It shares `anywear-infra-runtime`, declares no `environment`, no `id-token` and no AWS credential, and mints exactly one `AnyWear-E2E` `actions: write` App token |
+| [mutate.yml](.github/workflows/mutate.yml) | manual `operation` (14 options) | `deploy-foundation`, `deploy-billing`, `deploy-platform`, `deploy-egress`, `delete-egress`, `deploy-runtime`, `stop-runtime`, `restore-release`, `migrate`, `admission-status`, `add-testers`, `set-testers`, `rearm-object-deletion`, `publish-client`. Every run is one `preflight` → `verify` → `deploy` chain, and a `deploy-runtime` or `publish-client` run adds `e2e-hold` after a successful `deploy`; the release bytes travel as `service-release-bytes-<run_id>-<run_attempt>` and the published digests as the `verify` output, while a Client publication travels as `client-publish-bytes-<run_id>-<run_attempt>` and its recomputed digest as `verify`'s `client_bundle_digest` output. `delivery_trigger` and `dispatched_by` are accepted only by `deploy-runtime` (`deploy`/`manual`) and `publish-client` (`publish`/`manual`), and the hold dispatches the E2E gate run and, for `delivery_trigger=deploy` or `publish`, reads it to a terminal state under a 55-minute ceiling, recording exactly one `passed`, `failed` or `unobserved` outcome (`manual` dispatches a `smoke` and does not wait); `unobserved` means the dispatched run could not be read, so no verdict was formed and the step fails. The run's job and step conclusions are the verdict |
+| [schedule.yml](.github/workflows/schedule.yml) | daily `03:17 UTC` / manual `operation` (`reconcile`, `smoke`, `full`) | The scheduled entry: dispatches AnyWear-E2E `beta-e2e.yml` — `reconcile` as `trigger=scheduled`, `smoke` as `deploy-smoke`, `full` as `release-gate` with the expected commits — and holds the created run under the same 55-minute ceiling and three-outcome recorder, recording one `passed`, `failed` or `unobserved` outcome. It shares `anywear-infra-runtime`, declares no `environment`, no `id-token` and no AWS credential, and mints exactly one `AnyWear-E2E` `actions: write` App token |
 | [production.yml](.github/workflows/production.yml) | `workflow_call` only | Future Production scaffold with its tested pre-AWS blocker; not a dispatch entry until a separately reviewed onboarding PR completes its contract |
 | [bin/infra.ts](bin/infra.ts), `deployScope=foundation` | CLI | Separate Foundation-only initial role bootstrap; no Service artifact input is required |
 | [bin/infra.ts](bin/infra.ts), `deployScope=billing` | CLI | Separate account billing scope in `us-east-1`; application resources are not synthesized |
@@ -190,7 +190,7 @@ standalone `verify` operation is retired: Infra's operation chain runs no
 cross-repository release-verification task. The `verify` family remains for exactly
 one use — the schema-boundary gate's bounded, read-only `schema-journal` probe
 (`beta-anywear-verify`) before a Runtime mutation — and `artifact-verify` stays the
-E2E qualification executor's one-shot family.
+E2E gate executor's one-shot family.
 
 `publish-client` is Infra's one Client write (#344). It changes no stack and runs
 no one-shot task: `verify` proves the Client publisher run over REST with a
@@ -237,7 +237,7 @@ that holds an AWS
 credential: `environment: beta`, `id-token: write`, `INFRA_DEPLOY_ROLE_ARN` and
 `INFRA_RUNTIME_ROLE_ARN`, scheduled after `verify`; its first work is the read-only
 `AnyWear-E2E` admission check — the job mints one `actions: read` token, waits while
-any nonterminal `full` qualification run exists and refuses at a 30-minute budget
+any nonterminal `full` gate run exists and refuses at a 30-minute budget
 naming the holder's run URL, after checkout and `npm ci` and before the release-byte
 download, so no AWS credential exists at a refusal; `prove-release-bytes.mjs`, the
 first step of the `deploy-operation` composite, then re-derives the dispatch,
@@ -246,7 +246,7 @@ travelled file and strictly loads the schema asset or runtime policy **before** 
 step that requests the OIDC token. `publish-client` takes none of that composite:
 its own three steps after the admission check download the travelled bundle,
 re-hash it and perform the publication under `beta-client-publish-role`, then
-upload the publication record) → `qualify-hold` (**a `deploy-runtime` or
+upload the publication record) → `e2e-hold` (**a `deploy-runtime` or
 `publish-client` run only, after `deploy` succeeded**: it declares no environment,
 holds no `id-token` and no AWS permission, keeps `contents: read` and mints exactly
 one App installation token
@@ -257,11 +257,11 @@ appears in one of their names, otherwise it calls the REST dispatch endpoint wit
 run by the id the response names; only when that id is absent does it poll the
 active-run names for this run's URL a bounded number of attempts before failing.
 `delivery_trigger=deploy` sends E2E `full`
-with `trigger=deploy-qualify`, `expected_service_commit=<service_commit>` and
+with `trigger=deploy-gate`, `expected_service_commit=<service_commit>` and
 `worker_slot_offset=0`; `delivery_trigger=publish` sends `smoke` with
 `trigger=deploy-smoke`, no expected commits and `worker_slot_offset=0`, inside the
 held run; both then read the dispatched run to a terminal state under a
-55-minute ceiling and record exactly one `qualified`, `unqualified` or
+55-minute ceiling and record exactly one `passed`, `failed` or
 `unobserved` outcome (`unobserved` means the dispatched run could not be read, so
 no verdict was formed and the hold fails);
 `manual` sends `smoke` with `trigger=deploy-smoke`, no expected commits and
@@ -271,7 +271,7 @@ the one credential job and runs with the stage switch closed. `schedule.yml` is
 `preflight` → `hold`: the preflight proves reviewed main, the stage switch and the
 operation/input scope with no credential, and the hold mints the same
 `AnyWear-E2E` `actions: write` token, dispatches `reconcile`/`smoke`/`full` as
-`scheduled`/`deploy-smoke`/`release-qualify` and observes the created run with the
+`scheduled`/`deploy-smoke`/`release-gate` and observes the created run with the
 same 55-minute ceiling and three-outcome recorder. No entry but `mutate.yml`'s `deploy` acquires
 an AWS credential.
 

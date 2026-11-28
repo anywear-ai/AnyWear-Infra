@@ -1,10 +1,10 @@
-{
+﻿{
   "schema_version": 1,
   "record_type": "anywear_authorization_lint_baseline",
   "source": "AwsSolutions-IAM5 findings from the synthesized AnyWearFoundationStack and AnyWearPlatformStack-beta, plus the count of wildcard-bearing policy statements in each stack's template. Regenerate with the same inputs test/authorization-lint.test.ts synthesizes. A wildcard-bearing statement is one whose Action or Resource carries a `*` in any AWS::IAM::Policy, AWS::IAM::ManagedPolicy or role-inline policy document, and `id` is the cdk-nag rule argument verbatim with `arn:<AWS::Partition>` normalized to `arn:aws`. Every entry carries a reviewed reason.",
   "templates": [
     { "stack": "AnyWearFoundationStack", "wildcard_statement_count": 12 },
-    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 89 }
+    { "stack": "AnyWearPlatformStack-beta", "wildcard_statement_count": 81 }
   ],
   "findings": [
     {
@@ -105,7 +105,7 @@
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::*",
-      "reason": "Thirty-one statements: account-level reads that have no resource type (ECS DescribeTaskDefinition/ListTasks, EC2 DescribeManagedPrefixLists, CloudWatch GetMetricStatistics, RDS Describe*, CloudWatch Logs DescribeLogGroups, application-autoscaling Describe*), the E2E qualification role's read-only `cloudtrail:LookupEvents` (#217, which has no resource-level scope) and its #228 discovery listings (`cloudformation:ListStacks`, `lambda:ListFunctions`, `sqs:ListQueues`, `cloudfront:ListDistributions`), ecr:GetAuthorizationToken in the pipeline and one-shot-execution roles, the IAM simulator pair on the deploy and runtime roles, and the CDK LogRetention provider's logs:PutRetentionPolicy/DeleteRetentionPolicy. cdk-nag collapses every bare `*` into one id, so the per-stack count guards an added `*` statement."
+      "reason": "Account-level reads that have no resource type (ECS DescribeTaskDefinition/ListTasks, EC2 DescribeManagedPrefixLists, CloudWatch GetMetricStatistics, RDS Describe*, CloudWatch Logs DescribeLogGroups, application-autoscaling Describe*), the E2E gate role's read-only `cloudtrail:LookupEvents` (#217, which has no resource-level scope), ecr:GetAuthorizationToken in the pipeline and one-shot-execution roles, the IAM simulator pair on the deploy and runtime roles, and the CDK LogRetention provider's logs:PutRetentionPolicy/DeleteRetentionPolicy. Issue #358 removed the role's #228 discovery listings (`cloudformation:ListStacks`, `lambda:ListFunctions`, `sqs:ListQueues`, `cloudfront:ListDistributions`) with the deleted snapshot reader. cdk-nag collapses every bare `*` into one id, so the per-stack count guards an added `*` statement."
     },
     {
       "stack": "AnyWearPlatformStack-beta",
@@ -340,27 +340,7 @@
     {
       "stack": "AnyWearPlatformStack-beta",
       "id": "Resource::arn:aws:application-autoscaling:ap-east-1:650880818323:scalable-target/*",
-      "reason": "The E2E qualification role reads the Beta stage's registered scalable targets; the `*` is the scalable-target id, and the account and region are fixed. Read only."
-    },
-    {
-      "stack": "AnyWearPlatformStack-beta",
-      "id": "Resource::arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWear*/*",
-      "reason": "Issue #228: the E2E qualification observer discovers every AnyWear stack in ap-east-1; the first `*` is the reviewed stack-name prefix and the second is the stack UUID CloudFormation appends. The read trio (DescribeStacks/GetTemplate/ListStackResources) is read-only and the account and region are fixed."
-    },
-    {
-      "stack": "AnyWearPlatformStack-beta",
-      "id": "Resource::arn:aws:cloudformation:us-east-1:650880818323:stack/AnyWear*/*",
-      "reason": "Issue #228: the same discovered stack prefix in the Billing observation region us-east-1; the two `*` positions are the stack-name prefix and the stack UUID. Read only, account and region fixed."
-    },
-    {
-      "stack": "AnyWearPlatformStack-beta",
-      "id": "Resource::arn:aws:lambda:ap-east-1:650880818323:function:beta-anywear-*",
-      "reason": "Issue #228: the E2E qualification observer reads the Service-built `beta-anywear-*` Lambda name prefix; the `*` is the function-name suffix and the account and region are fixed. Read only, no function mutation."
-    },
-    {
-      "stack": "AnyWearPlatformStack-beta",
-      "id": "Resource::arn:aws:sqs:ap-east-1:650880818323:beta-anywear-*",
-      "reason": "Issue #228: the E2E qualification observer reads the `beta-anywear-*` queue name prefix; the `*` is the queue-name suffix and the account and region are fixed. Read only, no queue mutation."
+      "reason": "The E2E gate role reads the Beta stage's registered scalable targets; the `*` is the scalable-target id, and the account and region are fixed. Read only."
     }
   ]
 }

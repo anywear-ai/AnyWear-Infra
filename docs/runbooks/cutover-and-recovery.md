@@ -264,8 +264,8 @@ Current dispatches use `mutate.yml` for maintenance, `deploy-egress`/
 stops by deleting Runtime then Egress and starts by recreating Egress then
 Runtime; the persistent Platform stack is never deleted and no stopped Platform template
 exists. After a change, read the run's job/step conclusions, the `beta`
-Environment deployment and the scoped stack's CloudFormation events; E2E v3
-qualification consumes no Infra record and observes the platform itself. Read-only
+Environment deployment and the scoped stack's CloudFormation events; the E2E gate
+consumes no Infra record and reads the live tuple before and after its suite. Read-only
 `runtime.yml` `state` remains available with the stage switch closed, including
 recovery diagnosis, and cannot start tasks or qualify database/schema state.
 
@@ -333,8 +333,8 @@ source blocker before AWS credential assumption: changing an activation variable
 cannot establish its missing target-account/runtime/verifier contract. A separately
 reviewed onboarding PR must complete that contract before removing the blocker.
 Future promotion also requires a sealed stable Service release, a completed-success
-E2E v3 qualification whose record binds the reviewed release tuple and its own
-authenticated observations, digest-preserving promotion and scan policy. Artifact
+E2E `full` gate run naming the reviewed release tuple, digest-preserving promotion
+and the scan policy. Artifact
 prereleases, legacy v1 records or a Beta bootstrap do not activate that path.
 #54 makes no Production execution claim.
 

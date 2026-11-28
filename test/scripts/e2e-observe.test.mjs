@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { HOLD_CEILING_MS, OBSERVATION_INTERVAL_MS, observeQualification, RUN_READ_ATTEMPTS,
-  runReadWaits } from '../../scripts/qualification-dispatch.mjs';
-import { runQualificationObservation } from '../../scripts/qualification-observe.mjs';
+import { HOLD_CEILING_MS, OBSERVATION_INTERVAL_MS, observeGateRun, RUN_READ_ATTEMPTS,
+  runReadWaits } from '../../scripts/e2e-dispatch.mjs';
+import { runGateObservation } from '../../scripts/e2e-observe.mjs';
 
 // #338/#354: the hold recorder's exit codes and its three-value vocabulary. Nothing
-// else imports `scripts/qualification-observe.mjs`, so without this file an inverted
+// else imports `scripts/e2e-observe.mjs`, so without this file an inverted
 // 0/1 would leave every other test green. The entry is the one place that maps the
 // observed state to the job's conclusion:
 //
-//   receipt not_submitted, no run   -> unqualified, exit 0 (the dispatch step already reddened the job)
+//   receipt not_submitted, no run   -> failed, exit 0 (the dispatch step already reddened the job)
 //   no run, any other receipt       -> unobserved, exit 1
 //   dispatched run unreadable       -> unobserved, exit 1
 //   terminal non-success / ceiling / success -> one verdict, exit 0
@@ -76,7 +76,7 @@ async function observeEntry({ env = {}, reads = [], jobs } = {}) {
     const gh = fakeGh({ reads, jobs });
     const clock = observationClock();
     const chunks = [];
-    const code = await runQualificationObservation({
+    const code = await runGateObservation({
       env: { GH_TOKEN: 'ghs_read_only', ...env, GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: output },
       run: gh.run, wait: clock.wait, now: clock.now, out: { write: chunk => chunks.push(chunk) },
     });
@@ -88,12 +88,12 @@ async function observeEntry({ env = {}, reads = [], jobs } = {}) {
 const dispatchCalls = calls => calls.filter(args => args.includes('--method'));
 
 test('a not_submitted receipt with no recorded run exits zero and says nothing was submitted', async () => {
-  const result = await observeEntry({ env: { SERVICE_COMMIT: serviceCommit, QUALIFICATION_RECEIPT: 'not_submitted' } });
+  const result = await observeEntry({ env: { SERVICE_COMMIT: serviceCommit, E2E_RECEIPT: 'not_submitted' } });
   assert.equal(result.code, 0, 'the recorder does not add a failure to a job that is already red elsewhere');
   assert.deepEqual(result.calls, [], 'nothing is read when the dispatch proves nothing was submitted');
-  assert.equal(result.summary, 'Qualification unqualified: no dispatched run id or URL was recorded by the dispatch step'
-    + ` (receipt: not_submitted), so this deployment names no qualification run for Service commit ${serviceCommit}.\n`);
-  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.summary, 'E2E gate failed: no dispatched run id or URL was recorded by the dispatch step'
+    + ` (receipt: not_submitted), so this deployment names no gate run for Service commit ${serviceCommit}.\n`);
+  assert.equal(result.output, 'outcome=failed\n');
   assert.equal(result.log.includes('::warning::'), false);
 });
 
@@ -101,10 +101,10 @@ test('no recorded run without a not_submitted receipt records unobserved and exi
   for (const [receipt, cause] of [[undefined, /wrote no receipt/],
     ['acceptance_unknown', /recorded receipt acceptance_unknown/], ['created', /recorded receipt created/]]) {
     const result = await observeEntry({ env: { SERVICE_COMMIT: serviceCommit,
-      ...(receipt === undefined ? {} : { QUALIFICATION_RECEIPT: receipt }) } });
+      ...(receipt === undefined ? {} : { E2E_RECEIPT: receipt }) } });
     assert.equal(result.code, 1, `${String(receipt)}: a run may exist that this step cannot name`);
     assert.deepEqual(result.calls, [], 'nothing is read');
-    assert.match(result.summary, /^Qualification unobserved: .* could not be read \(/);
+    assert.match(result.summary, /^E2E gate unobserved: .* could not be read \(/);
     assert.match(result.summary, cause);
     assert.match(result.summary, /after 0 reads over 15000 ms of waits/);
     assert.equal(result.output, 'outcome=unobserved\n');
@@ -115,11 +115,11 @@ test('no recorded run without a not_submitted receipt records unobserved and exi
 
 test('the opening observation read retries a 404 against the same id', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [notFoundError(), notFoundError(), notFoundError(), notFoundError(), runState('completed', 'success')],
   });
   assert.equal(result.code, 0);
-  assert.equal(result.output, 'outcome=qualified\n');
+  assert.equal(result.output, 'outcome=passed\n');
   assert.equal(result.calls.length, 5, 'the four 404 answers are retried and the fifth read succeeds');
   assert.deepEqual(result.calls.map(args => args[1]), Array(5).fill(runPath),
     'every retry reads the same by-id path, nothing else');
@@ -127,7 +127,7 @@ test('the opening observation read retries a 404 against the same id', async () 
   const retrying = result.log.split('\n').filter(line => line.includes('retrying'));
   assert.equal(retrying.length, 4, 'the fifth read logs no retry');
   retrying.forEach((line, index) => {
-    assert.equal(line, `the by-id read of the dispatched qualification run ${createdUrl} answered 404`
+    assert.equal(line, `the by-id read of the dispatched gate run ${createdUrl} answered 404`
       + ` on attempt ${index + 1}/5; retrying in ${[1000, 2000, 4000, 8000][index]} ms`);
   });
   assert.match(result.log, /is run 4242 \(read attempt 5\/5\)/);
@@ -136,7 +136,7 @@ test('the opening observation read retries a 404 against the same id', async () 
 
 test('every read answering 404 records unobserved with the reads and the receipt', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
     reads: [notFoundError()],
   });
   assert.equal(result.code, 1);
@@ -144,9 +144,9 @@ test('every read answering 404 records unobserved with the reads and the receipt
   assert.deepEqual(result.calls.map(args => args[1]), Array(RUN_READ_ATTEMPTS).fill(runPath));
   assert.deepEqual(result.waits, [1000, 2000, 4000, 8000]);
   assert.equal(result.output, 'outcome=unobserved\n');
-  assert.equal(result.summary, `Qualification unobserved: ${createdUrl} could not be read`
+  assert.equal(result.summary, `E2E gate unobserved: ${createdUrl} could not be read`
     + ` (every read answering 404) after 5 reads over ${waitsMs} ms of waits; dispatch receipt: created,`
-    + ` so no qualification verdict was recorded for Service commit ${serviceCommit}.\n`);
+    + ` so no gate verdict was recorded for Service commit ${serviceCommit}.\n`);
   assert.equal(result.summary.includes('hold ceiling'), false, 'a read failure is not the ceiling');
   assert.equal(result.log.includes('::error::'), true);
   const retrying = result.log.split('\n').filter(line => line.includes('retrying'));
@@ -159,24 +159,24 @@ test('a read failure other than 404 records unobserved with the cause and no ret
     ['gh: HTTP 500 Internal Server Error', /gh: HTTP 500 Internal Server Error/],
     ['gh: HTTP 502 Bad Gateway', /gh: HTTP 502 Bad Gateway/]]) {
     const result = await observeEntry({
-      env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'adopted' },
+      env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'adopted' },
       reads: [new Error(message)],
     });
     assert.equal(result.code, 1, message);
     assert.equal(result.calls.length, 1, `${message}: one read, no retry`);
     assert.deepEqual(result.waits, [], `${message}: no wait is scheduled`);
     assert.equal(result.output, 'outcome=unobserved\n');
-    assert.match(result.summary, /^Qualification unobserved: /);
+    assert.match(result.summary, /^E2E gate unobserved: /);
     assert.match(result.summary, pattern);
     assert.match(result.summary, /after 1 reads over 15000 ms of waits; dispatch receipt: adopted,/);
-    assert.match(result.summary, /no qualification verdict was recorded/);
+    assert.match(result.summary, /no gate verdict was recorded/);
     assert.equal(result.summary.includes('hold ceiling'), false);
   }
 });
 
 test('a 200 naming another run id records unobserved with id-mismatch and names both ids', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [{ id: 999, status: 'completed', conclusion: 'success', html_url: 'https://github.com/anywear-ai/AnyWear-E2E/actions/runs/999' }],
   });
   assert.equal(result.code, 1);
@@ -188,7 +188,7 @@ test('a 200 naming another run id records unobserved with id-mismatch and names 
 
 test('a body that is not a run records unobserved with read-failed', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [null],
   });
   assert.equal(result.code, 1);
@@ -199,80 +199,80 @@ test('a body that is not a run records unobserved with read-failed', async () =>
 
 test('a terminal non-success run whose job list cannot be read still records its conclusion', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
     reads: [runState('completed', 'failure')],
     jobs: new Error('gh: HTTP 502 Bad Gateway'),
   });
   assert.equal(result.code, 0, 'the conclusion stands and the deployment verdict is unchanged');
   assert.deepEqual(result.waits, []);
-  assert.equal(result.output, 'outcome=unqualified\n');
-  assert.equal(result.summary, `Qualification unqualified: ${createdUrl} concluded failure`
+  assert.equal(result.output, 'outcome=failed\n');
+  assert.equal(result.summary, `E2E gate failed: ${createdUrl} concluded failure`
     + ` for Service commit ${serviceCommit}; failed job(s): none named`
     + ' (the job list could not be read: gh: HTTP 502 Bad Gateway).\n');
-  assert.match(result.log, /^::warning::Qualification unqualified:/m, 'the unread job list is a warning');
+  assert.match(result.log, /^::warning::E2E gate failed:/m, 'the unread job list is a warning');
 });
 
 test('a malformed job-list body after a non-success conclusion keeps the conclusion', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [runState('completed', 'failure')],
     jobs: { runs: [] },
   });
   assert.equal(result.code, 0, 'a malformed job list is not a verdict and never fails the observation');
-  assert.equal(result.output, 'outcome=unqualified\n');
-  assert.equal(result.summary, `Qualification unqualified: ${createdUrl} concluded failure;`
+  assert.equal(result.output, 'outcome=failed\n');
+  assert.equal(result.summary, `E2E gate failed: ${createdUrl} concluded failure;`
     + ' failed job(s): none named (the job list could not be read: the response is not a job list).\n');
-  assert.match(result.log, /^::warning::Qualification unqualified:/m);
+  assert.match(result.log, /^::warning::E2E gate failed:/m);
 });
 
-test('a terminal non-success run records unqualified and exits zero', async () => {
+test('a terminal non-success run records failed and exits zero', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [runState('completed', 'failure')],
     jobs: { jobs: [{ name: 'full', conclusion: 'failure' }, { name: 'record', conclusion: 'failure' }] },
   });
   assert.equal(result.code, 0, 'the deployment verdict stands: a red qualification is a red E2E run');
-  assert.equal(result.summary, `Qualification unqualified: ${createdUrl} concluded failure`
+  assert.equal(result.summary, `E2E gate failed: ${createdUrl} concluded failure`
     + '; failed job(s): full, record.\n');
-  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.output, 'outcome=failed\n');
   assert.equal(result.log.includes('::warning::'), false);
 });
 
-test('a qualified run records qualified and exits zero', async () => {
+test('a passed run records passed and exits zero', async () => {
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
     reads: [runState('completed', 'success')],
   });
   assert.equal(result.code, 0);
-  assert.equal(result.summary, `Qualification qualified: ${createdUrl} concluded success`
+  assert.equal(result.summary, `E2E gate passed: ${createdUrl} concluded success`
     + ` for Service commit ${serviceCommit}.\n`);
-  assert.equal(result.output, 'outcome=qualified\n');
+  assert.equal(result.output, 'outcome=passed\n');
 });
 
-test('the ceiling keeps unqualified with a warning and exits zero', async () => {
+test('the ceiling keeps failed with a warning and exits zero', async () => {
   // The run was created 55 minutes before the observation starts, so the deadline
   // has already passed on the first read: no wait is needed to reach the ceiling.
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created', SERVICE_COMMIT: serviceCommit },
     reads: [runState('in_progress', null, { created_at: new Date(clockStart - HOLD_CEILING_MS).toISOString() })],
   });
   assert.equal(result.code, 0, 'the ceiling is a warning, not a failed deployment');
   assert.deepEqual(result.waits, [], 'the deadline had already passed, so nothing was waited');
-  assert.match(result.log, /^::warning::Qualification unqualified:/m, 'the ceiling carries a ::warning');
-  assert.equal(result.summary, `Qualification unqualified: ${createdUrl} had not reached a terminal state`
+  assert.match(result.log, /^::warning::E2E gate failed:/m, 'the ceiling carries a ::warning');
+  assert.equal(result.summary, `E2E gate failed: ${createdUrl} had not reached a terminal state`
     + ` when the 55-minute hold ceiling was reached for Service commit ${serviceCommit}.\n`);
-  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.output, 'outcome=failed\n');
 });
 
 test('an authentication failure inside the final interval records unobserved', async () => {
   const reads = [...Array(109).fill(runState('in_progress')), new Error('gh: HTTP 401 Bad credentials')];
-  const result = await observeEntry({ env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+  const result = await observeEntry({ env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads });
   assert.equal(result.code, 1, 'a token that failed inside the interval is a read failure, not the ceiling');
   assert.equal(result.output, 'outcome=unobserved\n');
   assert.match(result.summary, /could not be read \(gh: HTTP 401 Bad credentials\) after 1 reads over 15000 ms of waits/);
   assert.equal(result.summary.includes('hold ceiling'), false);
-  assert.match(result.log, /^::error::Qualification unobserved:/m);
+  assert.match(result.log, /^::error::E2E gate unobserved:/m);
   assert.equal(result.waits.reduce((total, value) => total + value, 0), HOLD_CEILING_MS - 30_000,
     'the failure happened inside the last interval before the ceiling');
   assert.equal(result.calls.at(-1)[1], runPath);
@@ -284,17 +284,17 @@ test('the hold deadline is created_at plus the ceiling even when the opening rea
   const createdAtMs = clockStart - (HOLD_CEILING_MS - 30_000);
   const createdAt = new Date(createdAtMs).toISOString();
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [notFoundError(), runState('in_progress', null, { created_at: createdAt })],
   });
   assert.equal(result.code, 0, 'the ceiling is the hold\'s own bound');
-  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.output, 'outcome=failed\n');
   assert.equal(result.summary.includes('hold ceiling was reached'), true);
   // The logged ceiling is exactly created_at + 55 minutes; the observation started
   // 30 seconds after that instant's minute, so now() + 55 minutes would differ.
-  const ceilingLine = `Observing qualification ${createdUrl}: interval ${OBSERVATION_INTERVAL_MS} ms,`
+  const ceilingLine = `Observing gate run ${createdUrl}: interval ${OBSERVATION_INTERVAL_MS} ms,`
     + ` hold ceiling ${new Date(createdAtMs + HOLD_CEILING_MS).toISOString()}.`;
-  assert.equal(result.log.split('\n').filter(line => line.startsWith('Observing qualification')).length, 1,
+  assert.equal(result.log.split('\n').filter(line => line.startsWith('Observing gate run')).length, 1,
     'exactly one observation line establishes the ceiling');
   assert.ok(result.log.split('\n').includes(ceilingLine),
     `the logged ceiling is created_at + 55 minutes: ${ceilingLine}`);
@@ -313,14 +313,14 @@ test('a fifth-attempt opening read still bounds the hold at created_at plus the 
   const createdAtMs = clockStart - (HOLD_CEILING_MS - 60_000);
   const createdAt = new Date(createdAtMs).toISOString();
   const result = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [notFoundError(), notFoundError(), notFoundError(), notFoundError(),
       runState('in_progress', null, { created_at: createdAt })],
   });
-  assert.equal(result.code, 0, 'the ceiling keeps the outcome unqualified, not qualified');
-  assert.equal(result.output, 'outcome=unqualified\n');
+  assert.equal(result.code, 0, 'the ceiling keeps the outcome failed, not passed');
+  assert.equal(result.output, 'outcome=failed\n');
   assert.equal(result.calls.length, 6, 'five opening reads, then one interval read');
-  const ceilingLine = `Observing qualification ${createdUrl}: interval ${OBSERVATION_INTERVAL_MS} ms,`
+  const ceilingLine = `Observing gate run ${createdUrl}: interval ${OBSERVATION_INTERVAL_MS} ms,`
     + ` hold ceiling ${new Date(createdAtMs + HOLD_CEILING_MS).toISOString()}.`;
   assert.ok(result.log.split('\n').includes(ceilingLine),
     `the fifth-attempt opening read still logs created_at + 55 minutes: ${ceilingLine}`);
@@ -339,9 +339,9 @@ test('a first read answering 404 is retried and the terminal failure is still re
   const jobs = { jobs: [{ name: 'full', conclusion: 'failure' }, { name: 'record', conclusion: 'failure' }] };
   const gh = fakeGh({ reads: [notFoundError(), runState('completed', 'failure')], jobs });
   const clock = observationClock();
-  const result = await observeQualification({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
+  const result = await observeGateRun({ env: { GH_TOKEN: 'ghs_read_only' }, run: gh.run,
     wait: clock.wait, now: clock.now, out: { write: () => undefined }, runUrl: createdUrl });
-  assert.equal(result.outcome, 'unqualified');
+  assert.equal(result.outcome, 'failed');
   assert.equal(result.conclusion, 'failure');
   assert.deepEqual(result.failed_jobs, ['full', 'record'], 'the failed jobs are named from the run the retry read');
   assert.equal(gh.calls.filter(args => args[1] === runPath).length, 2,
@@ -350,11 +350,11 @@ test('a first read answering 404 is retried and the terminal failure is still re
   assert.deepEqual(clock.waits, [1000], 'only the retry wait is taken');
   // The recorder turns that same record into the one verdict line and exits zero.
   const entry = await observeEntry({
-    env: { QUALIFICATION_RUN_URL: createdUrl, QUALIFICATION_RECEIPT: 'created' },
+    env: { E2E_RUN_URL: createdUrl, E2E_RECEIPT: 'created' },
     reads: [notFoundError(), runState('completed', 'failure')], jobs,
   });
   assert.equal(entry.code, 0);
-  assert.equal(entry.output, 'outcome=unqualified\n');
-  assert.equal(entry.summary, `Qualification unqualified: ${createdUrl} concluded failure;`
+  assert.equal(entry.output, 'outcome=failed\n');
+  assert.equal(entry.summary, `E2E gate failed: ${createdUrl} concluded failure;`
     + ' failed job(s): full, record.\n');
 });

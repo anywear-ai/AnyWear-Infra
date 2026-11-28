@@ -611,7 +611,7 @@ export async function runOperation(env = process.env, {
       }
     }
     // Issue #316: a `deploy-runtime` that changed the Runtime stack and then failed
-    // never reached `qualify-hold`, so this run dispatched no qualification. The
+    // never reached `e2e-hold`, so this run dispatched no gate run. The
     // incident's retry was a new manual dispatch, which produces only `smoke` — not
     // the `full` the commit still owes — and nothing in the run said so. One line,
     // with both remedies, in the job that already reports the landed change. No new
@@ -621,7 +621,7 @@ export async function runOperation(env = process.env, {
     if (operation === 'deploy-runtime' && changedStacks.includes(runtimeStack) && env.GITHUB_STEP_SUMMARY) {
       const commit = inputs.service_release?.serviceCommit ?? '<service commit>';
       await appendFile(env.GITHUB_STEP_SUMMARY,
-        `No qualification was dispatched: this run changed ${runtimeStack} and did not complete, so Service commit ${commit} still owes a \`full\`. Produce it by re-running all jobs of this run (keeps delivery_trigger=deploy; the converged change set executes nothing and the hook dispatches \`full · deploy-qualify · ${commit}\`), or by dispatching AnyWear-E2E \`beta-qualification.yml\` with operation=full, trigger=release-qualify, expected_service_commit=${commit}, worker_slot_offset=0, dispatched_by=${env.GITHUB_SERVER_URL ?? 'https://github.com'}/${env.GITHUB_REPOSITORY ?? 'anywear-ai/AnyWear-Infra'}/actions/runs/${env.GITHUB_RUN_ID ?? '<run id>'}. A new manual deploy-runtime dispatch produces only \`smoke\`, which is not a qualification record.\n`);
+        `No gate run was dispatched: this run changed ${runtimeStack} and did not complete, so Service commit ${commit} still owes a \`full\`. Produce it by re-running all jobs of this run (keeps delivery_trigger=deploy; the converged change set executes nothing and the hook dispatches \`full · deploy-gate · ${commit}\`), or by dispatching AnyWear-E2E \`beta-e2e.yml\` with operation=full, trigger=release-gate, expected_service_commit=${commit}, worker_slot_offset=0, dispatched_by=${env.GITHUB_SERVER_URL ?? 'https://github.com'}/${env.GITHUB_REPOSITORY ?? 'anywear-ai/AnyWear-Infra'}/actions/runs/${env.GITHUB_RUN_ID ?? '<run id>'}. A new manual deploy-runtime dispatch produces only \`smoke\`, which is not a \`full\` gate.\n`);
     }
     throw error;
   }

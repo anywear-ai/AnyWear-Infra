@@ -154,60 +154,36 @@ export function grantBetaDedicatedRoles(stack: cdk.Stack, props: {
         p.vtoDeadLetterQueue.queueArn, p.autoTaggingDeadLetterQueue.queueArn],
     }));
   }
-  // Issue #228: the E2E qualification observer discovers the deployed surface
-  // through the platform's public list/describe APIs instead of a committed name
-  // list. The e2e principal therefore reads the reviewed `AnyWear*` stack prefix
-  // in both observation regions (the deploy/runtime principals above keep the
-  // named grants) plus the prefix discovery actions. Every statement here is a
-  // read-only superset of the previous named grants, so the pre-#228 observer
-  // keeps working when this lands first.
-  const anywearStackArns = ['AnyWear*/*'].flatMap((resourceName) => [stack.region, billingRegion]
-    .map((region) => arn('cloudformation', 'stack', resourceName, region)));
-  describeStacks(e2e, anywearStackArns);
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['cloudformation:GetTemplate', 'cloudformation:ListStackResources'], resources: anywearStackArns,
-  }));
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['cloudformation:ListStacks'], resources: ['*'],
-    conditions: { StringEquals: { 'aws:RequestedRegion': [stack.region, billingRegion] } },
-  }));
+  // Issue #358 step 4: the E2E role no longer observes the whole deployed surface.
+  // Those seven discovery families served `infra-observation.mjs`'s full
+  // resource-hash snapshot, which AnyWear-E2E removes in the same issue; the one
+  // surviving CloudFormation reader is `cleanup-capability.mjs`, which reads the
+  // Runtime stack's outputs to resolve the cleanup capability version ARN. The
+  // grant is therefore `DescribeStacks` on the one Runtime stack in the application
+  // region — not the `AnyWear*` prefix in two regions — and the deleted families are
+  // `GetTemplate`/`ListStackResources`, `ListStacks`,
+  // `lambda:GetFunction`/`GetFunctionConfiguration`, `ListFunctions`,
+  // `sqs:GetQueueAttributes` on `beta-anywear-*`, `ListQueues`,
+  // `cloudfront:ListDistributions` and `ssm:GetParametersByPath`. Everything the live
+  // gate still reads stays below: the named and stage-contract SSM reads, the
+  // ECS/ECR runtime reads, Cognito administration, the wardrobe object read, the
+  // api/worker log reads, the auto-tagging dead-letter read, CloudTrail, the
+  // `artifact-verify` one-shot and the autoscaling read.
+  //
+  // This narrowed policy is SOURCE-ONLY until an authorized `deploy-platform`
+  // applies it (execution-plan step 7 of #358, not executed by this change). Until
+  // then the live `beta-e2e-qualification-role` stays wider than this source, so no
+  // least-privilege claim is made here.
+  describeStacks(e2e, [arn('cloudformation', 'stack', 'AnyWearRuntimeStack-beta/*')]);
   getParameters(e2e, [...publicParameters, ...admissionNames, 'infra_selection', 'infra_deployment']);
   describeRuntime(e2e);
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['lambda:GetFunction', 'lambda:GetFunctionConfiguration'],
-    resources: [stack.formatArn({
-      service: 'lambda', resource: 'function', resourceName: 'beta-anywear-*',
-      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
-    })],
-  }));
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['lambda:ListFunctions'], resources: ['*'], conditions: regional,
-  }));
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['sqs:GetQueueAttributes'],
-    resources: [stack.formatArn({ service: 'sqs', resource: 'beta-anywear-*', arnFormat: cdk.ArnFormat.NO_RESOURCE_NAME })],
-  }));
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['sqs:ListQueues'], resources: ['*'], conditions: regional,
-  }));
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['cloudfront:ListDistributions'], resources: ['*'],
-  }));
-  // The discovery read for the stage path: the whole `/anywear/beta/` prefix,
-  // conditionless (smoke 40105334687, second-iteration correction recorded on
-  // #228). Decryption control is `kms:Decrypt`, which this role does not hold,
-  // so `ssm:WithDecryption` is not a usable SSM IAM condition key here, and
-  // `ssm:Recursive` binds only the call shape, which the flat-prefix resource
-  // scope already bounds. The conditionless form matches the proven
-  // `GetParameter`/`GetParameters` prefix statements on the same ARN below.
-  e2e.addToPrincipalPolicy(new iam.PolicyStatement({
-    actions: ['ssm:GetParametersByPath'], resources: [arn('ssm', 'parameter', 'anywear/beta/*')],
-  }));
-  // The observation read surface is the whole stage-contract prefix, not only
-  // the nine pre-contract names the deployment/qualification path still reads.
-  // The E2E qualification role runs the same observer against the deployed
-  // platform, so it needs the same prefix read as the runtime principal.
+  // The stage-contract prefix read on the runtime principal: the Runtime conversion
+  // replaced the Base stack-output reads with the contract, so `deploy-runtime`
+  // reads the 39 contract names under `/anywear/beta/`. The E2E principal keeps the
+  // same prefix read for the gate, through the statement below.
   getStageContractParameters(runtime);
+  // The live gate's stage-contract read: the whole `/anywear/beta/` prefix, the
+  // same two `GetParameter`/`GetParameters` actions as the named reads above.
   getStageContractParameters(e2e);
   // `delete-egress` reads the stack it destroys; Egress is part of the stage's
   // disposable stack set and the runtime role is the operation's read session.

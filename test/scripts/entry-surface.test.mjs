@@ -70,11 +70,11 @@ test('the workflow directory is exactly the four Beta entries plus the callable'
   }
 });
 
-test('mutate.yml keeps one preflight → verify → deploy → qualify-hold chain and no workload deploy', async () => {
+test('mutate.yml keeps one preflight → verify → deploy → e2e-hold chain and no workload deploy', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'qualify-hold']);
+  assert.deepEqual(Object.keys(mutate.jobs), ['preflight', 'verify', 'deploy', 'e2e-hold']);
   const { preflight, verify, deploy } = mutate.jobs;
-  const hold = mutate.jobs['qualify-hold'];
+  const hold = mutate.jobs['e2e-hold'];
 
   assert.equal(preflight.needs, undefined);
   assert.equal(verify.needs, 'preflight');
@@ -243,13 +243,13 @@ test('no AWS credential precedes the release identity and travelled-byte checks'
     'nothing runs after the credential-requesting operation: no record step');
 });
 
-// #226/#338: the deploy chain's qualification hold. Its whole credential surface is
+// #226/#338: the deploy chain's gate hold. Its whole credential surface is
 // one App installation token narrowed to `AnyWear-E2E` with `actions: write`; it
 // holds no environment, no OIDC identity and no AWS role, and it observes last.
-test('the qualification hold is credential-free, single-token and observes last', async () => {
+test('the E2E gate hold is credential-free, single-token and observes last', async () => {
   const mutate = await loadWorkflow('mutate.yml');
-  const hold = mutate.jobs['qualify-hold'];
-  assert.ok(hold, 'mutate.yml carries the deploy chain qualification hold');
+  const hold = mutate.jobs['e2e-hold'];
+  assert.ok(hold, 'mutate.yml carries the deploy chain gate hold');
   // The two operations that change Beta's served tuple, and only after `deploy`
   // succeeded. A schema-boundary refusal fails `deploy`, so the hold never runs.
   assert.equal(hold.if,
@@ -264,7 +264,7 @@ test('the qualification hold is credential-free, single-token and observes last'
   assert.deepEqual(credentialJobs(mutate), ['deploy']);
   const jobText = JSON.stringify(hold);
   for (const name of ['INFRA_DEPLOY_ROLE_ARN', 'INFRA_RUNTIME_ROLE_ARN', 'AWS_ACCOUNT_ID', 'id-token']) {
-    assert.equal(jobText.includes(name), false, `the qualification hold must not carry ${name}`);
+    assert.equal(jobText.includes(name), false, `the E2E gate hold must not carry ${name}`);
   }
 
   // Exactly one token, for one repository, with exactly one permission.
@@ -279,8 +279,8 @@ test('the qualification hold is credential-free, single-token and observes last'
     'actions: write is the token\'s only permission');
 
   // #338: the dispatch precedes the observation and nothing follows the observation.
-  const dispatchIndex = hold.steps.findIndex(step => step.run === 'node scripts/qualification-dispatch.mjs');
-  const observationIndex = hold.steps.findIndex(step => step.run === 'node scripts/qualification-observe.mjs');
+  const dispatchIndex = hold.steps.findIndex(step => step.run === 'node scripts/e2e-dispatch.mjs');
+  const observationIndex = hold.steps.findIndex(step => step.run === 'node scripts/e2e-observe.mjs');
   assert.ok(dispatchIndex > 0, 'the hold dispatches the qualification');
   assert.ok(observationIndex > dispatchIndex, 'the dispatch step precedes the observation step');
   assert.equal(observationIndex, hold.steps.length - 1, 'nothing runs after the observation');
@@ -293,8 +293,8 @@ test('the qualification hold is credential-free, single-token and observes last'
     + " || env.INFRA_OPERATION == 'publish-client' && env.DELIVERY_TRIGGER == 'publish')",
     'the observation records an outcome even when the dispatch step failed');
   assert.equal(observation.env.GH_TOKEN, '${{ steps.app.outputs.token }}');
-  assert.equal(observation.env.QUALIFICATION_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
-  assert.equal(observation.env.QUALIFICATION_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
+  assert.equal(observation.env.E2E_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
+  assert.equal(observation.env.E2E_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
   assert.equal(observation.id, 'observe', 'the observation exposes the outcome as a step output');
   assert.deepEqual(hold.outputs, { outcome: '${{ steps.observe.outputs.outcome }}' },
     'the job publishes exactly the observation step\'s outcome: ADR 0033 §7\'s job output');
@@ -312,7 +312,7 @@ test('the deploy job admits the mutation before any credential and mints one rea
   const checkoutIndex = index(step => step.uses === 'actions/checkout@v4');
   const setupNodeIndex = index(step => step.uses === 'actions/setup-node@v4');
   const installIndex = index(step => step.run === 'npm ci');
-  const admissionIndex = index(step => step.run === 'node scripts/qualification-admission.mjs');
+  const admissionIndex = index(step => step.run === 'node scripts/e2e-admission.mjs');
   const compositeIndex = index(step => step.uses === './.github/actions/deploy-operation');
   assert.ok(checkoutIndex >= 0, 'the deploy job checks out the source');
   assert.ok(setupNodeIndex >= 0, 'the deploy job sets up the pinned Node');
@@ -371,7 +371,7 @@ test('mutate.yml holds exactly three App-token allocations and no fourth', async
     // Allocation 5: the pre-mutation admission read.
     { jobName: 'deploy', permissions: ['permission-actions'], actionPermission: 'read', repositories: 'AnyWear-E2E' },
     // Allocation 3: the qualification dispatch and the read-back of the same run.
-    { jobName: 'qualify-hold', permissions: ['permission-actions'], actionPermission: 'write', repositories: 'AnyWear-E2E' },
+    { jobName: 'e2e-hold', permissions: ['permission-actions'], actionPermission: 'write', repositories: 'AnyWear-E2E' },
   ], 'three allocations: verify reads the Client, deploy reads E2E, the hold writes E2E — actions only, one repository each');
   // The Client token is gated to the one operation that publishes.
   const clientToken = mutate.jobs.verify.steps
@@ -472,7 +472,7 @@ test('a protected mutating run publishes only its transport bytes and the Client
   assert.equal(composite.if, "env.INFRA_OPERATION != 'publish-client'");
   // The publication's steps follow the admission read like every other operation's.
   const steps = mutate.jobs.deploy.steps;
-  const admission = steps.findIndex(step => step.run === 'node scripts/qualification-admission.mjs');
+  const admission = steps.findIndex(step => step.run === 'node scripts/e2e-admission.mjs');
   assert.ok(admission < steps.indexOf(composite));
   assert.ok(admission < steps.findIndex(step => step.run === 'node scripts/client-publication.mjs publish'));
 
@@ -558,10 +558,10 @@ test('schedule.yml is a two-job, credential-free hold with the fixed job name', 
   assert.equal(schedule.env.EXPECTED_CLIENT_COMMIT, '${{ inputs.expected_client_commit }}');
   // The preflight validates before any token; the hold installs the pinned
   // dependencies before its first module run.
-  assert.match(text, /node scripts\/schedule-qualification\.mjs validate/);
+  assert.match(text, /node scripts\/schedule-e2e\.mjs validate/);
   const holdSteps = hold.steps;
   const install = holdSteps.findIndex(step => step.run === 'npm ci');
-  const dispatch = holdSteps.findIndex(step => step.run === 'node scripts/schedule-qualification.mjs dispatch');
+  const dispatch = holdSteps.findIndex(step => step.run === 'node scripts/schedule-e2e.mjs dispatch');
   assert.ok(install >= 0 && dispatch > install, 'the hold installs dependencies before its first module run');
   // One App token, narrowed to AnyWear-E2E with `actions: write` and nothing else.
   const tokens = holdSteps.filter(step => String(step.uses ?? '').startsWith('actions/create-github-app-token@'));
@@ -573,7 +573,7 @@ test('schedule.yml is a two-job, credential-free hold with the fixed job name', 
   assert.deepEqual(Object.keys(tokens[0].with).filter(name => name.startsWith('permission-')), ['permission-actions']);
   // The dispatch precedes the observation and nothing follows the observation; the
   // observation reuses the deploy chain's recorder.
-  const observe = holdSteps.findIndex(step => step.run === 'node scripts/qualification-observe.mjs');
+  const observe = holdSteps.findIndex(step => step.run === 'node scripts/e2e-observe.mjs');
   assert.ok(observe > dispatch, 'the dispatch precedes the observation');
   assert.equal(observe, holdSteps.length - 1, 'nothing runs after the observation');
   assert.equal(holdSteps[dispatch].id, 'dispatch');
@@ -581,8 +581,8 @@ test('schedule.yml is a two-job, credential-free hold with the fixed job name', 
   assert.equal(observation.if, 'always()', 'every scheduled run leaves exactly one outcome');
   assert.equal(observation.id, 'observe');
   assert.equal(observation.env.GH_TOKEN, '${{ steps.app.outputs.token }}');
-  assert.equal(observation.env.QUALIFICATION_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
-  assert.equal(observation.env.QUALIFICATION_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
+  assert.equal(observation.env.E2E_RUN_ID, '${{ steps.dispatch.outputs.run_id }}');
+  assert.equal(observation.env.E2E_RUN_URL, '${{ steps.dispatch.outputs.run_url }}');
   assert.deepEqual(hold.outputs, { outcome: '${{ steps.observe.outputs.outcome }}' });
   assert.equal(hold['timeout-minutes'], 65, 'the 65-minute job outlives the 55-minute observation ceiling');
   // The entry dispatches E2E only: it runs no writer gate of its own and launches
@@ -672,14 +672,14 @@ test('AnyWear-E2E has exactly one reviewed executor workflow', async () => {
   // `integration.yml` was retired with the E2E consolidation. The allow-list is
   // pinned by identity, not only by behaviour, so a second executor path cannot
   // be added silently.
-  assert.deepEqual(e2eExecutorPaths, ['.github/workflows/beta-qualification.yml']);
+  assert.deepEqual(e2eExecutorPaths, ['.github/workflows/beta-e2e.yml']);
   const e2e = workflow => ({ GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E', GITHUB_REPOSITORY_ID: '1317091305',
     GITHUB_REF: 'refs/heads/main', GITHUB_SHA: '6'.repeat(40),
     GITHUB_RUN_ID: '23', GITHUB_RUN_ATTEMPT: '1', AWS_ACCOUNT_ID: '650880818323', AWS_REGION: 'ap-east-1',
     GITHUB_WORKFLOW_REF: `git-malu/AnyWear-E2E/${workflow}@refs/heads/main` });
-  const executor = assertProtectedExecutor('5'.repeat(40), e2e('.github/workflows/beta-qualification.yml'));
+  const executor = assertProtectedExecutor('5'.repeat(40), e2e('.github/workflows/beta-e2e.yml'));
   assert.equal(executor.repository, 'git-malu/AnyWear-E2E');
-  assert.equal(executor.workflow_path, '.github/workflows/beta-qualification.yml');
+  assert.equal(executor.workflow_path, '.github/workflows/beta-e2e.yml');
   for (const retired of ['.github/workflows/integration.yml', '.github/workflows/other.yml']) {
     assert.throws(() => assertProtectedExecutor('5'.repeat(40), e2e(retired)), /workflow required/, retired);
   }
