@@ -241,12 +241,14 @@ test('a holder at the end of a 100-entry mixed page is still found', async () =>
 // non-zero and name the failure — a failed read never becomes "nothing is running".
 const refusalClasses = [
   ['a transport failure', new Error('gh: Could not resolve host: api.github.com (ENOTFOUND)')],
+  ['a spawn failure', new Error('spawn gh ENOENT')],
   ['a 401 authentication failure', new Error('gh: HTTP 401 Unauthorized (https://api.github.com/repos/anywear-ai/AnyWear-E2E/actions/runs?per_page=100)')],
   ['a 403 authorization failure', new Error('gh: HTTP 403 Forbidden (https://api.github.com/repos/anywear-ai/AnyWear-E2E/actions/runs?per_page=100)')],
   ['a 502 failure', new Error('gh: HTTP 502 Bad Gateway')],
   ['a 503 failure', new Error('gh: HTTP 503 Service Unavailable')],
   ['a 504 failure', new Error('gh: HTTP 504 Gateway Timeout')],
   ['a timeout', new Error('gh: request to https://api.github.com timed out after 60000 ms (ETIMEDOUT)')],
+  ['an operation timeout without an HTTP status', new Error('gh: operation timed out')],
 ];
 for (const [label, error] of refusalClasses) {
   test(`a failed read refuses the mutation: ${label}`, async () => {
@@ -254,6 +256,9 @@ for (const [label, error] of refusalClasses) {
     const clock = fakeClock();
     const { code, text, waits } = await admit({ gh, clock });
     assert.equal(code, 1, `${label} must never admit the mutation`);
+    // The failed poll is retried on the interval until the budget is spent; the
+    // refusal is the only way out and it names the read failure.
+    assert.ok(gh.listCalls() > 1, `${label} must be retried, not admitted`);
     assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS, `${label} is retried for the whole budget`);
     assert.match(text, /^Refusing the mutation: a gate run list read failed; the last read failed: /);
     assert.equal(text.includes(error.message), true, `${label} must be named in the refusal`);
