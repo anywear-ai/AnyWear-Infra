@@ -1039,6 +1039,14 @@ test('a bake refusal after the change set executed appends the changed-stack lin
       'the Runtime stack is named exactly once');
     assert.match(lines[1], /No gate run was dispatched/);
     assert.match(lines[1], /still owes a `full`/);
+    // Issue #363: the corrected gate preflight refuses a `dispatched_by` run URL on
+    // a dispatch a person created, so the line sends an empty one and names the
+    // queued `schedule.yml` alternative instead.
+    assert.match(lines[1], /trigger=release-gate/);
+    assert.match(lines[1], /dispatched_by`? (left )?empty/i);
+    assert.match(lines[1], /schedule\.yml/);
+    assert.match(lines[1], /@<actor>/);
+    assert.doesNotMatch(lines[1], /dispatched_by=https:\/\//);
     assert.deepEqual(io.changedStacks, [RUNTIME_STACK], 'the landed mutation is recorded once');
   });
 });
@@ -1617,6 +1625,13 @@ test('a 300-second bake refusal after the proof keeps the identity line, ends re
     assert.equal(lines.length, 2, 'the changed-stack line and the owed-full line');
     assert.match(lines[0], /Infra operation deploy-runtime already changed AnyWearRuntimeStack-beta and did not complete/);
     assert.match(lines[1], /still owes a `full`/);
+    // Issue #363: the same corrected instruction is pinned here, so the retired
+    // `dispatched_by=<run URL>` remedy cannot return on this surface either.
+    assert.match(lines[1], /trigger=release-gate/);
+    assert.match(lines[1], /dispatched_by`? (left )?empty/i);
+    assert.match(lines[1], /schedule\.yml/);
+    assert.match(lines[1], /@<actor>/);
+    assert.doesNotMatch(lines[1], /dispatched_by=https:\/\//);
   });
 });
 
