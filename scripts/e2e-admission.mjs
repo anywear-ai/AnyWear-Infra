@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { parseJson } from './lib/json-contract.mjs';
-import { E2E_REPOSITORY } from './qualification-dispatch.mjs';
+import { E2E_REPOSITORY } from './e2e-dispatch.mjs';
 
 // #338/#358: the pre-mutation admission read. It runs at the head of `mutate.yml`'s
 // `deploy` job — after checkout and the dependency install, before the release-byte
@@ -10,7 +10,7 @@ import { E2E_REPOSITORY } from './qualification-dispatch.mjs';
 // happens before any AWS credential request. It mints one read-only App installation
 // token narrowed to AnyWear-E2E with `actions: read` and nothing else.
 //
-// The hold (`qualify-hold`) prevents a successor from starting while the deployment
+// The hold (`e2e-hold`) prevents a successor from starting while the deployment
 // that dispatched a gate run is still alive. This read is the net underneath it: a
 // holder that died, a hold that expired at its 55-minute ceiling, or an operator
 // dispatch leaves a live gate run with no run holding `anywear-infra-runtime`, and
@@ -88,7 +88,7 @@ export const ACCEPTED_FULL_RUN_NAME_PREFIXES = Object.freeze([
 // it takes one unfiltered snapshot and filters on the complement of `completed`, so
 // a status this list does not name — or one the API adds later — is still occupied.
 // The list stays exported and pinned as the set the design reasons about.
-export const QUALIFICATION_NONTERMINAL_STATUSES = Object.freeze([
+export const E2E_NONTERMINAL_STATUSES = Object.freeze([
   'requested', 'waiting', 'pending', 'queued', 'in_progress',
 ]);
 /** The admission wait is bounded: it refuses, never proceeds silently, after 30 minutes. */
@@ -118,7 +118,7 @@ const runUrlOf = id => `https://github.com/${E2E_REPOSITORY}/actions/runs/${id}`
  * nothing the next mutation could replace. All three conditions come from the run's
  * own fields, so the answer does not depend on which workflow files exist now.
  */
-export const isFullQualificationRun = entry => (entry !== null && typeof entry === 'object')
+export const isFullGateRun = entry => (entry !== null && typeof entry === 'object')
   && ACCEPTED_WORKFLOW_PATHS.includes(entry.path)
   && typeof entry.display_title === 'string'
   && ACCEPTED_FULL_RUN_NAME_PREFIXES.some(prefix => entry.display_title.startsWith(prefix));
@@ -151,7 +151,7 @@ function requireRunPage(response) {
  */
 export async function listNonterminalFullRuns(run, env) {
   const response = parseJson((await run('gh', ['api', RUNS_PATH], { env, ...GH_OPTIONS })).stdout);
-  return requireRunPage(response).filter(entry => isFullQualificationRun(entry) && entry.status !== 'completed');
+  return requireRunPage(response).filter(entry => isFullGateRun(entry) && entry.status !== 'completed');
 }
 
 /**
@@ -203,7 +203,7 @@ export async function main({ env = process.env, run = execute, wait = sleep, now
   out = process.stdout, budgetMs = ADMISSION_BUDGET_MS, intervalMs = ADMISSION_INTERVAL_MS } = {}) {
   if (typeof env.GH_TOKEN !== 'string' || env.GH_TOKEN === '') {
     out.write('Refusing the mutation: the read-only AnyWear-E2E App token is missing, so the admission check'
-      + ' cannot prove that no full qualification run is in flight.\n');
+      + ' cannot prove that no full gate run is in flight.\n');
     return 1;
   }
   const budgetMinutes = Math.round(budgetMs / 60_000);
@@ -219,7 +219,7 @@ export async function main({ env = process.env, run = execute, wait = sleep, now
       occupied = await pollOnce({ run, env, holders, state });
       if (!occupied) {
         const waitedSeconds = Math.round((now() - startedAt) / 1000);
-        out.write(`No full qualification run is nonterminal; the admission check proceeds`
+        out.write(`No full gate run is nonterminal; the admission check proceeds`
           + `${waitedSeconds > 0 ? ` after ${waitedSeconds} s` : ''}.\n`);
         return 0;
       }
@@ -228,12 +228,12 @@ export async function main({ env = process.env, run = execute, wait = sleep, now
     if (remaining <= 0) {
       const parts = [];
       if (holders.size > 0) {
-        parts.push(`${holders.size} full qualification run(s) were still nonterminal after the`
+        parts.push(`${holders.size} full gate run(s) were still nonterminal after the`
           + ` ${budgetMinutes}-minute admission budget: ${[...holders.values()].map(describeHolder).join(', ')}`);
-        parts.push('cancel the qualification run to release the environment — never the deployment run');
+        parts.push('cancel the gate run to release the environment — never the deployment run');
       }
       if (state.lastError !== undefined) {
-        parts.push(`a qualification read failed; the last read failed: ${state.lastError?.message ?? state.lastError}`);
+        parts.push(`a gate run list read failed; the last read failed: ${state.lastError?.message ?? state.lastError}`);
       }
       out.write(`Refusing the mutation: ${parts.join('; ')}.\n`);
       return 1;

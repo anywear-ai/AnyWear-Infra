@@ -267,7 +267,7 @@ jobs:
       # credential request. Exactly one read-only App installation token is minted,
       # narrowed to AnyWear-E2E with `actions: read` and nothing else; `deploy` holds
       # the other mutating credential and no part of it is shared with this read.
-      - name: Create the AnyWear-E2E qualification admission token
+      - name: Create the AnyWear-E2E gate admission token
         id: admission
         uses: actions/create-github-app-token@v3
         with:
@@ -277,13 +277,13 @@ jobs:
           repositories: AnyWear-E2E
           permission-actions: read
       # A refusal is a normal failing step: the mutation does not run, and the
-      # operator either cancels the qualification run that holds the environment or
+      # operator either cancels the gate run that holds the environment or
       # waits and re-runs the deployment. A 30-minute budget bounds the wait.
-      - name: Refuse to mutate while a full qualification run is nonterminal
+      - name: Refuse to mutate while a full gate run is nonterminal
         shell: bash
         env:
           GH_TOKEN: ${{ steps.admission.outputs.token }}
-        run: node scripts/qualification-admission.mjs
+        run: node scripts/e2e-admission.mjs
       - name: Download the Service release bytes that travelled from verify
         if: env.INFRA_OPERATION == 'deploy-platform' || env.INFRA_OPERATION == 'restore-release' || env.INFRA_OPERATION == 'deploy-runtime' || env.INFRA_OPERATION == 'migrate'
         uses: actions/download-artifact@v4
@@ -325,35 +325,35 @@ jobs:
           if-no-files-found: error
       - uses: ./.github/actions/deploy-operation
         if: env.INFRA_OPERATION != 'publish-client'
-  # #226/#338/#344: the qualification hold. It runs only after `deploy` succeeded for
+  # #226/#338/#344: the E2E gate hold. It runs only after `deploy` succeeded for
   # `deploy-runtime` or for `publish-client`. It declares no `environment`, holds no
   # `id-token` and no AWS permission, and mints exactly one App installation token,
   # narrowed to AnyWear-E2E with `actions: write` only; that one token both
-  # dispatches the qualification and reads the dispatched run back.
+  # dispatches the gate run and reads the dispatched run back.
   #
   # For `delivery_trigger=deploy` (Runtime) and `delivery_trigger=publish` (Client)
   # the job is the hold: after the dispatch step — which exposes the created run's id
   # and URL and the dispatch receipt as its step outputs — the final step observes
   # that run to a terminal state, so this run, and with it
-  # `anywear-infra-runtime`, stays alive for the qualification instead of releasing
+  # `anywear-infra-runtime`, stays alive for the gate run instead of releasing
   # the environment to the next writer. The observation's ceiling is 55 minutes
   # measured from the moment the dispatched run was created, under the one-hour
   # lifetime of the token minted immediately before the dispatch; the job's 65-minute
   # timeout is longer, so the deadline fires first and the recorder still runs. The
-  # hold records exactly one outcome — `qualified`, `unqualified` or `unobserved` —
+  # hold records exactly one outcome — `passed`, `failed` or `unobserved` —
   # in the step summary and the job output: `unobserved` means the dispatched run
   # could not be read, so no verdict was formed and the step fails, while a red
-  # qualification leaves the deployment's (or publication's) own success standing.
+  # gate run leaves the deployment's (or publication's) own success standing.
   # `delivery_trigger=manual` dispatches a `smoke` and takes no hold. The dispatch step
   # precedes the observation and the observation is the job's last step.
-  qualify-hold:
+  e2e-hold:
     needs: deploy
     if: success() && (inputs.operation == 'deploy-runtime' || inputs.operation == 'publish-client')
     runs-on: ubuntu-latest
     timeout-minutes: 65
     permissions:
       contents: read
-    # ADR 0033 §7's "job output": the one `qualified`/`unqualified`/`unobserved`
+    # ADR 0033 §7's "job output": the one `passed`/`failed`/`unobserved`
     # outcome this run records, readable from the workflow run without opening the
     # step summary.
     outputs:
@@ -369,7 +369,7 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Create the AnyWear-E2E qualification dispatch token
+      - name: Create the AnyWear-E2E gate dispatch token
         id: app
         uses: actions/create-github-app-token@v3
         with:
@@ -385,26 +385,26 @@ jobs:
       # (`created`, `adopted`, `not_submitted` or `acceptance_unknown`) so the
       # recorder can tell "nothing was submitted" from "a run may exist that this
       # step cannot name".
-      - name: Dispatch the deploy chain's qualification and print its run
+      - name: Dispatch the deploy chain's gate run and print its run
         id: dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: node scripts/qualification-dispatch.mjs
+        run: node scripts/e2e-dispatch.mjs
       # #338: the observation is the job's last step and runs even when an earlier
       # step failed, so every hold that ran leaves exactly one outcome. It records
-      # `unqualified` and exits zero when the dispatch receipt proves nothing was
+      # `failed` and exits zero when the dispatch receipt proves nothing was
       # submitted (the job is already red from the step that failed); a dispatched
       # run it cannot read records `unobserved` and fails the job; a terminal
-      # non-success run, the 55-minute ceiling and `qualified` record their one
+      # non-success run, the 55-minute ceiling and `passed` record their one
       # outcome and exit zero. Its `outcome` is the job output above.
-      - name: Observe the dispatched qualification and record its one outcome
+      - name: Observe the dispatched gate run and record its one outcome
         id: observe
         if: always() && (env.INFRA_OPERATION == 'deploy-runtime' && env.DELIVERY_TRIGGER == 'deploy' || env.INFRA_OPERATION == 'publish-client' && env.DELIVERY_TRIGGER == 'publish')
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          QUALIFICATION_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
-          QUALIFICATION_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
-          QUALIFICATION_RECEIPT: ${{ steps.dispatch.outputs.receipt }}
-        run: node scripts/qualification-observe.mjs
+          E2E_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          E2E_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          E2E_RECEIPT: ${{ steps.dispatch.outputs.receipt }}
+        run: node scripts/e2e-observe.mjs

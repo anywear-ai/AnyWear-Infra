@@ -1,13 +1,13 @@
 import { pathToFileURL } from 'node:url';
-import { observeQualification, recordQualificationOutcome, RUN_READ_ATTEMPTS,
-  runReadWaits } from './qualification-dispatch.mjs';
+import { observeGateRun, recordGateOutcome, RUN_READ_ATTEMPTS,
+  runReadWaits } from './e2e-dispatch.mjs';
 
-// #338/#354: the deploy chain's hold recorder. It is the `qualify-hold` job's last
+// #338/#354: the deploy chain's hold recorder. It is the `e2e-hold` job's last
 // step and runs under `if: always()`, so every deployment run that took the hold
 // ends with exactly one outcome line in its step summary and its `outcome` step
 // output. The step never changes the `deploy` job's conclusion.
 //
-// The outcome is one of three values. `qualified` and `unqualified` are verdicts
+// The outcome is one of three values. `passed` and `failed` are verdicts
 // the observation formed: the dispatched run concluded success, or it concluded
 // otherwise, or the 55-minute hold ceiling fired, or the dispatch receipt proves
 // nothing was submitted. `unobserved` means no verdict was formed — the dispatched
@@ -23,12 +23,12 @@ const READ_FAILURES = Object.freeze(['not-readable', 'read-failed', 'id-mismatch
 const readFailureOf = error => (READ_FAILURES.includes(error?.code) ? error.code : 'read-failed');
 const firstLine = text => String(text ?? '').split('\n')[0];
 
-export async function runQualificationObservation(
+export async function runGateObservation(
   { env = process.env, run, wait, out = process.stdout, now = Date.now } = {}) {
-  const runId = env.QUALIFICATION_RUN_ID;
-  const runUrl = env.QUALIFICATION_RUN_URL;
-  const receipt = typeof env.QUALIFICATION_RECEIPT === 'string' && env.QUALIFICATION_RECEIPT !== ''
-    ? env.QUALIFICATION_RECEIPT : undefined;
+  const runId = env.E2E_RUN_ID;
+  const runUrl = env.E2E_RUN_URL;
+  const receipt = typeof env.E2E_RECEIPT === 'string' && env.E2E_RECEIPT !== ''
+    ? env.E2E_RECEIPT : undefined;
   // The outcome names the deployed Service commit, which the workflow carries
   // directly and, for a release operation, inside the sealed artifact tag.
   const taggedCommit = typeof env.SERVICE_ARTIFACT_TAG === 'string'
@@ -48,38 +48,38 @@ export async function runQualificationObservation(
     // stated outcome; any other receipt (or none) may name a run this step cannot
     // see, which is exactly what `unobserved` reports.
     if (receipt === 'not_submitted') {
-      await recordQualificationOutcome({ env, out, result: { outcome: 'unqualified', ...receiptField,
+      await recordGateOutcome({ env, out, result: { outcome: 'failed', ...receiptField,
         reason: 'no dispatched run id or URL was recorded by the dispatch step (receipt: not_submitted),'
-          + ' so this deployment names no qualification run', ...tuple } });
+          + ' so this deployment names no gate run', ...tuple } });
       return 0;
     }
     const cause = receipt === undefined
       ? 'no dispatched run id or URL was recorded and the dispatch step wrote no receipt'
       : `the dispatch step recorded receipt ${receipt}, so a run may exist that this step cannot name`;
-    await recordQualificationOutcome({ env, out, result: { outcome: 'unobserved', ...recordedRun, ...receiptField,
+    await recordGateOutcome({ env, out, result: { outcome: 'unobserved', ...recordedRun, ...receiptField,
       reads: 0, attempts: RUN_READ_ATTEMPTS, waits_ms: WAITS_MS, elapsed_ms: 0,
       read_failure: 'read-failed', read_cause: cause,
-      reason: 'no dispatched run could be identified, so no qualification verdict was recorded', ...tuple } });
+      reason: 'no dispatched run could be identified, so no gate verdict was recorded', ...tuple } });
     return 1;
   }
   let result;
   try {
-    result = await observeQualification({ env, run, wait, out, now, runId, runUrl });
+    result = await observeGateRun({ env, run, wait, out, now, runId, runUrl });
   } catch (error) {
-    await recordQualificationOutcome({ env, out, result: { outcome: 'unobserved', ...recordedRun, ...receiptField,
+    await recordGateOutcome({ env, out, result: { outcome: 'unobserved', ...recordedRun, ...receiptField,
       reads: Number.isSafeInteger(error?.reads) ? error.reads : 0,
       attempts: Number.isSafeInteger(error?.attempts) ? error.attempts : RUN_READ_ATTEMPTS,
       waits_ms: Number.isSafeInteger(error?.waitsMs) ? error.waitsMs : WAITS_MS,
       elapsed_ms: Number.isSafeInteger(error?.elapsedMs) ? error.elapsedMs : 0,
       read_failure: readFailureOf(error),
       read_cause: firstLine(error?.cause?.message ?? error?.cause ?? error?.message ?? error),
-      reason: 'the dispatched qualification could not be read, so no qualification verdict was recorded', ...tuple } });
+      reason: 'the dispatched gate run could not be read, so no gate verdict was recorded', ...tuple } });
     return 1;
   }
-  await recordQualificationOutcome({ env, out, result: { ...result, ...receiptField, ...tuple } });
+  await recordGateOutcome({ env, out, result: { ...result, ...receiptField, ...tuple } });
   return 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await runQualificationObservation();
+  process.exitCode = await runGateObservation();
 }

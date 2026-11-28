@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { dispatchScheduledQualification, SCHEDULE_OPERATIONS, SCHEDULE_TRIGGERS,
-  schedulePayload, validateScheduleEntry } from '../../scripts/schedule-qualification.mjs';
+import { dispatchScheduledGate, SCHEDULE_OPERATIONS, SCHEDULE_TRIGGERS,
+  schedulePayload, validateScheduleEntry } from '../../scripts/schedule-e2e.mjs';
 
 // Issue #344: the scheduled entry's dispatcher. The three menu operations map to the
 // three E2E triggers ADR 0033 §8 defines, the expected commits are `full`-only, and
@@ -49,7 +49,7 @@ const inputFields = args => args.reduce((fields, value) => {
 
 test('the entry validates reviewed main, the stage switch and the operation menu', () => {
   assert.deepEqual(SCHEDULE_OPERATIONS, ['reconcile', 'smoke', 'full']);
-  assert.deepEqual(SCHEDULE_TRIGGERS, { reconcile: 'scheduled', smoke: 'deploy-smoke', full: 'release-qualify' });
+  assert.deepEqual(SCHEDULE_TRIGGERS, { reconcile: 'scheduled', smoke: 'deploy-smoke', full: 'release-gate' });
   assert.deepEqual(validateScheduleEntry(env()),
     { operation: 'reconcile', expected_service_commit: '', expected_client_commit: '', dispatched_by: key });
   // The nightly run reaches the entry with no inputs at all, so the workflow names
@@ -72,7 +72,7 @@ test('only full takes an expected commit, and full requires the Service commit',
   { operation: 'full', expected_service_commit: serviceCommit, expected_client_commit: '', dispatched_by: key });
   for (const bad of ['', 'b'.repeat(39), `${serviceCommit}0`, 'B'.repeat(40), ' not-a-sha ']) {
     assert.throws(() => validateScheduleEntry(env({ SCHEDULE_OPERATION: 'full', EXPECTED_SERVICE_COMMIT: bad })),
-      /expected_service_commit for a full qualification/, JSON.stringify(bad));
+      /expected_service_commit for a full gate run/, JSON.stringify(bad));
   }
   // The Client commit is optional with full and must still be a commit.
   assert.doesNotThrow(() => validateScheduleEntry(env({ SCHEDULE_OPERATION: 'full',
@@ -94,11 +94,11 @@ test('each operation maps to exactly its E2E trigger and payload', () => {
     { operation: 'smoke', trigger: 'deploy-smoke', dispatched_by: key });
   assert.deepEqual(schedulePayload(env({ SCHEDULE_OPERATION: 'full', EXPECTED_SERVICE_COMMIT: serviceCommit,
     EXPECTED_CLIENT_COMMIT: clientCommit })),
-  { operation: 'full', trigger: 'release-qualify', expected_service_commit: serviceCommit,
+  { operation: 'full', trigger: 'release-gate', expected_service_commit: serviceCommit,
     expected_client_commit: clientCommit, dispatched_by: key });
   // A full without a Client commit names only the Service one.
   assert.deepEqual(schedulePayload(env({ SCHEDULE_OPERATION: 'full', EXPECTED_SERVICE_COMMIT: serviceCommit })),
-    { operation: 'full', trigger: 'release-qualify', expected_service_commit: serviceCommit, dispatched_by: key });
+    { operation: 'full', trigger: 'release-gate', expected_service_commit: serviceCommit, dispatched_by: key });
   // No payload restates the worker slot offset: the E2E workflow's reviewed default
   // is `0`, which every one of these triggers requires.
   for (const payload of [schedulePayload(env()), schedulePayload(env({ SCHEDULE_OPERATION: 'smoke' })),
@@ -110,16 +110,16 @@ test('each operation maps to exactly its E2E trigger and payload', () => {
 test('the dispatch sends the payload once and exposes the created run to the observation', async () => {
   await withOutput(async output => {
     const gh = fakeGh();
-    const result = await dispatchScheduledQualification({ env: env({ GITHUB_OUTPUT: output }),
+    const result = await dispatchScheduledGate({ env: env({ GITHUB_OUTPUT: output }),
       run: gh.run, out: gh.out });
     assert.equal(result.dispatched, true);
     assert.equal(result.run_id, 4242);
     assert.equal(result.run_url, createdUrl);
     const post = gh.calls.find(args => args.includes('--method'));
-    assert.equal(post[3], 'repos/anywear-ai/AnyWear-E2E/actions/workflows/beta-qualification.yml/dispatches');
+    assert.equal(post[3], 'repos/anywear-ai/AnyWear-E2E/actions/workflows/beta-e2e.yml/dispatches');
     assert.deepEqual(inputFields(post), schedulePayload(env()));
     assert.equal(await readFile(output, 'utf8'), `run_url=${createdUrl}\nrun_id=4242\nreceipt=created\n`);
-    assert.match(gh.text(), /Dispatched qualification reconcile\/scheduled/);
+    assert.match(gh.text(), /Dispatched gate run reconcile\/scheduled/);
   });
 });
 
@@ -127,8 +127,8 @@ test('a re-run whose key is already in an active run name dispatches nothing', a
   await withOutput(async output => {
     const existingUrl = 'https://github.com/anywear-ai/AnyWear-E2E/actions/runs/999';
     const gh = fakeGh({ in_progress: [{ id: 999, html_url: existingUrl,
-      display_title: 'Beta qualification: reconcile · scheduled · - · by ' + key }] });
-    const result = await dispatchScheduledQualification({ env: env({ GITHUB_OUTPUT: output }),
+      display_title: 'Beta E2E gate: reconcile · scheduled · - · by ' + key }] });
+    const result = await dispatchScheduledGate({ env: env({ GITHUB_OUTPUT: output }),
       run: gh.run, out: gh.out });
     assert.equal(result.dispatched, false);
     assert.equal(result.run_id, 999);
@@ -144,10 +144,10 @@ test('the dispatch refuses a missing token, a closed scope and an invalid operat
     [{ ENABLE_BETA_MUTATION: 'false' }, /requires the stage switch open/],
     [{ SCHEDULE_OPERATION: 'deploy' }, /requires one of reconcile, smoke, full/],
     [{ SCHEDULE_OPERATION: 'smoke', EXPECTED_SERVICE_COMMIT: serviceCommit }, /Only full accepts an expected commit/],
-    [{ SCHEDULE_OPERATION: 'full' }, /expected_service_commit for a full qualification/],
+    [{ SCHEDULE_OPERATION: 'full' }, /expected_service_commit for a full gate run/],
   ]) {
     const gh = fakeGh();
-    await assert.rejects(dispatchScheduledQualification({ env: env(overrides), run: gh.run, out: gh.out }),
+    await assert.rejects(dispatchScheduledGate({ env: env(overrides), run: gh.run, out: gh.out }),
       expectation, JSON.stringify(overrides));
     assert.deepEqual(gh.calls, [], `${JSON.stringify(overrides)}: no GitHub call precedes the refusal`);
   }

@@ -516,15 +516,15 @@ test('the protected executor gate binds repository, workflow, source, account an
   // not be forced to equal the Infra helper SHA.
   const e2e = (overrides = {}) => env('deploy-platform', { GITHUB_REPOSITORY: 'git-malu/AnyWear-E2E',
     GITHUB_REPOSITORY_ID: '1317091305', GITHUB_SHA: '6'.repeat(40),
-    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main', ...overrides });
+    GITHUB_WORKFLOW_REF: 'git-malu/AnyWear-E2E/.github/workflows/beta-e2e.yml@refs/heads/main', ...overrides });
   const executor = assertProtectedExecutor(infraSha, e2e());
   assert.equal(executor.repository, 'git-malu/AnyWear-E2E');
   assert.equal(executor.sha, infraSha);
-  assert.equal(executor.workflow_path, '.github/workflows/beta-qualification.yml');
+  assert.equal(executor.workflow_path, '.github/workflows/beta-e2e.yml');
   // The same E2E executor is accepted under the new owner, and the numeric id is
   // still the branch that selects the E2E allow-list.
   assert.equal(assertProtectedExecutor(infraSha, e2e({ GITHUB_REPOSITORY: 'anywear-ai/AnyWear-E2E',
-    GITHUB_WORKFLOW_REF: 'anywear-ai/AnyWear-E2E/.github/workflows/beta-qualification.yml@refs/heads/main' })).repository,
+    GITHUB_WORKFLOW_REF: 'anywear-ai/AnyWear-E2E/.github/workflows/beta-e2e.yml@refs/heads/main' })).repository,
   'anywear-ai/AnyWear-E2E');
   assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_REPOSITORY_ID: '1409047265' })), /workflow required/);
   assert.throws(() => assertProtectedExecutor(infraSha, e2e({ GITHUB_WORKFLOW_REF:

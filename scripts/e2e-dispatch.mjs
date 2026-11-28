@@ -15,17 +15,17 @@ import { validateOperationInputs } from './runtime-operation.mjs';
 // second exported definition across `lib/contracts.mjs` and `scripts/`.
 export { RUN_READ_ATTEMPTS, RUN_READ_WAIT_MS, runReadWaits } from './lib/created-run-read.mjs';
 
-// The deploy chain's qualification hop and hold (#226, #338). After `deploy`
-// succeeded for `deploy-runtime`, this dispatches the E2E `beta-qualification.yml`
-// run that qualifies the tuple the deployment left live. For
+// The deploy chain's gate hop and hold (#226, #338). After `deploy`
+// succeeded for `deploy-runtime`, this dispatches the E2E `beta-e2e.yml`
+// gate run that judges the tuple the deployment left live. For
 // `delivery_trigger=deploy` the job then reads that run to a terminal state: the
 // deployment run — and with it `anywear-infra-runtime` — stays alive for the
-// qualification, so a later merge waits in the group instead of replacing the
+// gate run, so a later merge waits in the group instead of replacing the
 // tuple under test. The ceiling is 55 minutes from the moment the dispatched run
 // was created, under the one-hour lifetime of the observation token that is minted
 // immediately before the dispatch; the job's `timeout-minutes` is 65, so the
 // observation's own deadline fires first and the recorder still runs. A red
-// qualification is a red E2E run and never a failed deployment. The job holds no
+// gate run is a red E2E run and never a failed deployment. The job holds no
 // AWS credential and no environment; its only token is one App installation token
 // narrowed to AnyWear-E2E with `actions: write`.
 //
@@ -37,53 +37,53 @@ export { RUN_READ_ATTEMPTS, RUN_READ_WAIT_MS, runReadWaits } from './lib/created
 // the dispatch response names the created run, and that run is verified by id.
 const execute = promisify(execFile);
 export const E2E_REPOSITORY = 'anywear-ai/AnyWear-E2E';
-export const QUALIFICATION_WORKFLOW = 'beta-qualification.yml';
-export const QUALIFICATION_REF = 'main';
+export const E2E_WORKFLOW = 'beta-e2e.yml';
+export const E2E_REF = 'main';
 export const ACTIVE_RUN_STATUSES = Object.freeze(['queued', 'in_progress']);
 /** The hold ends at most 55 minutes after the dispatched run was created (#338). */
 export const HOLD_CEILING_MS = 55 * 60 * 1000;
 /** Read the dispatched run at least once every 30 seconds, well inside the design's 90-second bound. */
 export const OBSERVATION_INTERVAL_MS = 30_000;
-const WORKFLOW_PATH = `repos/${E2E_REPOSITORY}/actions/workflows/${QUALIFICATION_WORKFLOW}`;
+const WORKFLOW_PATH = `repos/${E2E_REPOSITORY}/actions/workflows/${E2E_WORKFLOW}`;
 const MAX_BUFFER = 10 * 1024 * 1024;
 const GH_OPTIONS = { timeout: 60_000, maxBuffer: MAX_BUFFER };
 
 /**
  * The exact dispatch payload for this run's entry event, per ADR 0033 §7 and §8:
- * a Service merge sends `full` with `deploy-qualify` and the deployed Service
+ * a Service merge sends `full` with `deploy-gate` and the deployed Service
  * commit; a manual Runtime deployment and every Client publication send `smoke`
  * with `deploy-smoke` and no expected commits. All carry `worker_slot_offset=0`
  * and this run's URL as `dispatched_by`.
  */
-export function qualificationPayload(env = process.env) {
+export function gatePayload(env = process.env) {
   if (!DELIVERY_TRIGGER_OPERATIONS.includes(env.INFRA_OPERATION)) {
-    throw new Error(`Only ${DELIVERY_TRIGGER_OPERATIONS.join(' and ')} dispatches a qualification`);
+    throw new Error(`Only ${DELIVERY_TRIGGER_OPERATIONS.join(' and ')} dispatches a gate run`);
   }
   // The ADR's exact refusal, whatever the operation: a version tag never deploys and
-  // never publishes, so it dispatches no qualification either.
+  // never publishes, so it dispatches no gate run either.
   if (env.DELIVERY_TRIGGER === 'release') {
     throw new Error('delivery_trigger=release is refused: the release chain never deploys');
   }
   const dispatchedBy = dispatchingRunUrl(env);
   // Issue #344: the Client publication dispatches the post-publication `smoke`
   // inside its own held run. It is the same row a manual Runtime deployment sends:
-  // a publication seals no qualification record, so it names no expected commit.
+  // a publication takes no `full` gate, so it names no expected commit.
   if (env.INFRA_OPERATION === 'publish-client') {
     if (env.DELIVERY_TRIGGER !== 'publish' && env.DELIVERY_TRIGGER !== 'manual') {
-      throw new Error('publish-client requires delivery_trigger=publish or manual to dispatch a qualification');
+      throw new Error('publish-client requires delivery_trigger=publish or manual to dispatch a gate run');
     }
     return { operation: 'smoke', trigger: 'deploy-smoke', worker_slot_offset: '0', dispatched_by: dispatchedBy };
   }
   if (env.DELIVERY_TRIGGER === 'deploy') {
     matches(env.SERVICE_COMMIT, SHA, 'deployed Service commit');
-    return { operation: 'full', trigger: 'deploy-qualify', expected_service_commit: env.SERVICE_COMMIT,
+    return { operation: 'full', trigger: 'deploy-gate', expected_service_commit: env.SERVICE_COMMIT,
       worker_slot_offset: '0', dispatched_by: dispatchedBy };
   }
   if (env.DELIVERY_TRIGGER === 'manual') {
     // No expected commits: this operation deployed the Service tuple, not a Client one.
     return { operation: 'smoke', trigger: 'deploy-smoke', worker_slot_offset: '0', dispatched_by: dispatchedBy };
   }
-  throw new Error('deploy-runtime requires delivery_trigger=deploy or manual to dispatch a qualification');
+  throw new Error('deploy-runtime requires delivery_trigger=deploy or manual to dispatch a gate run');
 }
 
 /**
@@ -93,7 +93,7 @@ export function qualificationPayload(env = process.env) {
  */
 export function dispatchArguments(payload) {
   return ['api', '--method', 'POST', `${WORKFLOW_PATH}/dispatches`,
-    '-f', `ref=${QUALIFICATION_REF}`,
+    '-f', `ref=${E2E_REF}`,
     '-F', 'return_run_details=true',
     ...Object.entries(payload).flatMap(([name, value]) => ['-f', `inputs[${name}]=${value}`])];
 }
@@ -104,7 +104,7 @@ export async function listActiveRuns(run, env) {
   for (const status of ACTIVE_RUN_STATUSES) {
     const response = parseJson((await run('gh', ['api', `${WORKFLOW_PATH}/runs?status=${status}&per_page=100`],
       { env, ...GH_OPTIONS })).stdout);
-    if (!Array.isArray(response?.workflow_runs)) throw new Error(`The ${status} qualification run list is malformed`);
+    if (!Array.isArray(response?.workflow_runs)) throw new Error(`The ${status} gate run list is malformed`);
     runs.push(...response.workflow_runs);
   }
   return runs;
@@ -120,7 +120,7 @@ export const FALLBACK_WAIT_MS = 3_000;
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const firstText = (...values) => values.find(value => typeof value === 'string' && value !== '');
-const qualificationRunUrl = id => `https://github.com/${E2E_REPOSITORY}/actions/runs/${id}`;
+const gateRunUrl = id => `https://github.com/${E2E_REPOSITORY}/actions/runs/${id}`;
 
 /** The run id the dispatch response names, or `undefined` when it names none usable. */
 function dispatchedRunId(details) {
@@ -180,7 +180,7 @@ async function pollDispatchedRun({ run, ghEnv, key, attempts, wait }) {
   const cause = lastError === undefined
     ? 'the run was dropped at birth or named differently'
     : `the last listing failed: ${lastError?.message ?? lastError}`;
-  throw new Error(`No active qualification run carried ${key} after ${attempts} attempts: ${cause}`);
+  throw new Error(`No active gate run carried ${key} after ${attempts} attempts: ${cause}`);
 }
 
 /**
@@ -196,7 +196,7 @@ async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, o
     repository: E2E_REPOSITORY,
     runId: id,
     runUrl,
-    label: 'the dispatched qualification run',
+    label: 'the dispatched gate run',
     attempts,
     wait,
     log: line => out.write(`${line}\n`),
@@ -206,7 +206,7 @@ async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, o
 
 /**
  * Skip the dispatch when this run's URL is already in an active run's name; list
- * failures dispatch anyway and say so, because a duplicate qualification wastes a
+ * failures dispatch anyway and say so, because a duplicate gate run wastes a
  * run while a skipped legitimate one would hide a release. After dispatching, when
  * the response names the created run, read that run by id — retrying only a `404`
  * and rejecting a run already terminal with a non-`success` conclusion (#342) —
@@ -229,7 +229,7 @@ async function readDispatchedRunById({ run, ghEnv, id, runUrl, attempts, wait, o
 export async function dispatchRun({ env = process.env, run = execute, out = process.stdout, payload,
   attempts = FALLBACK_ATTEMPTS, readAttempts = RUN_READ_ATTEMPTS, wait = sleep } = {}) {
   if (typeof env.GH_TOKEN !== 'string' || !env.GH_TOKEN) {
-    throw new Error('A write-scoped AnyWear-E2E App token is required to dispatch the qualification');
+    throw new Error('A write-scoped AnyWear-E2E App token is required to dispatch the gate run');
   }
   const key = payload.dispatched_by;
   const ghEnv = { ...process.env, GH_TOKEN: env.GH_TOKEN, GH_TELEMETRY: 'disabled' };
@@ -246,7 +246,7 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
       out.write(`Could not list the target's queued and in-progress runs (${error?.message ?? error}); dispatching anyway.\n`);
     }
     if (existing) {
-      out.write(`Qualification already dispatched by ${key}: ${existing.html_url}\n`);
+      out.write(`Gate run already dispatched by ${key}: ${existing.html_url}\n`);
       receipt = 'adopted';
       runUrl = existing.html_url;
       runId = existing.id;
@@ -266,14 +266,14 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
     const id = dispatchedRunId(details);
     // Print the URL the dispatch response names before reading the run back, so the
     // operator has it even if the verification fails.
-    const dispatchedUrl = firstText(details?.html_url, details?.run_url, id === undefined ? undefined : qualificationRunUrl(id));
-    out.write(`Dispatched qualification ${payload.operation}/${payload.trigger}${dispatchedUrl ? ` as ${dispatchedUrl}` : ''}\n`);
+    const dispatchedUrl = firstText(details?.html_url, details?.run_url, id === undefined ? undefined : gateRunUrl(id));
+    out.write(`Dispatched gate run ${payload.operation}/${payload.trigger}${dispatchedUrl ? ` as ${dispatchedUrl}` : ''}\n`);
     if (id !== undefined) {
       // The response names the created run, so publish it before the read-back that
       // can fail, and let the observation still find a run the dispatcher could not
       // verify. The browsable URL is the response's `html_url`, or the one built
       // from the id; a response's API `run_url` is only a last resort for display.
-      const observedUrl = firstText(details?.html_url, qualificationRunUrl(id));
+      const observedUrl = firstText(details?.html_url, gateRunUrl(id));
       runUrl = observedUrl;
       runId = id;
       // The dispatch response names the run it created, so verify that run by id. The
@@ -286,7 +286,7 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
     }
     out.write(`The dispatch response carried no run id; looking for ${key} in the target's active runs.\n`);
     const match = await pollDispatchedRun({ run, ghEnv, key, attempts, wait });
-    out.write(`Qualification dispatched by ${key}: ${match.html_url}\n`);
+    out.write(`Gate run dispatched by ${key}: ${match.html_url}\n`);
     const matchId = Number.isSafeInteger(match.id) && match.id > 0 ? match.id : undefined;
     runUrl = match.html_url;
     runId = matchId;
@@ -302,11 +302,11 @@ export async function dispatchRun({ env = process.env, run = execute, out = proc
  * itself — the only write outside `dispatchRun`'s single `finally` — and the two
  * never write together.
  */
-export async function dispatchQualification({ env = process.env, ...options } = {}) {
+export async function dispatchGateRun({ env = process.env, ...options } = {}) {
   let payload;
   try {
     validateOperationInputs(env);
-    payload = qualificationPayload(env);
+    payload = gatePayload(env);
   } catch (error) {
     await publishDispatchedRun(env, undefined, undefined, 'not_submitted');
     throw error;
@@ -320,7 +320,7 @@ function observedRunId({ runId, runUrl }) {
   if (Number.isSafeInteger(direct) && direct > 0) return direct;
   const match = /\/runs\/(\d+)\/?$/.exec(String(runUrl ?? ''));
   if (match) return Number(match[1]);
-  throw new Error('No dispatched qualification run id or URL is available to observe');
+  throw new Error('No dispatched gate run id or URL is available to observe');
 }
 
 /** `created_at + ceiling`, or the entry time plus the ceiling when the run names no usable `created_at`. */
@@ -335,7 +335,7 @@ function ceilingOutcome({ runId, runUrl, current, ceilingMs }) {
   const minutes = ceilingMinutes(ceilingMs);
   // The ceiling is the hold's own bound, not a broken read: the record carries no
   // `conclusion` and no `read_failure`, so it cannot be mistaken for a verdict.
-  return { outcome: 'unqualified', run_id: runId, run_url: runUrl,
+  return { outcome: 'failed', run_id: runId, run_url: runUrl,
     failed_jobs: [], status: current?.status,
     reason: `the run had not reached a terminal state when the ${minutes}-minute hold ceiling was reached`
       + ` (last status ${current?.status ?? 'unknown'})`,
@@ -366,11 +366,10 @@ async function failedJobNames({ run, ghEnv, runId }) {
 
 /**
  * Read the dispatched run until it is `completed`, on a fixed interval, and never
- * past `created_at + HOLD_CEILING_MS` (#338). `qualified` means the E2E run
- * concluded `success`, which for a `full` dispatch only the `record` job produces
- * after verifying and attaching the qualification record. A terminal non-success
- * run returns `unqualified` with the failed jobs, or with the job-list cause when
- * that list could not be read, and the ceiling returns `unqualified` with
+ * past `created_at + HOLD_CEILING_MS` (#338). `passed` means the E2E run
+ * concluded `success`. A terminal non-success run returns `failed` with the failed
+ * jobs, or with the job-list cause when that list could not be read, and the
+ * ceiling returns `failed` with
  * `ceiling: true` so the recorder writes a `::warning`. A read failure is thrown as
  * the shared module's `RunReadError`: a run that could not be read is not a
  * verdict, so the recorder records `unobserved` instead of inventing one.
@@ -381,20 +380,20 @@ async function failedJobNames({ run, ghEnv, runId }) {
  * module's `deadline-reached` code, which is mapped here to the ceiling outcome
  * because the ceiling is the hold's own bound, not a broken read.
  */
-export async function observeQualification({ env = process.env, run = execute, wait = sleep, out = process.stdout,
+export async function observeGateRun({ env = process.env, run = execute, wait = sleep, out = process.stdout,
   now = Date.now, runId, runUrl, ceilingMs = HOLD_CEILING_MS, intervalMs = OBSERVATION_INTERVAL_MS } = {}) {
   const id = observedRunId({ runId, runUrl });
   if (typeof env.GH_TOKEN !== 'string' || !env.GH_TOKEN) {
-    throw new Error('A read-scoped AnyWear-E2E App token is required to observe the qualification');
+    throw new Error('A read-scoped AnyWear-E2E App token is required to observe the gate run');
   }
   const ghEnv = { ...process.env, GH_TOKEN: env.GH_TOKEN, GH_TELEMETRY: 'disabled' };
-  let readUrl = firstText(runUrl, qualificationRunUrl(id));
+  let readUrl = firstText(runUrl, gateRunUrl(id));
   const readRun = ({ deadlineAtMs } = {}) => readCreatedRunById({
     read: async path => parseJson((await run('gh', ['api', path], { env: ghEnv, ...GH_OPTIONS })).stdout),
     repository: E2E_REPOSITORY,
     runId: id,
     runUrl: readUrl,
-    label: 'the dispatched qualification run',
+    label: 'the dispatched gate run',
     wait,
     log: line => out.write(`${line}\n`),
     now,
@@ -404,23 +403,23 @@ export async function observeQualification({ env = process.env, run = execute, w
   const startedAt = now();
   let current = await readRun();
   const deadline = holdDeadline(current?.created_at, startedAt, ceilingMs);
-  const resolvedUrl = firstText(current?.html_url, runUrl, qualificationRunUrl(id));
+  const resolvedUrl = firstText(current?.html_url, runUrl, gateRunUrl(id));
   readUrl = resolvedUrl;
-  out.write(`Observing qualification ${resolvedUrl}: interval ${intervalMs} ms, hold ceiling ${new Date(deadline).toISOString()}.\n`);
+  out.write(`Observing gate run ${resolvedUrl}: interval ${intervalMs} ms, hold ceiling ${new Date(deadline).toISOString()}.\n`);
   for (;;) {
     if (current?.status === 'completed') {
       const conclusion = typeof current.conclusion === 'string' && current.conclusion !== '' ? current.conclusion : 'unknown';
       if (conclusion === 'success') {
-        out.write(`The qualification run ${resolvedUrl} concluded success.\n`);
-        return { outcome: 'qualified', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: [] };
+        out.write(`The gate run ${resolvedUrl} concluded success.\n`);
+        return { outcome: 'passed', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: [] };
       }
       const { jobs, note } = await failedJobNames({ run, ghEnv, runId: id });
       out.write(note === undefined
-        ? `The qualification run ${resolvedUrl} concluded ${conclusion}`
+        ? `The gate run ${resolvedUrl} concluded ${conclusion}`
           + `; failed job(s): ${jobs.length > 0 ? jobs.join(', ') : 'none named'}.\n`
-        : `The qualification run ${resolvedUrl} concluded ${conclusion}; the job list could not be read (${note}),`
+        : `The gate run ${resolvedUrl} concluded ${conclusion}; the job list could not be read (${note}),`
           + ' so no failed job is named.\n');
-      return { outcome: 'unqualified', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: jobs,
+      return { outcome: 'failed', run_id: id, run_url: resolvedUrl, conclusion, failed_jobs: jobs,
         ...(note === undefined ? {} : { failed_jobs_note: note }) };
     }
     const remaining = deadline - now();
@@ -450,11 +449,11 @@ export async function observeQualification({ env = process.env, run = execute, w
  * receipt. A failure to read is never reported as the ceiling and never as a
  * verdict the observation did not form.
  */
-export function qualificationOutcomeLine(result) {
+export function gateOutcomeLine(result) {
   const tuple = typeof result.service_commit === 'string' && result.service_commit !== ''
     ? ` for Service commit ${result.service_commit}` : '';
-  if (result.outcome === 'qualified') {
-    return `Qualification qualified: ${result.run_url} concluded ${result.conclusion}${tuple}.`;
+  if (result.outcome === 'passed') {
+    return `E2E gate passed: ${result.run_url} concluded ${result.conclusion}${tuple}.`;
   }
   const runUrl = typeof result.run_url === 'string' && result.run_url !== '' ? result.run_url : undefined;
   if (result.outcome === 'unobserved') {
@@ -464,9 +463,9 @@ export function qualificationOutcomeLine(result) {
     const waitsMs = Number.isSafeInteger(result.waits_ms) && result.waits_ms >= 0 ? result.waits_ms : 0;
     const receipt = typeof result.receipt === 'string' && result.receipt !== ''
       ? result.receipt : 'no receipt was recorded';
-    return `Qualification unobserved: ${runUrl ?? 'the dispatched qualification run'} could not be read (${cause})`
+    return `E2E gate unobserved: ${runUrl ?? 'the dispatched gate run'} could not be read (${cause})`
       + ` after ${reads} reads over ${waitsMs} ms of waits; dispatch receipt: ${receipt},`
-      + ` so no qualification verdict was recorded${tuple}.`;
+      + ` so no gate verdict was recorded${tuple}.`;
   }
   const conclusion = typeof result.conclusion === 'string' && result.conclusion !== '' ? result.conclusion : undefined;
   if (conclusion !== undefined) {
@@ -474,18 +473,18 @@ export function qualificationOutcomeLine(result) {
       ? `; failed job(s): ${result.failed_jobs.join(', ')}`
       : (typeof result.failed_jobs_note === 'string' && result.failed_jobs_note !== ''
         ? `; failed job(s): none named (the job list could not be read: ${result.failed_jobs_note})` : '');
-    return `Qualification unqualified: ${runUrl ?? 'the dispatched qualification run'} concluded`
+    return `E2E gate failed: ${runUrl ?? 'the dispatched gate run'} concluded`
       + ` ${conclusion}${tuple}${failed}.`;
   }
   if (result.ceiling === true) {
-    return `Qualification unqualified: ${runUrl ?? 'the dispatched qualification run'} had not reached a`
+    return `E2E gate failed: ${runUrl ?? 'the dispatched gate run'} had not reached a`
       + ` terminal state when the ${ceilingMinutes(result.ceiling_ms ?? HOLD_CEILING_MS)}-minute hold ceiling`
       + ` was reached${tuple}.`;
   }
   const reason = typeof result.reason === 'string' && result.reason !== ''
-    ? result.reason : 'the qualification observation recorded no cause';
+    ? result.reason : 'the gate observation recorded no cause';
   const named = runUrl !== undefined && !reason.includes(runUrl) ? `${runUrl}: ` : '';
-  return `Qualification unqualified: ${named}${reason}${tuple}.`;
+  return `E2E gate failed: ${named}${reason}${tuple}.`;
 }
 
 /**
@@ -495,8 +494,8 @@ export function qualificationOutcomeLine(result) {
  * unreadable job list are warnings on the step log, never errors, because the
  * deployment's own conclusion stands.
  */
-export async function recordQualificationOutcome({ env = process.env, result, out = process.stdout } = {}) {
-  const line = qualificationOutcomeLine(result);
+export async function recordGateOutcome({ env = process.env, result, out = process.stdout } = {}) {
+  const line = gateOutcomeLine(result);
   const annotation = result.outcome === 'unobserved' ? '::error::'
     : result.ceiling === true || typeof result.failed_jobs_note === 'string' ? '::warning::' : '';
   out.write(`${annotation}${line}\n`);
@@ -509,4 +508,4 @@ export async function recordQualificationOutcome({ env = process.env, result, ou
   return line;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await dispatchQualification();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await dispatchGateRun();

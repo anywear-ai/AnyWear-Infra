@@ -1,15 +1,15 @@
 import { pathToFileURL } from 'node:url';
 import { matches, SHA } from './lib/json-contract.mjs';
 import { dispatchingRunUrl } from './lib/delivery-inputs.mjs';
-import { dispatchRun } from './qualification-dispatch.mjs';
+import { dispatchRun } from './e2e-dispatch.mjs';
 
 // Issue #344: the Infra scheduled entry (`schedule.yml`). The nightly run and a
 // manual dispatch reach the same three-operation menu, and every one of them is a
-// qualification the Infra run starts and holds to a terminal state:
+// gate run the Infra run starts and holds to a terminal state:
 //
 //   reconcile → E2E `reconcile` with `trigger=scheduled`
 //   smoke     → E2E `smoke` with `trigger=deploy-smoke`
-//   full      → E2E `full` with `trigger=release-qualify` and the expected commits
+//   full      → E2E `full` with `trigger=release-gate` and the expected commits
 //
 // The entry holds `anywear-infra-runtime` for the whole run, mints the existing
 // AnyWear-E2E `actions: write` App token and declares no environment, no `id-token`
@@ -23,7 +23,7 @@ import { dispatchRun } from './qualification-dispatch.mjs';
 export const SCHEDULE_OPERATIONS = Object.freeze(['reconcile', 'smoke', 'full']);
 /** The one E2E trigger each operation maps to (ADR 0033 §8). */
 export const SCHEDULE_TRIGGERS = Object.freeze({
-  reconcile: 'scheduled', smoke: 'deploy-smoke', full: 'release-qualify',
+  reconcile: 'scheduled', smoke: 'deploy-smoke', full: 'release-gate',
 });
 
 /**
@@ -42,7 +42,7 @@ export function validateScheduleEntry(env = process.env) {
   const expectedServiceCommit = env.EXPECTED_SERVICE_COMMIT ?? '';
   const expectedClientCommit = env.EXPECTED_CLIENT_COMMIT ?? '';
   if (operation === 'full') {
-    matches(expectedServiceCommit, SHA, 'expected_service_commit for a full qualification');
+    matches(expectedServiceCommit, SHA, 'expected_service_commit for a full gate run');
   } else if (expectedServiceCommit !== '' || expectedClientCommit !== '') {
     throw new Error(`Only full accepts an expected commit; ${operation} names none`);
   }
@@ -51,12 +51,12 @@ export function validateScheduleEntry(env = process.env) {
     dispatched_by: dispatchingRunUrl(env) };
 }
 
-/** The `beta-qualification.yml` payload for one menu operation. */
+/** The `beta-e2e.yml` payload for one menu operation. */
 export function schedulePayload(env = process.env) {
   const inputs = validateScheduleEntry(env);
   const payload = { operation: inputs.operation, trigger: SCHEDULE_TRIGGERS[inputs.operation],
     dispatched_by: inputs.dispatched_by };
-  // ADR 0033 §8: the expected commits are `full`-only inputs, and `release-qualify`
+  // ADR 0033 §8: the expected commits are `full`-only inputs, and `release-gate`
   // requires the Service commit. The worker slot offset keeps its reviewed default
   // (`0`) rather than being restated here.
   if (inputs.operation === 'full') {
@@ -67,12 +67,12 @@ export function schedulePayload(env = process.env) {
 }
 
 /**
- * Dispatch the qualification and expose the created run's id and URL through the
+ * Dispatch the gate run and expose the created run's id and URL through the
  * step's `GITHUB_OUTPUT`, which the observation step reads. The dedupe, the
- * by-id verification and the bounded fallback are `qualification-dispatch.mjs`'s,
+ * by-id verification and the bounded fallback are `e2e-dispatch.mjs`'s,
  * so the scheduled entry and the deploy chain hold their runs the same way.
  */
-export async function dispatchScheduledQualification({ env = process.env, ...options } = {}) {
+export async function dispatchScheduledGate({ env = process.env, ...options } = {}) {
   return dispatchRun({ env, ...options, payload: schedulePayload(env) });
 }
 
@@ -81,12 +81,12 @@ if (isMain) {
   const mode = process.argv[2];
   if (mode === 'validate') {
     const inputs = validateScheduleEntry();
-    process.stdout.write(`Scheduled qualification ${inputs.operation} -> trigger ${SCHEDULE_TRIGGERS[inputs.operation]}`
+    process.stdout.write(`Scheduled gate run ${inputs.operation} -> trigger ${SCHEDULE_TRIGGERS[inputs.operation]}`
       + ` by ${inputs.dispatched_by}${inputs.expected_service_commit === '' ? '' : ` for Service commit ${inputs.expected_service_commit}`}`
       + `${inputs.expected_client_commit === '' ? '' : ` and Client commit ${inputs.expected_client_commit}`}.\n`);
   } else if (mode === 'dispatch') {
-    await dispatchScheduledQualification();
+    await dispatchScheduledGate();
   } else {
-    throw new Error(`Unknown schedule-qualification mode '${String(mode)}': expected validate or dispatch`);
+    throw new Error(`Unknown schedule-e2e mode '${String(mode)}': expected validate or dispatch`);
   }
 }

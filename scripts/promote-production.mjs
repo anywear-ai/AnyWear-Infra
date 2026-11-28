@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { canonicalJson, contentHash, matches, HASH, integer } from './lib/json-contract.mjs';
-import { validateProductionContext, assertQualifiedRelease } from './production-preflight.mjs';
+import { validateProductionContext } from './production-preflight.mjs';
 
 // #54 implements the v2 consumer; Production execution is not onboarded. These
 // are source-reviewed future requirements, not an authorization or AWS executor.
@@ -16,8 +16,8 @@ export function assertProductionExecutorReady() {
   throw new Error(`Production execution remains disabled: ${PRODUCTION_ONBOARDING_BLOCKERS.join(' ')}`);
 }
 
-export function buildProductionPromotionPlan({ release, qualification, stableRelease, env = process.env }) {
-  validateProductionContext(env); assertQualifiedRelease(qualification, release, env);
+export function buildProductionPromotionPlan({ release, stableRelease, env = process.env }) {
+  validateProductionContext(env);
   if (stableRelease.id !== Number(env.STABLE_RELEASE_ID) || stableRelease.immutable !== true || stableRelease.draft !== false
     || stableRelease.prerelease !== false || !/^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(stableRelease.tag_name ?? '')) {
     throw new Error('Reviewed sealed stable release required for promotion plan');
@@ -26,8 +26,9 @@ export function buildProductionPromotionPlan({ release, qualification, stableRel
   return {
     schema_version: 1, record_type: 'anywear_future_production_plan', executable: false,
     infra_sha: env.GITHUB_SHA, service_sha: release.source_sha, service_release_id: release.release_id,
-    qualification: { run_id: Number(env.QUALIFICATION_RUN_ID), run_attempt: Number(env.QUALIFICATION_RUN_ATTEMPT),
-      artifact_id: Number(env.QUALIFICATION_ARTIFACT_ID), record_sha256: env.QUALIFICATION_RECORD_SHA256, e2e_sha: env.QUALIFICATION_E2E_SHA },
+    // Issue #358: the promotion holds one AnyWear-E2E `full` gate run that it
+    // dispatched; that run is the whole gate verdict, and no retained record is read.
+    gate_run: { run_id: Number(env.E2E_GATE_RUN_ID), run_attempt: Number(env.E2E_GATE_RUN_ATTEMPT) },
     stable_release: { repository: 'anywear-ai/AnyWear-Service', id: stableRelease.id, tag: stableRelease.tag_name },
     image: { source: 'beta-anywear-service', destination, digest: release.image_digest },
     copy: { command: 'skopeo', args: ['copy', '--all', '--preserve-digests',

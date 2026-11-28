@@ -1,17 +1,17 @@
-name: Beta scheduled qualification
+name: Beta scheduled E2E gate
 # #344: the single-writer architecture's scheduled entry (ADR 0033 §10). It shares
 # the one non-cancelling `anywear-infra-runtime` group with `mutate.yml`, so a
 # nightly reconcile queues behind an in-flight mutation instead of racing it, and it
-# holds the group until the qualification it dispatched is terminal.
+# holds the group until the gate run it dispatched is terminal.
 #
 # The entry declares no `environment`, holds no `id-token` and no AWS credential: it
 # mints exactly one App installation token narrowed to `AnyWear-E2E` with
-# `actions: write` only, dispatches `beta-qualification.yml` and reads the created
+# `actions: write` only, dispatches `beta-e2e.yml` and reads the created
 # run back. It creates no record and changes no AWS resource.
 #
 # The run name states the operation the entry dispatches (the schedule event names
 # none, so the default `reconcile` is rendered) and the actor.
-run-name: "Beta scheduled qualification: ${{ inputs.operation || 'reconcile' }} · by @${{ github.actor }}"
+run-name: "Beta scheduled E2E gate: ${{ inputs.operation || 'reconcile' }} · by @${{ github.actor }}"
 on:
   schedule:
     # 03:17 UTC, the daily window ADR 0033 §10 records. A long deployment can delay
@@ -22,18 +22,18 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Qualification to dispatch and hold to a terminal state
+        description: E2E gate operation to dispatch and hold to a terminal state
         type: choice
         options: [reconcile, smoke, full]
         required: true
-      # A `full` qualification of a reviewed commit needs the commit it expects to be
+      # A `full` gate run of a reviewed commit needs the commit it expects to be
       # live. Only `full` accepts either expected commit; the other two refuse them.
       expected_service_commit:
-        description: 40-hex Service commit the full qualification expects live; required by full, empty otherwise
+        description: 40-hex Service commit the full gate run expects live; required by full, empty otherwise
         type: string
         default: ''
       expected_client_commit:
-        description: 40-hex Client commit the full qualification expects live; optional with full, empty otherwise
+        description: 40-hex Client commit the full gate run expects live; optional with full, empty otherwise
         type: string
         default: ''
 permissions:
@@ -79,21 +79,21 @@ jobs:
           node-version: 24
       - run: npm ci
       - name: Validate the scheduled operation and its input scope
-        run: node scripts/schedule-qualification.mjs validate
+        run: node scripts/schedule-e2e.mjs validate
   # The hold. This workflow runs no writer gate of its own — it dispatches E2E and
   # mutates nothing. Its name is what matters: AnyWear-E2E's preflight checks the
-  # writer pair `mutate.yml` → `qualify-hold` and `schedule.yml` → `hold`, so
-  # renaming this job hides the scheduled writer from the qualification it starts.
+  # writer pair `mutate.yml` → `e2e-hold` and `schedule.yml` → `hold`, so
+  # renaming this job hides the scheduled writer from the gate run it starts.
   #
   # It mints the existing AnyWear-E2E `actions: write` App token — the same
   # allocation the deploy chain's hold uses (ADR 0033 §5 allocation 3) — dispatches
-  # the qualification, then reads the created run to a terminal state under the same
-  # 55-minute ceiling, from the same `scripts/qualification-observe.mjs` that records
+  # the gate run, then reads the created run to a terminal state under the same
+  # 55-minute ceiling, from the same `scripts/e2e-observe.mjs` that records
   # the deploy chain's outcome. The job's 65-minute timeout outlives that ceiling, so
   # the observation's deadline fires first and the recorder still runs. Exactly one
-  # `qualified`/`unqualified`/`unobserved` line is recorded in the step summary and
+  # `passed`/`failed`/`unobserved` line is recorded in the step summary and
   # as the job output; `unobserved` means the dispatched run could not be read, so no
-  # verdict was formed and the step fails. A red qualification is a red E2E run; the
+  # verdict was formed and the step fails. A red gate run is a red E2E run; the
   # entry itself creates no record and never changes a deployment verdict.
   hold:
     needs: preflight
@@ -114,7 +114,7 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Create the AnyWear-E2E qualification dispatch token
+      - name: Create the AnyWear-E2E gate dispatch token
         id: app
         uses: actions/create-github-app-token@v3
         with:
@@ -125,32 +125,32 @@ jobs:
           permission-actions: write
       # The operation-to-trigger mapping, the pre-dispatch dedupe, the dispatch with
       # `return_run_details: true`, the created run verified by id and the bounded
-      # run-name fallback are `scripts/schedule-qualification.mjs`'s; it exposes the
+      # run-name fallback are `scripts/schedule-e2e.mjs`'s; it exposes the
       # created run's id, URL and dispatch receipt as its step outputs, which the
       # observation reads.
-      - name: Dispatch the scheduled qualification and print its run
+      - name: Dispatch the scheduled gate run and print its run
         id: dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: node scripts/schedule-qualification.mjs dispatch
+        run: node scripts/schedule-e2e.mjs dispatch
       # The observation is the job's last step and runs even when an earlier step
-      # failed, so every run leaves exactly one outcome. It records `unqualified`
+      # failed, so every run leaves exactly one outcome. It records `failed`
       # and exits zero when the dispatch receipt proves nothing was submitted (the
       # job is already red from the failed step), records `unobserved` and fails when
       # a dispatched run cannot be read or when a receipt names a run this step
       # cannot identify, and exits zero for a terminal non-success run, the ceiling
       # and a success.
-      - name: Observe the dispatched qualification and record its one outcome
+      - name: Observe the dispatched gate run and record its one outcome
         id: observe
         if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          QUALIFICATION_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
-          QUALIFICATION_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
-          QUALIFICATION_RECEIPT: ${{ steps.dispatch.outputs.receipt }}
-          # A `full` qualification names the Service commit it expects; the outcome
+          E2E_RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+          E2E_RUN_URL: ${{ steps.dispatch.outputs.run_url }}
+          E2E_RECEIPT: ${{ steps.dispatch.outputs.receipt }}
+          # A `full` gate run names the Service commit it expects; the outcome
           # line reports it when the entry dispatched one.
           SERVICE_COMMIT: ${{ inputs.expected_service_commit }}
-        run: node scripts/qualification-observe.mjs
+        run: node scripts/e2e-observe.mjs

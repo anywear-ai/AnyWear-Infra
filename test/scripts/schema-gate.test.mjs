@@ -955,8 +955,8 @@ test('the Beta runbook states the settle window, its measured basis and the retr
   }
   // The retry decision: both remedies and the fact that a manual dispatch is not one.
   assert.match(section, /Re-run \*\*all\*\* jobs, not/);
-  assert.match(section, /release-qualify/);
+  assert.match(section, /release-gate/);
   assert.match(section, /expected_service_commit/);
-  assert.match(section, /`smoke`, which is not a qualification record/);
+  assert.match(section, /`smoke`, which produces no `full` gate verdict/);
   assert.match(section, /deletes a previous attempt's same-named\n  change set/);
 });

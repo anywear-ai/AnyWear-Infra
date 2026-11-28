@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ACCEPTED_FULL_RUN_NAME_PREFIXES, ACCEPTED_WORKFLOW_PATHS, ADMISSION_BUDGET_MS,
-  ADMISSION_INTERVAL_MS, E2E_FULL_RUN_NAME_PREFIX, E2E_WORKFLOW_PATH, isFullQualificationRun,
-  listNonterminalFullRuns, main, QUALIFICATION_NONTERMINAL_STATUSES,
+  ADMISSION_INTERVAL_MS, E2E_FULL_RUN_NAME_PREFIX, E2E_WORKFLOW_PATH, isFullGateRun,
+  listNonterminalFullRuns, main, E2E_NONTERMINAL_STATUSES,
   RETIRED_FULL_RUN_NAME_PREFIX, RETIRED_WORKFLOW_PATH, RUNS_PATH,
-} from '../../scripts/qualification-admission.mjs';
+} from '../../scripts/e2e-admission.mjs';
 import { capturedRunPage } from '../fixtures/e2e-repository-runs-page.mjs';
 
 // #338/#358: the pre-mutation admission read. It runs in `mutate.yml`'s `deploy` job
@@ -108,14 +108,14 @@ test('the accepted sets are the retired and current literals, and nothing else',
     [RETIRED_FULL_RUN_NAME_PREFIX, E2E_FULL_RUN_NAME_PREFIX]);
   assert.equal(Object.isFrozen(ACCEPTED_WORKFLOW_PATHS), true);
   assert.equal(Object.isFrozen(ACCEPTED_FULL_RUN_NAME_PREFIXES), true);
-  assert.equal(Object.isFrozen(QUALIFICATION_NONTERMINAL_STATUSES), true);
-  assert.deepEqual([...QUALIFICATION_NONTERMINAL_STATUSES],
+  assert.equal(Object.isFrozen(E2E_NONTERMINAL_STATUSES), true);
+  assert.deepEqual([...E2E_NONTERMINAL_STATUSES],
     ['requested', 'waiting', 'pending', 'queued', 'in_progress']);
   assert.equal(RUNS_PATH, 'repos/anywear-ai/AnyWear-E2E/actions/runs?per_page=100');
-  assert.equal(isFullQualificationRun({}), false);
-  assert.equal(isFullQualificationRun({ path: RETIRED_WORKFLOW_PATH }), false,
+  assert.equal(isFullGateRun({}), false);
+  assert.equal(isFullGateRun({ path: RETIRED_WORKFLOW_PATH }), false,
     'a path alone is not a `full` holder');
-  assert.equal(isFullQualificationRun({ display_title: fullTitle(E2E_FULL_RUN_NAME_PREFIX) }), false,
+  assert.equal(isFullGateRun({ display_title: fullTitle(E2E_FULL_RUN_NAME_PREFIX) }), false,
     'a run-name alone is not a `full` holder');
 });
 
@@ -124,7 +124,7 @@ test('the four path × run-name-prefix combinations are each recognised as a ful
   for (const path of ACCEPTED_WORKFLOW_PATHS) {
     for (const prefix of ACCEPTED_FULL_RUN_NAME_PREFIXES) {
       const holder = runState(6000 + index++, 'in_progress', { path, title: fullTitle(prefix) });
-      assert.equal(isFullQualificationRun(holder), true, `${path} + ${prefix} must be a full holder`);
+      assert.equal(isFullGateRun(holder), true, `${path} + ${prefix} must be a full holder`);
       // The holder is never completed, so the budget is what ends the wait: the
       // combination did hold the gate rather than being filtered away.
       const gh = fakeGh({ pages: [[holder]], byId: { [holder.id]: holder } });
@@ -132,7 +132,7 @@ test('the four path × run-name-prefix combinations are each recognised as a ful
       const { code, text, waits } = await admit({ gh, clock });
       assert.equal(code, 1, `${path} + ${prefix} must refuse the mutation`);
       assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
-      assert.match(text, /^Refusing the mutation: 1 full qualification run\(s\) were still nonterminal/);
+      assert.match(text, /^Refusing the mutation: 1 full gate run\(s\) were still nonterminal/);
       assert.ok(text.includes(runUrl(holder.id)), 'the refusal names the holder URL');
       assert.match(text, /\(in_progress\)/, 'the refusal names the holder status');
     }
@@ -144,13 +144,13 @@ test('smoke and reconcile runs are not holders under either prefix', async () =>
   for (const prefix of ACCEPTED_FULL_RUN_NAME_PREFIXES) {
     for (const operation of ['smoke', 'reconcile']) {
       const run = runState(7000 + index++, 'in_progress', { title: runName(prefix, operation) });
-      assert.equal(isFullQualificationRun(run), false, `${operation} under ${prefix} is not a full run`);
+      assert.equal(isFullGateRun(run), false, `${operation} under ${prefix} is not a full run`);
       const gh = fakeGh({ pages: [[run]] });
       const clock = fakeClock();
       const { code, text, waits } = await admit({ gh, clock });
       assert.equal(code, 0, `${operation} seals nothing and must not hold the gate`);
       assert.deepEqual(waits, []);
-      assert.match(text, /No full qualification run is nonterminal/);
+      assert.match(text, /No full gate run is nonterminal/);
       assert.equal(gh.byIdCalls(), 0);
     }
   }
@@ -195,7 +195,7 @@ test('a nonterminal holder written under the retired path is still seen', async 
     .find(run => run.path === '.github/workflows/reconcile-schedule.yml');
   const holder = { ...shape, path: RETIRED_WORKFLOW_PATH,
     display_title: fullTitle(RETIRED_FULL_RUN_NAME_PREFIX), status: 'in_progress', conclusion: null };
-  assert.equal(isFullQualificationRun(holder), true);
+  assert.equal(isFullGateRun(holder), true);
   const gh = fakeGh({ pages: [[holder], []],
     byId: { [holder.id]: [holder, { ...holder, status: 'completed', conclusion: 'success' }] } });
   const clock = fakeClock();
@@ -260,7 +260,7 @@ for (const [label, error] of refusalClasses) {
     // refusal is the only way out and it names the read failure.
     assert.ok(gh.listCalls() > 1, `${label} must be retried, not admitted`);
     assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS, `${label} is retried for the whole budget`);
-    assert.match(text, /^Refusing the mutation: a qualification read failed; the last read failed: /);
+    assert.match(text, /^Refusing the mutation: a gate run list read failed; the last read failed: /);
     assert.equal(text.includes(error.message), true, `${label} must be named in the refusal`);
   });
 }
@@ -271,7 +271,7 @@ test('a body that is not JSON refuses the mutation', async () => {
   const { code, text, waits } = await admit({ gh, clock });
   assert.equal(code, 1);
   assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
-  assert.match(text, /a qualification read failed; the last read failed: Invalid JSON value/);
+  assert.match(text, /a gate run list read failed; the last read failed: Invalid JSON value/);
 });
 
 test('a body whose shape is not a run list refuses the mutation', async () => {
@@ -287,7 +287,7 @@ test('a body whose shape is not a run list refuses the mutation', async () => {
     const { code, text, waits } = await admit({ gh, clock });
     assert.equal(code, 1, `${label} must never admit the mutation`);
     assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
-    assert.match(text, /a qualification read failed/);
+    assert.match(text, /a gate run list read failed/);
     assert.match(text, /run list is malformed/);
   }
   // An entry that is not a run object is the same class: a page that cannot be
@@ -308,7 +308,7 @@ test('an empty repository run list proceeds immediately with no wait', async () 
   const { code, text, waits } = await admit({ gh, clock });
   assert.equal(code, 0, 'an empty read is admitted');
   assert.deepEqual(waits, [], 'nothing is in flight, so the step does not wait');
-  assert.match(text, /No full qualification run is nonterminal; the admission check proceeds/);
+  assert.match(text, /No full gate run is nonterminal; the admission check proceeds/);
   assert.equal(gh.listCalls(), 2, 'a clear poll is confirmed by one immediate second poll');
   assert.equal(gh.byIdCalls(), 0);
 });
@@ -324,7 +324,7 @@ test('a nonterminal full run makes the step wait, then proceed when it clears', 
 });
 
 test('every nonterminal status counts as occupied on its own for a full run', async () => {
-  for (const status of QUALIFICATION_NONTERMINAL_STATUSES) {
+  for (const status of E2E_NONTERMINAL_STATUSES) {
     const gh = fakeGh({ pages: [[runState(5000, status)], []],
       byId: { 5000: [runState(5000, status), completedRun(5000)] } });
     const clock = fakeClock();
@@ -358,7 +358,7 @@ test('the budget expires non-zero and names the holder run URL', async () => {
   assert.equal(code, 1, 'a spent budget refuses the mutation');
   assert.equal(ADMISSION_BUDGET_MS, 1_800_000, 'the admission budget is pinned at 30 minutes');
   assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS, 'it waits exactly the budget, never past it');
-  assert.match(text, /^Refusing the mutation: 1 full qualification run\(s\) were still nonterminal/);
+  assert.match(text, /^Refusing the mutation: 1 full gate run\(s\) were still nonterminal/);
   assert.match(text, /https:\/\/github\.com\/anywear-ai\/AnyWear-E2E\/actions\/runs\/4242 \(waiting\)/);
 });
 
@@ -376,7 +376,7 @@ test('a holder that leaves the page is still held by its by-id read (the straddl
     'the empty page poll must not open the gate; only the completed by-id read does');
   assert.equal(gh.listCalls(), 4, 'poll 1, the empty poll 2, the cleared poll 3 and the confirmation poll 4');
   assert.equal(gh.byIdCalls(), 3, 'the holder is re-read on every poll until it reports completed');
-  assert.match(text, /No full qualification run is nonterminal; the admission check proceeds after 60 s/);
+  assert.match(text, /No full gate run is nonterminal; the admission check proceeds after 60 s/);
 });
 
 test('absence never opens the gate: the budget expires naming the carried holder', async () => {
@@ -443,7 +443,7 @@ test('a failed page read keeps the gate closed', async () => {
   const { code, text, waits } = await admit({ gh: persistent, clock });
   assert.equal(code, 1);
   assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
-  assert.match(text, /a qualification read failed; the last read failed: gh: HTTP 502 Bad Gateway/);
+  assert.match(text, /a gate run list read failed; the last read failed: gh: HTTP 502 Bad Gateway/);
 });
 
 test('a failed by-id read keeps the holder and the gate closed', async () => {
@@ -454,7 +454,7 @@ test('a failed by-id read keeps the holder and the gate closed', async () => {
   assert.equal(code, 1, 'an unread holder is never clear');
   assert.equal(waitedTotal(waits), ADMISSION_BUDGET_MS);
   assert.ok(text.includes(runUrl(4242)), 'the refusal still names the holder');
-  assert.match(text, /a qualification read failed; the last read failed: gh: HTTP 502 Bad Gateway/);
+  assert.match(text, /a gate run list read failed; the last read failed: gh: HTTP 502 Bad Gateway/);
 });
 
 test('the admission refuses to run without the read-only token', async () => {

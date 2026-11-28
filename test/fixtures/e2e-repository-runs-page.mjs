@@ -10,7 +10,7 @@
 // shrink step of the same issue removes every machine-visible occurrence of the
 // retired workflow name from this repository, and this fixture must not have to
 // change then. The retired-path predicate is exercised from one of these real entry
-// shapes in `test/scripts/qualification-admission.test.mjs` instead.
+// shapes in `test/scripts/e2e-admission.test.mjs` instead.
 //
 // Trimming rule: each committed entry keeps only the fields the admission read
 // consumes — `id`, `path`, `display_title`, `status`, `conclusion`, `html_url`,

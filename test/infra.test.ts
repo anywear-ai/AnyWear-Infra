@@ -1214,7 +1214,7 @@ describe('Explicit infrastructure identity cutover', () => {
       const actions = [...new Set(statements.flatMap((grant) => [grant.Action].flat()))].sort();
       // Statement packing is not the contract: the CDK CLI merges statements
       // with equal actions, and one ARN may appear in several statements (the
-      // prefix ARN now backs both the named reads and the #228 path read).
+      // prefix ARN backs both the named reads and the stage-contract prefix read).
       const resources = [...new Set(statements.flatMap((grant) => [grant.Resource].flat().map(resolvePolicyArn)))].sort();
       return { actions, resources };
     };
@@ -1222,12 +1222,12 @@ describe('Explicit infrastructure identity cutover', () => {
       actions: ['ssm:GetParameter', 'ssm:GetParameters'],
       resources: [...preContractParameters, stageContractPrefix].sort(),
     });
-    // The E2E qualification observer reads the same stage-contract prefix the
-    // runtime observer does, plus the #228 discovery read over the whole prefix
-    // (without decryption); removing or widening either prefix grant fails
-    // here.
+    // The E2E gate role reads the same stage-contract prefix the runtime observer
+    // does. Issue #358 removed its `ssm:GetParametersByPath` discovery read with
+    // the rest of the deleted snapshot surface; removing or widening the remaining
+    // prefix grant fails here.
     expect(ssmInventory('e2e-qualification')).toEqual({
-      actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'],
+      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
       resources: [...preContractParameters, stageContractPrefix].sort(),
     });
     expect(ssmInventory('infra-deploy')).toEqual({
@@ -1240,10 +1240,10 @@ describe('Explicit infrastructure identity cutover', () => {
         expect(actionsFor(template, name)).not.toContain(forbidden);
       }
     }
-    // #228: `ssm:GetParametersByPath` is the e2e observer's stage-path
-    // discovery read only; the runtime and deploy principals keep the named and
-    // prefix `GetParameter(s)` reads and never gain the path read.
-    for (const name of ['infra-runtime', 'infra-deploy']) {
+    // Issue #358: `ssm:GetParametersByPath` served the deleted snapshot observer and
+    // belongs to no principal any more; the runtime, deploy and E2E principals keep
+    // only the named and prefix `GetParameter(s)` reads.
+    for (const name of ['infra-runtime', 'infra-deploy', 'e2e-qualification']) {
       expect(actionsFor(template, name)).not.toContain('ssm:GetParametersByPath');
     }
     const passRoles = grantsFor(template, 'e2e-qualification').find((grant) => [grant.Action].flat().includes('iam:PassRole'));
@@ -1315,10 +1315,13 @@ describe('Explicit infrastructure identity cutover', () => {
     }
   });
 
-  it('grants the E2E qualification role exactly the #228 discovery read surface and no write', () => {
-    // Synthesized with the concrete env like the aggregate quota test, so the
-    // ARNs and region conditions render as literals the byte-quota walker can
-    // resolve (the env-less helper leaves pseudo-parameter Refs in the joins).
+  it('grants the E2E gate role exactly the surviving runtime read and none of the deleted snapshot grants', () => {
+    // Issue #358 step 4: the seven discovery families that existed only for the
+    // deleted full-resource snapshot are gone, and the one surviving CloudFormation
+    // reader — `cleanup-capability.mjs`, which reads the Runtime stack's outputs —
+    // is scoped to the one Runtime stack in the application region. This policy is
+    // source-only until an authorized deploy-platform applies it; the test asserts
+    // the CDK source, not live IAM.
     const env = { account: '650880818323', region: 'ap-east-1' };
     const app = new cdk.App({ context: cdkConfig.context });
     const template = Template.fromStack(new PlatformStack(app, 'AnyWearPlatformStack-beta', {
@@ -1337,66 +1340,22 @@ describe('Explicit infrastructure identity cutover', () => {
     };
     const forAction = (action: string) => grantsFor(template, 'e2e-qualification')
       .filter((grant) => [grant.Action].flat().includes(action));
-    // The whole-prefix SSM discovery read. The #228 second-iteration
-    // correction (smoke 40105334687) makes it conditionless: the synthesized
-    // statement stays separate from the same-resource GetParameter(s) reads
-    // and carries no condition block, the same style as the stack-trio pin.
-    const pathReads = forAction('ssm:GetParametersByPath');
-    expect(pathReads).toHaveLength(1);
-    expect(pathReads[0].Effect).toBe('Allow');
-    expect([pathReads[0].Action].flat()).toEqual(['ssm:GetParametersByPath']);
-    expect([pathReads[0].Resource].flat().map(resolvePolicyArn))
-      .toEqual(['arn:aws:ssm:ap-east-1:650880818323:parameter/anywear/beta/*']);
-    expect(pathReads[0].Condition).toBeUndefined();
-    // The CloudFormation read trio on the `AnyWear*` stack prefix in both
-    // observation regions (the CDK policy merger unions the two source
-    // statements into one trio statement, so pin the effective grant), plus
-    // `ListStacks` bound to those two regions.
-    const stackWildcards = ['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWear*/*',
-      'arn:aws:cloudformation:us-east-1:650880818323:stack/AnyWear*/*'];
+    // The seven deleted discovery families are absent from the E2E policy.
+    for (const deleted of ['cloudformation:ListStacks', 'cloudformation:GetTemplate',
+      'cloudformation:ListStackResources', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration',
+      'lambda:ListFunctions', 'sqs:GetQueueAttributes', 'sqs:ListQueues',
+      'cloudfront:ListDistributions', 'ssm:GetParametersByPath']) {
+      expect(actionsFor(template, 'e2e-qualification')).not.toContain(deleted);
+    }
+    // The one surviving CloudFormation read: DescribeStacks on the Runtime stack
+    // only, in the application region, with no condition block.
     const stackReads = forAction('cloudformation:DescribeStacks');
     expect(stackReads).toHaveLength(1);
-    expect([stackReads[0].Action].flat()).toEqual(['cloudformation:DescribeStacks',
-      'cloudformation:GetTemplate', 'cloudformation:ListStackResources']);
-    expect([stackReads[0].Resource].flat().map(resolvePolicyArn)).toEqual(stackWildcards);
+    expect([stackReads[0].Action].flat()).toEqual(['cloudformation:DescribeStacks']);
+    expect([stackReads[0].Resource].flat().map(resolvePolicyArn))
+      .toEqual(['arn:aws:cloudformation:ap-east-1:650880818323:stack/AnyWearRuntimeStack-beta/*']);
     expect(stackReads[0].Condition).toBeUndefined();
-    const listStacks = forAction('cloudformation:ListStacks');
-    expect(listStacks).toHaveLength(1);
-    expect(listStacks[0].Resource).toBe('*');
-    expect(listStacks[0].Condition).toEqual({
-      StringEquals: { 'aws:RequestedRegion': ['ap-east-1', 'us-east-1'] },
-    });
-    // The Lambda reads on the Service-built name prefix and the region-bound
-    // account listing.
-    const lambdaReads = forAction('lambda:GetFunction');
-    expect(lambdaReads).toHaveLength(1);
-    expect([lambdaReads[0].Action].flat()).toEqual(['lambda:GetFunction', 'lambda:GetFunctionConfiguration']);
-    expect([lambdaReads[0].Resource].flat().map(resolvePolicyArn))
-      .toEqual(['arn:aws:lambda:ap-east-1:650880818323:function:beta-anywear-*']);
-    const listFunctions = forAction('lambda:ListFunctions');
-    expect(listFunctions).toHaveLength(1);
-    expect(listFunctions[0].Resource).toBe('*');
-    expect(listFunctions[0].Condition).toEqual({ StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } });
-    // The queue attribute reads on the beta name prefix and the region-bound
-    // listing (`ListQueues` has no IAM condition keys; the prefix is the
-    // request parameter).
-    const queueReads = forAction('sqs:GetQueueAttributes');
-    expect(queueReads).toHaveLength(1);
-    expect([queueReads[0].Action].flat()).toEqual(['sqs:GetQueueAttributes']);
-    expect([queueReads[0].Resource].flat().map(resolvePolicyArn))
-      .toEqual(['arn:aws:sqs:ap-east-1:650880818323:beta-anywear-*']);
-    const listQueues = forAction('sqs:ListQueues');
-    expect(listQueues).toHaveLength(1);
-    expect(listQueues[0].Resource).toBe('*');
-    expect(listQueues[0].Condition).toEqual({ StringEquals: { 'aws:RequestedRegion': 'ap-east-1' } });
-    // The CloudFront listing is global and carries no condition.
-    const listDistributions = forAction('cloudfront:ListDistributions');
-    expect(listDistributions).toHaveLength(1);
-    expect(listDistributions[0].Resource).toBe('*');
-    expect(listDistributions[0].Condition).toBeUndefined();
-    // The new surface is read-only on every statement: no write/delete/create
-    // action appears on the role from these families, and the discovery actions
-    // stay on the e2e principal only.
+    // The surviving read surface is read-only on every statement.
     for (const forbidden of ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:DeleteParameters',
       'ssm:PutParameterVersion', 'cloudformation:CreateStack', 'cloudformation:UpdateStack',
       'cloudformation:DeleteStack', 'lambda:CreateFunction', 'lambda:UpdateFunctionCode', 'lambda:DeleteFunction',
@@ -1404,12 +1363,20 @@ describe('Explicit infrastructure identity cutover', () => {
       'cloudfront:UpdateDistribution', 'cloudfront:DeleteDistribution']) {
       expect(actionsFor(template, 'e2e-qualification')).not.toContain(forbidden);
     }
+    // The deleted discovery actions stay off the runtime and deploy principals too.
     for (const name of ['infra-runtime', 'infra-deploy']) {
       for (const action of ['ssm:GetParametersByPath', 'cloudformation:ListStacks', 'lambda:ListFunctions',
         'sqs:ListQueues', 'cloudfront:ListDistributions']) {
         expect(actionsFor(template, name)).not.toContain(action);
       }
     }
+    // The role keeps the reads its live callers need: the two log groups, the
+    // wardrobe object, the dead-letter queue, CloudTrail and the autoscaling read.
+    expect(actionsFor(template, 'e2e-qualification')).toEqual(expect.arrayContaining([
+      'logs:FilterLogEvents', 's3:GetObject', 'sqs:ReceiveMessage', 'sqs:ChangeMessageVisibility',
+      'cloudtrail:LookupEvents', 'application-autoscaling:DescribeScalableTargets',
+      'cognito-idp:AdminCreateUser', 'ecs:DescribeServices', 'ecr:DescribeImages',
+    ]));
     // The Platform-side inline policy still fits the aggregate quota; the
     // cross-stack aggregate (Platform + Foundation) is pinned separately.
     const e2eBytes = policiesFor(template, 'e2e-qualification').reduce((size, policy) => size

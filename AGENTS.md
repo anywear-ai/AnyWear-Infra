@@ -120,23 +120,23 @@ and must not be relabeled as an Infra-produced deployment.
   and rejects cross-family or out-of-scope inputs before credentials; and since
   #344 `schedule.yml` is the scheduled entry (daily 03:17 UTC plus a manual
   `reconcile`/`smoke`/`full`), which shares `anywear-infra-runtime`, mints the one
-  AnyWear-E2E `actions: write` token and holds the qualification it dispatched —
+  AnyWear-E2E `actions: write` token and holds the gate run it dispatched —
   it declares no environment, no `id-token` and no AWS credential and runs no
   admission read of its own. Since #207
   every mutation runs `preflight` → `verify` → `deploy` in one run and has no
   `observe` or `record` job: `deploy` is the only job that holds an AWS
   credential; its first work after checkout and `npm ci` is a read-only
-  `AnyWear-E2E` admission check that waits while a `full` qualification run is
+  `AnyWear-E2E` admission check that waits while a `full` gate run is
   nonterminal and refuses at a 30-minute budget naming the holder, before any AWS
   credential request, and the `deploy-operation` composite then proves the
   travelled release bytes against the published digests before the first OIDC
-  request. Since #226 a `deploy-runtime` run adds `qualify-hold` after a
+  request. Since #226 a `deploy-runtime` run adds `e2e-hold` after a
   successful `deploy` (since #344 a `publish-client` run adds it too): no
   environment, no `id-token`, no AWS permission,
   `contents: read` and one App installation token narrowed to `AnyWear-E2E` with
-  `actions: write` only, dispatching the E2E qualification and — for
+  `actions: write` only, dispatching the E2E gate run and — for
   `delivery_trigger=deploy` or `publish` — reading it to a terminal state under a
-  55-minute ceiling, recording exactly one `qualified`, `unqualified` or
+  55-minute ceiling, recording exactly one `passed`, `failed` or
   `unobserved` outcome (`unobserved` means the dispatched run could not be read, so
   no verdict was formed and the hold fails).
   `delivery_trigger` and `dispatched_by` are
@@ -232,6 +232,20 @@ and must not be relabeled as an Infra-produced deployment.
   and the live read-backs are recorded on issue #199. The fixture no longer
   records a pending removal, and its `publication_verified` and
   `deployment_qualified` remain false.
+- Issue #358 narrowed the E2E role in CDK source: the seven discovery families that
+  existed only for the deleted full-resource snapshot are removed
+  (`cloudformation:GetTemplate`/`ListStackResources`/`ListStacks`,
+  `lambda:GetFunction`/`GetFunctionConfiguration`/`ListFunctions`,
+  `sqs:GetQueueAttributes`/`ListQueues`, `cloudfront:ListDistributions`,
+  `ssm:GetParametersByPath`), and `cloudformation:DescribeStacks` is scoped to
+  `AnyWearRuntimeStack-beta` in `ap-east-1`. The narrowed policy is source-only
+  until an authorized `deploy-platform` applies it (execution-plan step 7, not
+  executed by this change); until then the live `beta-e2e-qualification-role` stays
+  wider than this source and no least-privilege claim is made. Everything the live
+  gate still reads is kept, including the named and stage-contract SSM reads, the
+  ECS/ECR runtime reads, Cognito administration, the wardrobe object read, the
+  api/worker log reads, the auto-tagging dead-letter read, `cloudtrail:LookupEvents`,
+  the `artifact-verify` one-shot and the autoscaling read.
 - The accepted #54 IAM boundary is scoped: the named legacy Beta role has
   deny-only trust with zero inline or attached grants, and Infra owns the one
   operational Beta queue. The inherited Dev wildcard E2E subject, `cdk-*`
