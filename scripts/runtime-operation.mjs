@@ -614,14 +614,19 @@ export async function runOperation(env = process.env, {
     // never reached `e2e-hold`, so this run dispatched no gate run. The
     // incident's retry was a new manual dispatch, which produces only `smoke` — not
     // the `full` the commit still owes — and nothing in the run said so. One line,
-    // with both remedies, in the job that already reports the landed change. No new
-    // job, input or environment variable: re-running all jobs of this run keeps
-    // `delivery_trigger=deploy`, and the converged change set executes nothing
-    // because the release is already live.
+    // with both remedies and the queued alternative, in the job that already reports
+    // the landed change. No new job, input or environment variable: re-running all
+    // jobs of this run keeps `delivery_trigger=deploy`, and the converged change set
+    // executes nothing because the release is already live.
+    // Issue #363: the hand dispatch carries no `dispatched_by`. The corrected gate
+    // preflight accepts a non-empty one only from a run an app identity created, so
+    // a dispatch a person created must leave it empty and the run name states
+    // `@<actor>`; an `AnyWear-Infra` `schedule.yml` dispatch is the queued
+    // alternative that makes the gate its own child and supplies that Infra run URL.
     if (operation === 'deploy-runtime' && changedStacks.includes(runtimeStack) && env.GITHUB_STEP_SUMMARY) {
       const commit = inputs.service_release?.serviceCommit ?? '<service commit>';
       await appendFile(env.GITHUB_STEP_SUMMARY,
-        `No gate run was dispatched: this run changed ${runtimeStack} and did not complete, so Service commit ${commit} still owes a \`full\`. Produce it by re-running all jobs of this run (keeps delivery_trigger=deploy; the converged change set executes nothing and the hook dispatches \`full · deploy-gate · ${commit}\`), or by dispatching AnyWear-E2E \`beta-e2e.yml\` with operation=full, trigger=release-gate, expected_service_commit=${commit}, worker_slot_offset=0, dispatched_by=${env.GITHUB_SERVER_URL ?? 'https://github.com'}/${env.GITHUB_REPOSITORY ?? 'anywear-ai/AnyWear-Infra'}/actions/runs/${env.GITHUB_RUN_ID ?? '<run id>'}. A new manual deploy-runtime dispatch produces only \`smoke\`, which is not a \`full\` gate.\n`);
+        `No gate run was dispatched: this run changed ${runtimeStack} and did not complete, so Service commit ${commit} still owes a \`full\`. Produce it by re-running all jobs of this run (keeps delivery_trigger=deploy; the converged change set executes nothing and the hook dispatches \`full · deploy-gate · ${commit}\`), or by dispatching AnyWear-E2E \`beta-e2e.yml\` with operation=full, trigger=release-gate, expected_service_commit=${commit}, worker_slot_offset=0 and dispatched_by left empty, which the gate accepts from a person and renders as @<actor> in the run name. When an AnyWear-Infra writer holds the tuple, dispatching AnyWear-Infra \`schedule.yml\` with operation=full and the expected Service commit instead queues in anywear-infra-runtime and dispatches the gate as its own child carrying that Infra run URL. A new manual deploy-runtime dispatch produces only \`smoke\`, which is not a \`full\` gate.\n`);
     }
     throw error;
   }
