@@ -5,6 +5,7 @@ import {
   ADMISSION_INTERVAL_MS, E2E_FULL_RUN_NAME_PREFIX, E2E_WORKFLOW_PATH, isFullGateRun,
   listNonterminalFullRuns, main, E2E_NONTERMINAL_STATUSES, RUNS_PATH,
 } from '../../scripts/e2e-admission.mjs';
+import { E2E_WORKFLOW } from '../../scripts/e2e-dispatch.mjs';
 import { capturedRunPage } from '../fixtures/e2e-repository-runs-page.mjs';
 
 // #338/#358: the pre-mutation admission read. It runs in `mutate.yml`'s `deploy` job
@@ -118,6 +119,14 @@ test('the accepted sets are exactly the current gate literals', async () => {
     'a lookalike path is not a `full` holder');
   assert.equal(isFullGateRun({ display_title: fullTitle(E2E_FULL_RUN_NAME_PREFIX) }), false,
     'a run-name alone is not a `full` holder');
+});
+
+test('the dispatch workflow literal and the admission path literal name the same file', () => {
+  // `e2e-dispatch.mjs` names the workflow file for the dispatch URL and
+  // `e2e-admission.mjs` names the same file in each run's `path`; they are two
+  // independent literals, so this equality is what keeps a rename from updating one
+  // side and not the other.
+  assert.equal(`.github/workflows/${E2E_WORKFLOW}`, E2E_WORKFLOW_PATH);
 });
 
 test('the current path and run-name prefix are recognised as a full holder', async () => {

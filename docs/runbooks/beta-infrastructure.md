@@ -418,8 +418,14 @@ step that names the gate run holding the environment and happens before any AWS
 credential is requested. Wait for the named run, or cancel it and re-dispatch the
 deployment. It reads the AnyWear-E2E repository's own run list, one page per poll,
 and filters client-side on each run's `path`, `display_title` prefix and nonterminal
-status, so a renamed workflow file cannot hide a holder; the current and the retired
-name are both accepted until the follow-up shrink step removes the retired one.
+status, so a renamed workflow file cannot hide a holder. It accepts exactly one pair:
+the `.github/workflows/beta-e2e.yml` path and the `Beta E2E gate: full` run-name
+prefix. Steps 2–5 of the rename accepted both the retired and the current literal on
+purpose: a run keeps the `path` it was dispatched under, so runs written under either
+name could still be nonterminal while the window closed, and missing one would admit
+a deployment rather than fail it. Step 6 is that shrink, and the both-literal set must
+not return — the retired gate file and its stub are gone, so nothing can be dispatched
+under the retired name, and re-adding it would only widen the predicate.
 A `publish-client` run passes the same gate and then takes its own three steps; the
 scheduled entry runs no admission read of its own because it dispatches E2E and
 mutates nothing.
